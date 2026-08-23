@@ -349,6 +349,11 @@ public final class ModuleManager implements AutoCloseable {
                 mode.setValue(value);
             } else if (setting instanceof GuiSetting.Keybind bind) {
                 bind.setKeyCode(Integer.parseInt(value));
+            } else if (setting instanceof GuiSetting.ColorPick pick) {
+                Integer rgb = GuiSetting.ColorPick.parse(value);
+                if (rgb != null) {
+                    pick.setRgb(rgb);
+                }
             }
         } catch (NumberFormatException ignored) {
         }
@@ -359,6 +364,7 @@ public final class ModuleManager implements AutoCloseable {
         if (setting instanceof GuiSetting.Slider slider) return Double.toString(slider.value());
         if (setting instanceof GuiSetting.Mode mode) return mode.value();
         if (setting instanceof GuiSetting.Keybind bind) return Integer.toString(bind.keyCode());
+        if (setting instanceof GuiSetting.ColorPick pick) return pick.serialized();
         return "";
     }
 
