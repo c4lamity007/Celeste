@@ -1,0 +1,80 @@
+                return true;
+            }
+            if (input.isEnter()) {
+                runConfigAction(configInput.contains("\\") || configInput.contains("/") || configInput.contains(".")
+                    ? "Import" : "Create");
+                return true;
+            }
+            if (input.isEscape()) {
+                configFieldFocused = false;
+                return true;
+            }
+        }
+        if (searchFocused) {
+            if ((input.key() == GLFW.GLFW_KEY_DELETE || input.key() == GLFW.GLFW_KEY_BACKSPACE)
+                && input.hasCtrl() && !search.isEmpty()) {
+                deletePreviousSearchWord();
+                collapseAllModules();
+                contentScroll = targetScroll = 0;
+                return true;
+            }
+            if ((input.key() == GLFW.GLFW_KEY_DELETE || input.key() == GLFW.GLFW_KEY_BACKSPACE) && !search.isEmpty()) {
+                setSearchLength(search.length() - 1);
+                collapseAllModules();
+                contentScroll = targetScroll = 0;
+                return true;
+            }
+            if (input.isEscape() || input.isEnter()) {
+                searchFocused = false;
+                return true;
+            }
+        }
+        return super.keyPressed(input);
+    }
+
+    @Override
+    public boolean charTyped(CharInput input) {
+        if (configFieldFocused && input.isValidChar() && configInput.length() < 120) {
+            configInput += input.asString();
+            return true;
+        }
+        if (searchFocused && input.isValidChar() && search.length() < 32) {
+            appendSearch(input.asString());
+            collapseAllModules();
+            contentScroll = targetScroll = 0;
+            return true;
+        }
+        return super.charTyped(input);
+    }
+
+    @Override
+    public void renderBackground(DrawContext context, int mouseX, int mouseY, float delta) {
+    }
+
+    @Override
+    protected void applyBlur(DrawContext context) {
+    }
+
+    @Override
+    public boolean shouldPause() {
+        return false;
+    }
+
+    @Override
+    public void removed() {
+        GuiRenderer.getInstance().clearScissors();
+        RenderUtil.releaseBlur();
+        draggingSlider = null;
+        draggingConfig = null;
+        listeningKeybind = null;
+        colorPicker.close();
+        super.removed();
+    }
+
+    private void layout() {
+        float minecraftScale = client == null
+            ? REFERENCE_MINECRAFT_GUI_SCALE
+            : (float) client.getWindow().getScaleFactor();
+        float normalization = REFERENCE_MINECRAFT_GUI_SCALE / Math.max(0.1f, minecraftScale);
+        float referenceWidth = width / normalization;
+        float referenceHeight = height / normalization;

@@ -1,0 +1,80 @@
+            searchFocused = false;
+        }
+
+        for (NavHit hit : navHits) {
+            if (click.button() == GLFW.GLFW_MOUSE_BUTTON_LEFT && hit.contains(mouseX, mouseY)) {
+                if (hit.page() == CelestePage.HUD) {
+                    client.setScreen(new HudEditorScreen(this));
+                    return true;
+                }
+                if (selectedPage != hit.page()) {
+                    pageChangedAt = System.nanoTime();
+                }
+                selectedPage = hit.page();
+                collapseAllModules();
+                listeningKeybind = null;
+                contentScroll = targetScroll = 0;
+                return true;
+            }
+        }
+
+        boolean insideContent = hovered(mouseX, mouseY, contentX, contentY, contentWidth, contentHeight);
+        if (insideContent && selectedPage == CelestePage.CONFIGS && click.button() == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+            if (configFieldHit != null && configFieldHit.contains(mouseX, mouseY)) {
+                configFieldFocused = true;
+                return true;
+            }
+            configFieldFocused = false;
+            for (ActionHit hit : actionHits) {
+                if (hit.contains(mouseX, mouseY)) {
+                    if (hit.helpOnly()) {
+                        setConfigStatus(hit.tooltip());
+                    } else {
+                        runConfigAction(hit.action());
+                    }
+                    return true;
+                }
+            }
+            for (ProfileHit hit : profileHits) {
+                if (hit.deleteWidth() > 0 && hit.containsDelete(mouseX, mouseY)) {
+                    runConfigDelete(hit.name());
+                    return true;
+                }
+                if (hit.contains(mouseX, mouseY)) {
+                    runConfigLoad(hit.name());
+                    return true;
+                }
+            }
+        } else if (selectedPage != CelestePage.CONFIGS) {
+            configFieldFocused = false;
+        }
+
+        for (ConfigHit hit : configHits) {
+            if (!insideContent || !hit.contains(mouseX, mouseY) || click.button() != GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+                continue;
+            }
+            draggingConfig = hit;
+            updateDraggedConfig(mouseX);
+            return true;
+        }
+
+        if (insideContent && selectedPage == CelestePage.SETTINGS && hovered(mouseX, mouseY, settingsButtonX(), settingsButtonY(), 157, 29)) {
+            client.setScreen(new OptionsScreen(this, client.options));
+            return true;
+        }
+
+        for (SettingHit hit : settingHits) {
+            if (!insideContent || !hit.contains(mouseX, mouseY)) {
+                continue;
+            }
+            if (hit.setting() instanceof GuiSetting.Toggle toggle) {
+                toggle.toggle();
+            } else if (hit.setting() instanceof GuiSetting.Mode mode) {
+                if (click.button() == GLFW.GLFW_MOUSE_BUTTON_RIGHT) {
+                    mode.previous();
+                } else {
+                    mode.next();
+                }
+            } else if (hit.setting() instanceof GuiSetting.Slider slider) {
+                draggingSlider = slider;
+                updateDraggedSlider(mouseX);
