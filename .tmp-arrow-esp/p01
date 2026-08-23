@@ -1,0 +1,80 @@
+    private final List<SettingHit> settingHits = new ArrayList<>();
+    private final List<ConfigHit> configHits = new ArrayList<>();
+    private final List<FriendHit> friendHits = new ArrayList<>();
+    private final List<ProfileHit> profileHits = new ArrayList<>();
+    private final List<ActionHit> actionHits = new ArrayList<>();
+    private String configInput = "";
+    private boolean configFieldFocused;
+    private String configStatus = "";
+    private long configStatusUntil;
+    private FieldHit configFieldHit;
+    private String pendingTooltip = "";
+    private float pendingTooltipX;
+    private float pendingTooltipY;
+    private final Map<Object, TimedAnimation> toggleAnimations = new IdentityHashMap<>();
+    private final Map<Object, SpringAnimation> sliderAnimations = new IdentityHashMap<>();
+    private final Map<GuiModule, TimedAnimation> expansionAnimations = new IdentityHashMap<>();
+    private final Map<CelestePage, TimedAnimation> navigationAnimations = new IdentityHashMap<>();
+    private final Map<Object, TimedAnimation> hoverAnimations = new IdentityHashMap<>();
+    private final List<Long> searchRevealTimes = new ArrayList<>();
+
+    private float contentScroll;
+    private float targetScroll;
+    private String search = "";
+    private boolean searchFocused;
+    private long openedAt;
+    private long pageChangedAt;
+    private float renderedInterfaceScale = InterfaceConfig.DEFAULT_SCALE;
+    private float interfaceScaleVelocity;
+    private long lastScaleUpdateAt;
+
+    private float panelX;
+    private float panelY;
+    private float panelWidth;
+    private float panelHeight;
+    private float sidebarWidth;
+    private float contentX;
+    private float contentY;
+    private float contentWidth;
+    private float contentHeight;
+    private float uiScale = 1.0f;
+
+    public CelesteScreen() {
+        super(Text.literal("Celeste Client"));
+    }
+
+    @Override
+    protected void init() {
+        openedAt = System.nanoTime();
+        pageChangedAt = openedAt;
+        renderedInterfaceScale = InterfaceConfig.scale();
+        interfaceScaleVelocity = 0.0f;
+        lastScaleUpdateAt = openedAt;
+        layout();
+    }
+
+    @Override
+    public void render(DrawContext context, int mouseX, int mouseY, float delta) {
+        updateInterfaceScaleAnimation();
+        layout();
+        float animation = openAnimation();
+        contentScroll += (targetScroll - contentScroll) * Math.min(1.0f, delta * 0.22f + 0.12f);
+
+        MatrixStack matrices = RenderUtil.matrices();
+        matrices.loadIdentity();
+        matrices.scale(uiScale, uiScale, 1.0f);
+        GuiRenderer.getInstance().clearScissors();
+        RenderUtil.captureBlur();
+
+        int virtualMouseX = Math.round(mouseX / uiScale);
+        int virtualMouseY = Math.round(mouseY / uiScale);
+
+        navHits.clear();
+        moduleHits.clear();
+        settingHits.clear();
+        configHits.clear();
+        friendHits.clear();
+        profileHits.clear();
+        actionHits.clear();
+        configFieldHit = null;
+        pendingTooltip = "";
