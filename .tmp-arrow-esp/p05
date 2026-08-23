@@ -1,0 +1,80 @@
+
+            float cardAlpha = Math.round((100 + 15 * hover + 18 * expansion) * cardAnimation);
+
+            Fonts.semibold().drawText(matrices, module.name(), x + 15, drawY + 11.5f, 10.2f,
+                withAlpha(TEXT, Math.round(255 * cardAnimation)));
+            Fonts.regular().drawText(matrices, trim(module.description(), 43), x + 15, drawY + 30.5f, 7.8f,
+                withAlpha(MUTED, Math.round(255 * cardAnimation)));
+            drawToggle(matrices, module, x + columnWidth - 43, drawY + 19, module.enabled(), cardAnimation);
+
+            moduleHits.add(new ModuleHit(module, x, drawY, columnWidth, 54));
+            if (expansion > 0.001f && settingsHeight > 0) {
+                float settingsTop = drawY + 54;
+                GuiRenderer.getInstance().pushScissor(
+                    (x + 1) * uiScale,
+                    settingsTop * uiScale,
+                    (columnWidth - 2) * uiScale,
+                    settingsHeight * expansion * uiScale
+                );
+                drawSettings(
+                    matrices,
+                    module,
+                    x + 10,
+                    drawY + 57 - (1.0f - expansion) * 7.0f,
+                    columnWidth - 20,
+                    mouseX,
+                    mouseY,
+                    cardAnimation * expansion,
+                    expansion > 0.92f
+                );
+                GuiRenderer.getInstance().popScissor();
+            }
+
+            if (left) {
+                leftY += cardHeight + gap;
+            } else {
+                rightY += cardHeight + gap;
+              }
+          }
+
+        float minimumY = Math.min(leftY, rightY);
+        float maximumY = Math.max(leftY, rightY);
+        float required = Math.max(0, maximumY - (contentY + contentScroll) - contentHeight + 8);
+        targetScroll = clamp(targetScroll, -required, 0);
+
+        if (modules.isEmpty()) {
+            float entrance = pageEntrance(1);
+            Fonts.semibold().drawCenteredText(matrices, "No matching modules", contentX + contentWidth / 2,
+                contentY + 66 + (1.0f - entrance) * 7.0f, 11,
+                withAlpha(MUTED, Math.round(255 * animation * entrance)));
+        }
+    }
+
+    private void drawSettings(
+        MatrixStack matrices,
+        GuiModule module,
+        float x,
+        float y,
+        float width,
+        int mouseX,
+        int mouseY,
+        float animation,
+        boolean interactive
+    ) {
+        int settingCount = module.settings().size();
+        if (settingCount == 0) {
+            return;
+        }
+
+        float settingsCardHeight = settingCount * 39.0f - 5.0f;
+        RenderUtil.BLUR_RECT.draw(matrices, x, y, width, settingsCardHeight, 7,
+            withAlpha(SIDEBAR, Math.round(SIDEBAR.getAlpha() * animation)), InterfaceConfig.glassTintMix());
+
+        int settingIndex = 0;
+        for (GuiSetting setting : module.settings()) {
+            boolean hovered = hovered(mouseX, mouseY, x, y, width, 34);
+            float hover = hoverAnimation(setting, hovered && interactive);
+            if (hover > 0.001f) {
+                RenderUtil.RECT.draw(matrices, x + 2, y + 2, width - 4, 30, 5,
+                    withAlpha(color(45, 28, 45, 155), Math.round(76 * hover * animation)));
+            }

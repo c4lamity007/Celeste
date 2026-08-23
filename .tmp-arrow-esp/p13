@@ -1,0 +1,80 @@
+            } else if (hit.setting() instanceof GuiSetting.Keybind keybind) {
+                listeningKeybind = keybind;
+            } else if (hit.setting() instanceof GuiSetting.ColorPick pick) {
+                colorPicker.toggle(pick, hit.x(), hit.y());
+            }
+            return true;
+        }
+
+        for (ModuleHit hit : moduleHits) {
+            if (!insideContent || !hit.contains(mouseX, mouseY)) {
+                continue;
+            }
+            if (click.button() == GLFW.GLFW_MOUSE_BUTTON_RIGHT && !hit.module().settings().isEmpty()) {
+                expandedModule = expandedModule == hit.module() ? null : hit.module();
+            } else if (click.button() == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+                hit.module().toggle();
+            }
+            return true;
+        }
+
+        return super.mouseClicked(click, doubled);
+    }
+
+    @Override
+    public boolean mouseReleased(Click click) {
+        double mouseX = click.x() / uiScale;
+        double mouseY = click.y() / uiScale;
+        colorPicker.mouseReleased(mouseX, mouseY);
+        updateDraggedSlider(mouseX);
+        updateDraggedConfig(mouseX);
+        draggingSlider = null;
+        draggingConfig = null;
+        return super.mouseReleased(click);
+    }
+
+    @Override
+    public boolean mouseDragged(Click click, double deltaX, double deltaY) {
+        colorPicker.drag(click.x() / uiScale, click.y() / uiScale);
+        if (draggingSlider != null) {
+            updateDraggedSlider(click.x() / uiScale);
+            return true;
+        }
+        if (draggingConfig != null) {
+            updateDraggedConfig(click.x() / uiScale);
+            return true;
+        }
+        return super.mouseDragged(click, deltaX, deltaY);
+    }
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double horizontalAmount, double verticalAmount) {
+        if (isControlDown()) {
+            InterfaceConfig.setScale(InterfaceConfig.scale() + verticalAmount * 0.06);
+            return true;
+        }
+        if (hovered(mouseX / uiScale, mouseY / uiScale, contentX, contentY, contentWidth, contentHeight)
+            && (selectedPage.feature() || selectedPage == CelestePage.CONFIGS || selectedPage == CelestePage.FRIENDS)) {
+            targetScroll += (float) verticalAmount * 24;
+            return true;
+        }
+        return super.mouseScrolled(mouseX, mouseY, horizontalAmount, verticalAmount);
+    }
+
+    @Override
+    public boolean keyPressed(KeyInput input) {
+        if (listeningKeybind != null) {
+            listeningKeybind.setKeyCode(input.isEscape() || input.key() == GLFW.GLFW_KEY_DELETE || input.key() == GLFW.GLFW_KEY_BACKSPACE
+                ? GLFW.GLFW_KEY_UNKNOWN
+                : input.key());
+            listeningKeybind = null;
+            return true;
+        }
+        if (configFieldFocused) {
+            if ((input.key() == GLFW.GLFW_KEY_DELETE || input.key() == GLFW.GLFW_KEY_BACKSPACE)
+                && input.hasCtrl() && !configInput.isEmpty()) {
+                configInput = "";
+                return true;
+            }
+            if ((input.key() == GLFW.GLFW_KEY_DELETE || input.key() == GLFW.GLFW_KEY_BACKSPACE) && !configInput.isEmpty()) {
+                configInput = configInput.substring(0, configInput.length() - 1);

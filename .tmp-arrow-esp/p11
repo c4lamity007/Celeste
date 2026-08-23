@@ -1,0 +1,80 @@
+        int mouseY,
+        float animation
+    ) {
+        boolean hovered = hovered(mouseX, mouseY, x, y, width, height);
+        float hover = hoverAnimation(option, hovered);
+        RenderUtil.RECT.draw(matrices, x, y, width, height, 11,
+            withAlpha(blend(CARD, CARD_HOVER, hover), Math.round((175 + 17 * hover) * animation)));
+        Fonts.semibold().drawText(matrices, option.label, x + 14, y + 13, 9.5f,
+            withAlpha(TEXT, Math.round(255 * animation)));
+        String value = sliderValue(option.value());
+        float valueWidth = Math.max(35, Fonts.semibold().getWidth(value, 7.5f) + 14);
+        RenderUtil.RECT.draw(matrices, x + width - valueWidth - 12, y + 9, valueWidth, 19, 6,
+            withAlpha(CONTROL, Math.round(210 * animation)));
+        Fonts.semibold().drawCenteredText(matrices, value, x + width - valueWidth / 2 - 12,
+            centeredTextY(y + 9, 19, 7.5f), 7.5f,
+            withAlpha(TEXT, Math.round(255 * animation)));
+        Fonts.regular().drawText(matrices, option.description, x + 14, y + 35, 7.1f,
+            withAlpha(MUTED, Math.round(255 * animation)));
+
+        float sliderX = x + 14;
+        float sliderY = y + height - 17;
+        float sliderWidth = width - 28;
+        float targetProgress = (option.value() - option.minimum) / (option.maximum - option.minimum);
+        float progress = sliderAnimations
+            .computeIfAbsent(option, ignored -> new SpringAnimation())
+            .update(targetProgress, SLIDER_SMOOTH_TIME_SECONDS);
+        RenderUtil.RECT.draw(matrices, sliderX, sliderY, sliderWidth, 4, 2,
+            withAlpha(color(86, 59, 82, 230), Math.round(230 * animation)));
+        RenderUtil.RECT.draw(matrices, sliderX, sliderY, sliderWidth * progress, 4, 2,
+            withAlpha(ACCENT, Math.round(255 * animation)));
+        float knobX = sliderX + sliderWidth * progress - 3;
+        RenderUtil.RECT.draw(matrices, knobX, sliderY - 1, 6, 6, 3,
+            withAlpha(Color.WHITE, Math.round(250 * animation)));
+        configHits.add(new ConfigHit(option, sliderX, sliderY - 8, sliderWidth, 20));
+    }
+
+    private void drawToggle(MatrixStack matrices, Object key, float x, float y, boolean enabled, float animation) {
+        float progress = toggleAnimations
+            .computeIfAbsent(key, ignored -> new TimedAnimation())
+            .update(enabled ? 1.0f : 0.0f, TOGGLE_ANIMATION_NANOS);
+        Color track = blend(color(82, 62, 80, 225), ACCENT, progress);
+        RenderUtil.RECT.draw(matrices, x, y, 28, 16, 8,
+            withAlpha(track, Math.round(track.getAlpha() * animation)));
+        float knobX = x + 2 + 12 * progress;
+        RenderUtil.RECT.draw(matrices, knobX, y + 2, 12, 12, 6, withAlpha(Color.WHITE, Math.round(245 * animation)));
+    }
+
+    @Override
+    public boolean mouseClicked(Click click, boolean doubled) {
+        double mouseX = click.x() / uiScale;
+        double mouseY = click.y() / uiScale;
+        if (click.button() == GLFW.GLFW_MOUSE_BUTTON_MIDDLE && selectedPage == CelestePage.FRIENDS) {
+            for (FriendHit hit : friendHits) {
+                if (hit.contains(mouseX, mouseY)) {
+                    FriendManager.getInstance().removeFriend(hit.friend().uuid());
+                    return true;
+                }
+            }
+            return false;
+        }
+        if (click.button() != GLFW.GLFW_MOUSE_BUTTON_LEFT && click.button() != GLFW.GLFW_MOUSE_BUTTON_RIGHT) {
+            return false;
+        }
+        if (colorPicker.mouseClicked(mouseX, mouseY)) {
+            return true;
+        }
+        if (colorPicker.isOpen() && !colorPicker.popupContains(mouseX, mouseY)) {
+            colorPicker.close();
+            return true;
+        }
+
+        if (selectedPage.feature()) {
+            float searchWidth = Math.min(176, contentWidth * 0.32f);
+            float searchX = panelX + panelWidth - 22 - searchWidth;
+            float searchY = panelY + (1.0f - openAnimation()) * 18.0f + 23;
+            searchFocused = hovered(mouseX, mouseY, searchX, searchY, searchWidth, 29);
+            if (searchFocused) {
+                return true;
+            }
+        } else {

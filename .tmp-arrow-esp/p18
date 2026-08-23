@@ -1,0 +1,80 @@
+    }
+
+    private enum FrostedOption {
+        GLASSY("Glassy", "Amount of the world visible in glass", InterfaceConfig.MIN_GLASSY, InterfaceConfig.MAX_GLASSY) {
+            @Override
+            float value() {
+                return InterfaceConfig.glassy();
+            }
+
+            @Override
+            void set(double value) {
+                InterfaceConfig.setGlassy(value);
+            }
+        },
+        PASSES("Passes", "Blur quality and GPU workload", InterfaceConfig.MIN_PASSES, InterfaceConfig.MAX_PASSES) {
+            @Override
+            float value() {
+                return InterfaceConfig.passes();
+            }
+
+            @Override
+            void set(double value) {
+                InterfaceConfig.setPasses(value);
+            }
+        },
+        OFFSET("Offset", "Width of the frosted blur spread", InterfaceConfig.MIN_OFFSET, InterfaceConfig.MAX_OFFSET) {
+            @Override
+            float value() {
+                return InterfaceConfig.offset();
+            }
+
+            @Override
+            void set(double value) {
+                InterfaceConfig.setOffset(value);
+            }
+        };
+
+        private final String label;
+        private final String description;
+        private final float minimum;
+        private final float maximum;
+
+        FrostedOption(String label, String description, float minimum, float maximum) {
+            this.label = label;
+            this.description = description;
+            this.minimum = minimum;
+            this.maximum = maximum;
+        }
+
+        abstract float value();
+
+        abstract void set(double value);
+    }
+
+    /**
+     * A critically damped visual spring. The represented setting remains
+     * snapped to its configured step; only the rendered fill/knob interpolates.
+     */
+    private static final class SpringAnimation {
+        private boolean initialized;
+        private float value;
+        private float velocity;
+        private long lastUpdateAt;
+
+        float update(float target, float smoothTimeSeconds) {
+            long now = System.nanoTime();
+            if (!initialized) {
+                initialized = true;
+                value = target;
+                lastUpdateAt = now;
+                return value;
+            }
+
+            float deltaSeconds = clamp((now - lastUpdateAt) / 1_000_000_000.0f, 0.0f, 0.05f);
+            lastUpdateAt = now;
+            if (deltaSeconds <= 0.0f) {
+                return value;
+            }
+
+            float omega = 2.0f / Math.max(0.001f, smoothTimeSeconds);

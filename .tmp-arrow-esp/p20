@@ -1,0 +1,80 @@
+        boolean contains(double mouseX, double mouseY) {
+            return hovered(mouseX, mouseY, x, y, width, height);
+        }
+    }
+
+    private record FriendHit(FriendManager.Friend friend, float x, float y, float width, float height) {
+        boolean contains(double mouseX, double mouseY) {
+            return hovered(mouseX, mouseY, x, y, width, height);
+        }
+    }
+
+    private record FieldHit(float x, float y, float width, float height) {
+        boolean contains(double mouseX, double mouseY) {
+            return hovered(mouseX, mouseY, x, y, width, height);
+        }
+    }
+
+    private record ActionHit(String action, String tooltip, boolean helpOnly, float x, float y, float width, float height) {
+        boolean contains(double mouseX, double mouseY) {
+            return hovered(mouseX, mouseY, x, y, width, height);
+        }
+    }
+
+    private record ProfileHit(String name, float x, float y, float width, float height,
+                              float deleteX, float deleteY, float deleteWidth, float deleteHeight) {
+        boolean contains(double mouseX, double mouseY) {
+            return hovered(mouseX, mouseY, x, y, width, height);
+        }
+
+        boolean containsDelete(double mouseX, double mouseY) {
+            return deleteWidth > 0 && hovered(mouseX, mouseY, deleteX, deleteY, deleteWidth, deleteHeight);
+        }
+    }
+
+    private void runConfigAction(String action) {
+        ConfigProfileManager configs = ConfigProfileManager.getInstance();
+        try {
+            switch (action) {
+                case "Create" -> setConfigStatus("Created " + configs.create(configInput));
+                case "Save" -> {
+                    if (!configInput.isBlank()) {
+                        setConfigStatus("Saved " + configs.create(configInput));
+                    } else {
+                        configs.saveActive();
+                        setConfigStatus("Saved " + configs.active());
+                    }
+                }
+                case "Import" -> {
+                    configs.importFromPath(configInput);
+                    setConfigStatus("Imported " + configs.active());
+                }
+                case "Set Folder" -> {
+                    configs.setCloudDirectory(configInput);
+                    setConfigStatus("Cloud folder updated");
+                }
+                default -> {
+                }
+            }
+        } catch (RuntimeException exception) {
+            setConfigStatus(exception.getMessage() == null ? "Config action failed" : exception.getMessage());
+        }
+    }
+
+    private void runConfigLoad(String name) {
+        try {
+            ConfigProfileManager.getInstance().load(name);
+            setConfigStatus("Loaded " + name);
+        } catch (RuntimeException exception) {
+            setConfigStatus(exception.getMessage());
+        }
+    }
+
+    private void runConfigDelete(String name) {
+        try {
+            ConfigProfileManager.getInstance().delete(name);
+            setConfigStatus("Deleted " + name);
+        } catch (RuntimeException exception) {
+            setConfigStatus(exception.getMessage());
+        }
+    }

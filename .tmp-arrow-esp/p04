@@ -1,0 +1,80 @@
+        float headerOffset = (1.0f - pageEntrance) * 5.0f;
+        float headerAnimation = animation * pageEntrance;
+        bold.drawText(matrices, selectedPage.label(), headerX, y + 23 + headerOffset, 14.5f,
+            withAlpha(TEXT, Math.round(255 * headerAnimation)));
+        regular.drawText(matrices, selectedPage.description(), headerX, y + 43 + headerOffset, 8.7f,
+            withAlpha(MUTED, Math.round(255 * headerAnimation)));
+
+        if (!selectedPage.feature()) {
+            return;
+        }
+
+        float searchWidth = Math.min(176, contentWidth * 0.32f);
+        float searchX = panelX + panelWidth - 22 - searchWidth;
+        float searchY = y + 23;
+        boolean hovered = hovered(mouseX, mouseY, searchX, searchY, searchWidth, 29);
+        float focus = hoverAnimation(SEARCH_HOVER_KEY, hovered || searchFocused);
+        // Keep the idle search glass visually continuous with the navigation rail;
+        // focus adds the existing warm tint without turning the field into a dark inset.
+        Color searchColor = blend(SIDEBAR, color(51, 32, 49, SIDEBAR.getAlpha()), focus);
+        RenderUtil.RECT.draw(matrices, searchX, searchY, searchWidth, 29, 9,
+            withAlpha(searchColor, Math.round(SIDEBAR.getAlpha() * animation)));
+        RenderUtil.TEXTURE_RECT.draw(matrices, searchX + 9 - focus * 0.5f, searchY + 8, 13, 13, 0,
+            withAlpha(blend(MUTED, TEXT, focus * 0.45f), Math.round(235 * animation)), 0, 0, 1, 1, SEARCH_ICON);
+        float textX = searchX + 28;
+        long now = System.nanoTime();
+        int visibleLength = visibleSearchLength(now);
+        String visibleSearch = search.substring(0, visibleLength);
+        float textWidth = regular.getWidth(visibleSearch, 8.5f);
+        float textViewportWidth = searchWidth - 35;
+        float textOffset = Math.max(0, textWidth - textViewportWidth + 2);
+        GuiRenderer.getInstance().pushScissor(
+            textX * uiScale,
+            (searchY + 4) * uiScale,
+            textViewportWidth * uiScale,
+            21 * uiScale
+        );
+        if (!search.isEmpty()) {
+            float glyphX = textX - textOffset;
+            for (int index = 0; index < visibleLength; index++) {
+                String glyph = visibleSearch.substring(index, index + 1);
+                float fade = searchCharacterFade(index, now);
+                regular.drawText(matrices, glyph, glyphX, centeredTextY(searchY, 29, 8.5f), 8.5f,
+                    withAlpha(TEXT, Math.round(255 * animation * fade)));
+                glyphX += regular.getWidth(glyph, 8.5f);
+            }
+        } else if (!searchFocused) {
+            regular.drawText(matrices, "Search modules", textX, centeredTextY(searchY, 29, 8.5f), 8.5f,
+                withAlpha(DIM, Math.round(255 * animation)));
+        }
+        if (searchFocused && pulse()) {
+            float caretX = textX + textWidth - textOffset + 1;
+            RenderUtil.RECT.draw(matrices, caretX, searchY + 7, 1, 15, 0.5f,
+                withAlpha(TEXT, Math.round(245 * animation)));
+        }
+        GuiRenderer.getInstance().popScissor();
+    }
+
+    private void drawModulePage(MatrixStack matrices, int mouseX, int mouseY, float animation) {
+        List<GuiModule> modules = filteredModules();
+        float gap = 10;
+        float columnWidth = (contentWidth - gap) / 2;
+        float leftY = contentY + contentScroll;
+        float rightY = contentY + contentScroll;
+
+        for (int index = 0; index < modules.size(); index++) {
+            GuiModule module = modules.get(index);
+            boolean left = index % 2 == 0;
+            float x = contentX + (left ? 0 : columnWidth + gap);
+            float y = left ? leftY : rightY;
+            float entrance = pageEntrance(index + 1);
+            float cardAnimation = animation * entrance;
+            float drawY = y + (1.0f - entrance) * 7.0f;
+            boolean open = module == expandedModule;
+            float expansion = expansionAnimations
+                .computeIfAbsent(module, ignored -> new TimedAnimation())
+                .update(open ? 1.0f : 0.0f, EXPANSION_ANIMATION_NANOS);
+            float settingsHeight = module.settings().isEmpty() ? 0 : module.settings().size() * 39 + 11;
+            float cardHeight = 54 + settingsHeight * expansion;
+            boolean hovered = hovered(mouseX, mouseY, x, drawY, columnWidth, 54);
+            float hover = hoverAnimation(module, hovered);

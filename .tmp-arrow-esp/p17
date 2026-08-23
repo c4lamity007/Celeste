@@ -1,0 +1,80 @@
+            .computeIfAbsent(key, ignored -> new TimedAnimation(0.0f))
+            .update(hovered ? 1.0f : 0.0f, HOVER_ANIMATION_NANOS);
+    }
+
+    private float pageEntrance(int staggerIndex) {
+        long elapsed = System.nanoTime() - pageChangedAt - Math.max(0, staggerIndex) * PAGE_STAGGER_NANOS;
+        float t = clamp(elapsed / (float) PAGE_TRANSITION_NANOS, 0.0f, 1.0f);
+        return 1.0f - (float) Math.pow(1.0f - t, 4);
+    }
+
+    /**
+     * The custom font renderer accepts a top coordinate rather than a baseline.
+     * Keeping this calculation in one place gives pills, rows and buttons the
+     * same optical center instead of accumulating one-off offsets.
+     */
+    private static float centeredTextY(float y, float height, float fontSize) {
+        return y + (height - fontSize) * 0.5f - 0.2f;
+    }
+
+    private float settingsButtonY() {
+        return contentY + 5 + 2 * (82 + 10) + 5
+            + (1.0f - pageEntrance(FrostedOption.values().length + 1)) * 7.0f;
+    }
+
+    private float settingsButtonX() {
+        return contentX + (contentWidth - 157) / 2;
+    }
+
+    private float openAnimation() {
+        float elapsed = (System.nanoTime() - openedAt) / 260_000_000.0f;
+        float t = clamp(elapsed, 0, 1);
+        return 1 - (float) Math.pow(1 - t, 3);
+    }
+
+    private static boolean pulse() {
+        return (System.currentTimeMillis() / 500) % 2 == 0;
+    }
+
+    private static String keyName(int keyCode) {
+        if (keyCode == GLFW.GLFW_KEY_UNKNOWN) {
+            return "Unbound";
+        }
+        return InputUtil.Type.KEYSYM.createFromCode(keyCode).getLocalizedText().getString();
+    }
+
+    private static String sliderValue(double value) {
+        if (Math.abs(value - Math.rint(value)) < 0.0001) {
+            return Integer.toString((int) Math.rint(value));
+        }
+        return String.format(Locale.ROOT, "%.2f", value).replaceAll("0+$", "").replaceAll("\\.$", "");
+    }
+
+    private static String trim(String value, int maximum) {
+        return value.length() <= maximum ? value : value.substring(0, Math.max(0, maximum - 1)) + "...";
+    }
+
+    private static boolean hovered(double mouseX, double mouseY, float x, float y, float width, float height) {
+        return mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + height;
+    }
+
+    private static float clamp(float value, float minimum, float maximum) {
+        return Math.max(minimum, Math.min(maximum, value));
+    }
+
+    private static Color color(int red, int green, int blue, int alpha) {
+        return new Color(red, green, blue, alpha);
+    }
+
+    private static Color withAlpha(Color color, int alpha) {
+        return new Color(color.getRed(), color.getGreen(), color.getBlue(), Math.max(0, Math.min(255, alpha)));
+    }
+
+    private static Color blend(Color from, Color to, float progress) {
+        float t = clamp(progress, 0, 1);
+        return new Color(
+            Math.round(from.getRed() + (to.getRed() - from.getRed()) * t),
+            Math.round(from.getGreen() + (to.getGreen() - from.getGreen()) * t),
+            Math.round(from.getBlue() + (to.getBlue() - from.getBlue()) * t),
+            Math.round(from.getAlpha() + (to.getAlpha() - from.getAlpha()) * t)
+        );
