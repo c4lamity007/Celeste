@@ -5,6 +5,7 @@ import dev.c4lam.celeste.gui.model.GuiCatalog;
 import dev.c4lam.celeste.gui.model.GuiModule;
 import dev.c4lam.celeste.gui.model.GuiSetting;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.util.InputUtil;
@@ -59,6 +60,7 @@ public final class ModuleManager implements AutoCloseable {
         lastSnapshot = snapshot();
         ClientTickEvents.START_CLIENT_TICK.register(this::startTick);
         ClientTickEvents.END_CLIENT_TICK.register(this::endTick);
+        WorldRenderEvents.START_MAIN.register(context -> onRenderFrame());
     }
 
     public synchronized void register(ModuleFeature feature) {
@@ -76,6 +78,33 @@ public final class ModuleManager implements AutoCloseable {
 
     public GuiModule module(String name) {
         return findModule(name);
+    }
+
+    public synchronized Properties exportState() {
+        return properties();
+    }
+
+    public synchronized void importState(Properties properties) {
+        if (properties == null) {
+            return;
+        }
+        for (GuiModule module : GuiCatalog.modules()) {
+            String prefix = "module." + key(module.name());
+            String enabled = properties.getProperty(prefix + ".enabled");
+            if (enabled != null) {
+                module.setEnabled(Boolean.parseBoolean(enabled));
+            }
+            for (GuiSetting setting : module.settings()) {
+                apply(setting, properties.getProperty(prefix + ".setting." + key(setting.label())));
+            }
+        }
+        lastSnapshot = snapshot();
+        save(lastSnapshot);
+    }
+
+    public synchronized void saveNow() {
+        lastSnapshot = snapshot();
+        save(lastSnapshot);
     }
 
     private void startTick(MinecraftClient client) {
@@ -100,6 +129,27 @@ public final class ModuleManager implements AutoCloseable {
         GameplayFoundation.resolveRotations(client);
         actionTick(client);
         GameplayFoundation.executeActions(client);
+    }
+
+    private void onRenderFrame() {
+        if (!initialized) {
+            return;
+        }
+        MinecraftClient client = MinecraftClient.getInstance();
+        for (ModuleFeature feature : new ArrayList<>(features.values())) {
+            GuiModule module = findModule(feature.name());
+            if (module == null || !Boolean.TRUE.equals(active.get(key(feature.name())))) {
+                continue;
+            }
+            ModuleContext context = new ModuleContext(client, module);
+            try {
+                feature.onRenderFrame(context);
+            } catch (RuntimeException exception) {
+                LOGGER.error("Module {} failed during render frame", feature.name(), exception);
+                module.setEnabled(false);
+                disable(feature, context);
+            }
+        }
     }
 
     private void endTick(MinecraftClient client) {

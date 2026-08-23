@@ -1,5 +1,6 @@
 package dev.c4lam.celeste.gui;
 
+import dev.c4lam.celeste.config.ConfigProfileManager;
 import dev.c4lam.celeste.config.InterfaceConfig;
 import dev.c4lam.celeste.friend.FriendManager;
 import dev.c4lam.celeste.gui.model.CelestePage;
@@ -39,6 +40,7 @@ import java.util.Map;
 public final class CelesteScreen extends Screen {
     private static final Identifier LOGO = Identifier.of("celeste", "textures/gui/celeste-logo.png");
     private static final Identifier SEARCH_ICON = Identifier.of("celeste", "textures/gui/icons/search.png");
+    private static final Identifier HELP_ICON = Identifier.of("celeste", "textures/gui/icons/help.png");
     private static final long TOGGLE_ANIMATION_NANOS = 125_000_000L;
     private static final long EXPANSION_ANIMATION_NANOS = 180_000_000L;
     private static final long NAVIGATION_ANIMATION_NANOS = 210_000_000L;
@@ -77,6 +79,16 @@ public final class CelesteScreen extends Screen {
     private final List<SettingHit> settingHits = new ArrayList<>();
     private final List<ConfigHit> configHits = new ArrayList<>();
     private final List<FriendHit> friendHits = new ArrayList<>();
+    private final List<ProfileHit> profileHits = new ArrayList<>();
+    private final List<ActionHit> actionHits = new ArrayList<>();
+    private String configInput = "";
+    private boolean configFieldFocused;
+    private String configStatus = "";
+    private long configStatusUntil;
+    private FieldHit configFieldHit;
+    private String pendingTooltip = "";
+    private float pendingTooltipX;
+    private float pendingTooltipY;
     private final Map<Object, TimedAnimation> toggleAnimations = new IdentityHashMap<>();
     private final Map<Object, SpringAnimation> sliderAnimations = new IdentityHashMap<>();
     private final Map<GuiModule, TimedAnimation> expansionAnimations = new IdentityHashMap<>();
@@ -140,6 +152,10 @@ public final class CelesteScreen extends Screen {
         settingHits.clear();
         configHits.clear();
         friendHits.clear();
+        profileHits.clear();
+        actionHits.clear();
+        configFieldHit = null;
+        pendingTooltip = "";
 
         float animatedY = panelY + (1.0f - animation) * 18.0f;
         Color glassTop = withAlpha(PANEL_TOP, Math.round(PANEL_TOP.getAlpha() * animation));
@@ -185,6 +201,9 @@ public final class CelesteScreen extends Screen {
             drawUtilityPage(matrices, virtualMouseX, virtualMouseY, animation);
         }
         GuiRenderer.getInstance().popScissor();
+        if (!pendingTooltip.isEmpty()) {
+            drawHoverTooltip(matrices, pendingTooltipX, pendingTooltipY, pendingTooltip, animation);
+        }
 
         if (draggingSlider != null) {
             updateDraggedSlider(virtualMouseX);
@@ -569,48 +588,208 @@ public final class CelesteScreen extends Screen {
     }
 
     private void drawConfigsPage(MatrixStack matrices, int mouseX, int mouseY, float animation) {
-        float entrance = pageEntrance(1);
-        float opacity = animation * entrance;
+        ConfigProfileManager configs = ConfigProfileManager.getInstance();
         float x = contentX;
-        float y = contentY + 8 + (1.0f - entrance) * 8.0f;
         float width = contentWidth;
-        float height = Math.min(184, contentHeight - 16);
-        RenderUtil.BLUR_RECT.draw(matrices, x, y, width, height, new Vector4f(13),
-            withAlpha(color(44, 27, 43, 205), Math.round(205 * opacity)),
-            withAlpha(color(44, 27, 43, 205), Math.round(205 * opacity)),
-            withAlpha(color(18, 12, 21, 222), Math.round(222 * opacity)),
-            withAlpha(color(18, 12, 21, 222), Math.round(222 * opacity)),
+        float cursor = contentY + contentScroll + 8;
+        int card = 0;
+
+        float headerEntrance = pageEntrance(card++);
+        float headerOpacity = animation * headerEntrance;
+        float headerHeight = 72;
+        RenderUtil.BLUR_RECT.draw(matrices, x, cursor + (1.0f - headerEntrance) * 7.0f, width, headerHeight, new Vector4f(12),
+            withAlpha(color(44, 27, 43, 205), Math.round(205 * headerOpacity)),
+            withAlpha(color(44, 27, 43, 205), Math.round(205 * headerOpacity)),
+            withAlpha(color(18, 12, 21, 222), Math.round(222 * headerOpacity)),
+            withAlpha(color(18, 12, 21, 222), Math.round(222 * headerOpacity)),
             InterfaceConfig.glassTintMix());
+        Fonts.semibold().drawText(matrices, "Your configs", x + 16, cursor + 14, 10.4f,
+            withAlpha(TEXT, Math.round(255 * headerOpacity)));
+        Fonts.regular().drawText(matrices, "1. Name it   2. Save   3. Click a card to use it",
+            x + 16, cursor + 32, 6.6f, withAlpha(MUTED, Math.round(255 * headerOpacity)));
+        String status = !configStatus.isEmpty() && System.nanoTime() < configStatusUntil
+            ? configStatus : "Using  " + configs.active();
+        Fonts.regular().drawText(matrices, status, x + 16, cursor + 48, 6.4f,
+            withAlpha(!configStatus.isEmpty() && System.nanoTime() < configStatusUntil ? ACCENT : DIM,
+                Math.round(255 * headerOpacity)));
+        drawHelpChip(matrices, x + width - 28, cursor + 14, mouseX, mouseY, headerOpacity,
+            "Every config is a PNG. Save one for legit, one for crystal, then click a card to swap. Those PNGs are what a cloud host would use later.");
+        cursor += headerHeight + 10;
 
-        RenderUtil.GRADIENT_RECT.draw(matrices, x + 14, y + 14, 40, 40, 10,
-            withAlpha(color(255, 57, 151, 230), Math.round(230 * opacity)),
-            withAlpha(color(125, 35, 151, 230), Math.round(230 * opacity)),
-            withAlpha(color(83, 28, 107, 230), Math.round(230 * opacity)),
-            withAlpha(color(220, 43, 134, 230), Math.round(230 * opacity)));
-        Fonts.bold().drawCenteredText(matrices, "C", x + 34,
-            centeredTextY(y + 14, 40, 12.0f), 12.0f,
-            withAlpha(Color.WHITE, Math.round(255 * opacity)));
-        Fonts.semibold().drawText(matrices, "Current setup", x + 66, y + 17, 10.2f,
-            withAlpha(TEXT, Math.round(255 * opacity)));
-        Fonts.regular().drawText(matrices, "Celeste 1.0  •  saved locally", x + 66, y + 35, 7.0f,
-            withAlpha(MUTED, Math.round(255 * opacity)));
+        float fieldEntrance = pageEntrance(card++);
+        float fieldY = cursor + (1.0f - fieldEntrance) * 6.0f;
+        float fieldOpacity = animation * fieldEntrance;
+        boolean fieldHovered = hovered(mouseX, mouseY, x, fieldY, width - 26, 32);
+        RenderUtil.RECT.draw(matrices, x, fieldY, width - 26, 32, 8,
+            withAlpha(blend(CONTROL, CARD_HOVER, fieldHovered || configFieldFocused ? 1.0f : 0.0f),
+                Math.round(210 * fieldOpacity)));
+        String fieldText = configInput.isEmpty()
+            ? (configFieldFocused ? (pulse() ? "|" : "") : "Name this config, e.g. legit")
+            : configInput + (configFieldFocused && pulse() ? "|" : "");
+        Fonts.regular().drawText(matrices, trim(fieldText, 52), x + 12, centeredTextY(fieldY, 32, 7.4f), 7.4f,
+            withAlpha(configInput.isEmpty() && !configFieldFocused ? DIM : TEXT, Math.round(255 * fieldOpacity)));
+        configFieldHit = new FieldHit(x, fieldY, width - 26, 32);
+        drawHelpChip(matrices, x + width - 18, fieldY + 7, mouseX, mouseY, fieldOpacity,
+            "Type a short name to save, or paste a PNG path to import.");
+        cursor += 42;
 
-        float pillWidth = 52;
-        RenderUtil.RECT.draw(matrices, x + width - pillWidth - 14, y + 21, pillWidth, 20, 7,
-            withAlpha(color(60, 34, 55, 205), Math.round(205 * opacity)));
-        Fonts.semibold().drawCenteredText(matrices, "Auto-saved", x + width - pillWidth / 2 - 14,
-            centeredTextY(y + 21, 20, 6.5f), 6.5f,
-            withAlpha(ACCENT, Math.round(255 * opacity)));
+        ConfigAction[] actions = {
+            new ConfigAction("Save", "Save", "Saves what you are using right now as a PNG config."),
+            new ConfigAction("Import", "Import", "Loads a PNG from the path you pasted above."),
+            new ConfigAction("Set Folder", "Folder", "Sets the folder where config PNGs are stored.")
+        };
+        float buttonEntrance = pageEntrance(card++);
+        float buttonY = cursor + (1.0f - buttonEntrance) * 6.0f;
+        float buttonOpacity = animation * buttonEntrance;
+        float gap = 8;
+        float slotWidth = (width - gap * (actions.length - 1)) / actions.length;
+        for (int index = 0; index < actions.length; index++) {
+            ConfigAction action = actions[index];
+            float slotX = x + index * (slotWidth + gap);
+            float buttonWidth = slotWidth - 20;
+            boolean hovered = hovered(mouseX, mouseY, slotX, buttonY, buttonWidth, 28);
+            RenderUtil.RECT.draw(matrices, slotX, buttonY, buttonWidth, 28, 7,
+                withAlpha(hovered ? ACCENT_SOFT : CONTROL, Math.round(210 * buttonOpacity)));
+            Fonts.semibold().drawCenteredText(matrices, action.label, slotX + buttonWidth / 2,
+                centeredTextY(buttonY, 28, 6.8f), 6.8f, withAlpha(TEXT, Math.round(255 * buttonOpacity)));
+            actionHits.add(new ActionHit(action.id, action.help, false, slotX, buttonY, buttonWidth, 28));
+            if (hovered) {
+                setPendingTooltip(mouseX, mouseY, action.help);
+            }
+            drawHelpChip(matrices, slotX + slotWidth - 16, buttonY + 5, mouseX, mouseY, buttonOpacity, action.help);
+        }
+        cursor += 42;
 
-        float rowsY = y + 69;
-        int enabled = (int) GuiCatalog.modules().stream().filter(GuiModule::enabled).count();
-        drawConfigRow(matrices, x + 14, rowsY, width - 28, "Modules",
-            GuiCatalog.modules().size() + " installed", opacity);
-        drawConfigRow(matrices, x + 14, rowsY + 31, width - 28, "Enabled",
-            Integer.toString(enabled), opacity);
-        drawConfigRow(matrices, x + 14, rowsY + 62, width - 28, "Storage",
-            "Local and automatic", opacity);
-        targetScroll = 0;
+        cursor = drawConfigGrid(matrices, mouseX, mouseY, animation, card, x, width, cursor,
+            "Saved configs", "Each card is a PNG. Click one to switch.", configs.listProfiles(), configs.active());
+
+        float totalHeight = cursor - (contentY + contentScroll) + 12;
+        float minimum = Math.min(0, contentHeight - totalHeight);
+        targetScroll = Math.max(minimum, Math.min(0, targetScroll));
+    }
+
+    private float drawConfigGrid(
+        MatrixStack matrices,
+        int mouseX,
+        int mouseY,
+        float animation,
+        int stagger,
+        float x,
+        float width,
+        float cursor,
+        String title,
+        String hint,
+        List<String> names,
+        String activeName
+    ) {
+        float titleEntrance = pageEntrance(stagger);
+        Fonts.semibold().drawText(matrices, title, x, cursor + (1.0f - titleEntrance) * 4.0f, 8.0f,
+            withAlpha(TEXT, Math.round(255 * animation * titleEntrance)));
+        Fonts.regular().drawText(matrices, hint, x + Fonts.semibold().getWidth(title, 8.0f) + 8,
+            cursor + 1.4f + (1.0f - titleEntrance) * 4.0f, 6.2f,
+            withAlpha(DIM, Math.round(255 * animation * titleEntrance)));
+        cursor += 22;
+        if (names.isEmpty()) {
+            Fonts.regular().drawText(matrices, "None yet. Name it above, then press Save.",
+                x, cursor, 6.6f, withAlpha(MUTED, Math.round(255 * animation * titleEntrance)));
+            return cursor + 26;
+        }
+        float gap = 9;
+        float cardWidth = (width - gap * 2) / 3.0f;
+        float cardHeight = 58;
+        for (int index = 0; index < names.size(); index++) {
+            String name = names.get(index);
+            int column = index % 3;
+            int row = index / 3;
+            float cardX = x + column * (cardWidth + gap);
+            float cardY = cursor + row * (cardHeight + gap) + (1.0f - pageEntrance(stagger + 1 + index)) * 5.0f;
+            float opacity = animation * pageEntrance(stagger + 1 + index);
+            boolean active = name.equals(activeName);
+            boolean hovered = hovered(mouseX, mouseY, cardX, cardY, cardWidth, cardHeight);
+            RenderUtil.RECT.draw(matrices, cardX, cardY, cardWidth, cardHeight, 10,
+                withAlpha(active ? ACCENT_SOFT : hovered ? CARD_HOVER : CARD, Math.round(205 * opacity)));
+            Fonts.semibold().drawText(matrices, trim(name, 14), cardX + 10, cardY + 11, 7.6f,
+                withAlpha(TEXT, Math.round(255 * opacity)));
+            Fonts.regular().drawText(matrices, active ? "In use" : "Click to use",
+                cardX + 10, cardY + 30, 5.9f,
+                withAlpha(active ? ACCENT : MUTED, Math.round(255 * opacity)));
+            float deleteX = cardX + cardWidth - 22;
+            float deleteY = cardY + 8;
+            boolean deleteHovered = hovered(mouseX, mouseY, deleteX, deleteY, 14, 14);
+            Fonts.semibold().drawCenteredText(matrices, "x", deleteX + 7, centeredTextY(deleteY, 14, 6.4f), 6.4f,
+                withAlpha(deleteHovered ? TEXT : DIM, Math.round(255 * opacity)));
+            profileHits.add(new ProfileHit(name, cardX, cardY, cardWidth, cardHeight, deleteX, deleteY, 14, 14));
+            if (deleteHovered) {
+                setPendingTooltip(mouseX, mouseY, "Delete this PNG config.");
+            } else if (hovered) {
+                setPendingTooltip(mouseX, mouseY, active ? "This config is already active." : "Switch to this PNG config.");
+            }
+        }
+        int rows = (names.size() + 2) / 3;
+        return cursor + rows * cardHeight + Math.max(0, rows - 1) * gap + 14;
+    }
+
+    private void drawHelpChip(MatrixStack matrices, float x, float y, int mouseX, int mouseY,
+                              float opacity, String tooltip) {
+        float size = 16;
+        boolean hovered = hovered(mouseX, mouseY, x, y, size, size);
+        RenderUtil.RECT.draw(matrices, x, y, size, size, size / 2,
+            withAlpha(hovered ? ACCENT_SOFT : CONTROL, Math.round(220 * opacity)));
+        RenderUtil.TEXTURE_RECT.draw(matrices, x + 2.5f, y + 2.5f, 11, 11, 0,
+            withAlpha(hovered ? Color.WHITE : MUTED, Math.round(255 * opacity)), 0, 0, 1, 1, HELP_ICON);
+        actionHits.add(new ActionHit("help", tooltip, true, x, y, size, size));
+        if (hovered) {
+            setPendingTooltip(mouseX, mouseY, tooltip);
+        }
+    }
+
+    private void setPendingTooltip(float mouseX, float mouseY, String text) {
+        pendingTooltip = text;
+        pendingTooltipX = mouseX + 10;
+        pendingTooltipY = mouseY + 14;
+    }
+
+    private void drawHoverTooltip(MatrixStack matrices, float x, float y, String text, float animation) {
+        float paddingX = 8;
+        float paddingY = 6;
+        float font = 5.9f;
+        float maxWidth = Math.min(220, contentWidth - 16);
+        List<String> lines = wrapTooltip(text, font, maxWidth);
+        float width = paddingX * 2;
+        for (String line : lines) {
+            width = Math.max(width, Fonts.regular().getWidth(line, font) + paddingX * 2);
+        }
+        float height = paddingY * 2 + lines.size() * 8.2f;
+        float drawX = clamp(x, panelX + 8, panelX + panelWidth - width - 8);
+        float drawY = clamp(y, panelY + 8, panelY + panelHeight - height - 8);
+        RenderUtil.RECT.draw(matrices, drawX, drawY, width, height, 7,
+            withAlpha(color(16, 10, 18, 240), Math.round(240 * animation)));
+        for (int index = 0; index < lines.size(); index++) {
+            Fonts.regular().drawText(matrices, lines.get(index), drawX + paddingX, drawY + paddingY + index * 8.2f, font,
+                withAlpha(TEXT, Math.round(255 * animation)));
+        }
+    }
+
+    private static List<String> wrapTooltip(String text, float font, float maxWidth) {
+        List<String> lines = new ArrayList<>();
+        String[] words = text.split(" ");
+        StringBuilder line = new StringBuilder();
+        for (String word : words) {
+            String next = line.isEmpty() ? word : line + " " + word;
+            if (Fonts.regular().getWidth(next, font) > maxWidth && !line.isEmpty()) {
+                lines.add(line.toString());
+                line = new StringBuilder(word);
+            } else {
+                line = new StringBuilder(next);
+            }
+        }
+        if (!line.isEmpty()) {
+            lines.add(line.toString());
+        }
+        return lines;
+    }
+
+    private record ConfigAction(String id, String label, String help) {
     }
 
     private void drawConfigRow(MatrixStack matrices, float x, float y, float width,
@@ -783,6 +962,36 @@ public final class CelesteScreen extends Screen {
         }
 
         boolean insideContent = hovered(mouseX, mouseY, contentX, contentY, contentWidth, contentHeight);
+        if (insideContent && selectedPage == CelestePage.CONFIGS && click.button() == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+            if (configFieldHit != null && configFieldHit.contains(mouseX, mouseY)) {
+                configFieldFocused = true;
+                return true;
+            }
+            configFieldFocused = false;
+            for (ActionHit hit : actionHits) {
+                if (hit.contains(mouseX, mouseY)) {
+                    if (hit.helpOnly()) {
+                        setConfigStatus(hit.tooltip());
+                    } else {
+                        runConfigAction(hit.action());
+                    }
+                    return true;
+                }
+            }
+            for (ProfileHit hit : profileHits) {
+                if (hit.deleteWidth() > 0 && hit.containsDelete(mouseX, mouseY)) {
+                    runConfigDelete(hit.name());
+                    return true;
+                }
+                if (hit.contains(mouseX, mouseY)) {
+                    runConfigLoad(hit.name());
+                    return true;
+                }
+            }
+        } else if (selectedPage != CelestePage.CONFIGS) {
+            configFieldFocused = false;
+        }
+
         for (ConfigHit hit : configHits) {
             if (!insideContent || !hit.contains(mouseX, mouseY) || click.button() != GLFW.GLFW_MOUSE_BUTTON_LEFT) {
                 continue;
@@ -866,6 +1075,26 @@ public final class CelesteScreen extends Screen {
             listeningKeybind = null;
             return true;
         }
+        if (configFieldFocused) {
+            if ((input.key() == GLFW.GLFW_KEY_DELETE || input.key() == GLFW.GLFW_KEY_BACKSPACE)
+                && input.hasCtrl() && !configInput.isEmpty()) {
+                configInput = "";
+                return true;
+            }
+            if ((input.key() == GLFW.GLFW_KEY_DELETE || input.key() == GLFW.GLFW_KEY_BACKSPACE) && !configInput.isEmpty()) {
+                configInput = configInput.substring(0, configInput.length() - 1);
+                return true;
+            }
+            if (input.isEnter()) {
+                runConfigAction(configInput.contains("\\") || configInput.contains("/") || configInput.contains(".")
+                    ? "Import" : "Create");
+                return true;
+            }
+            if (input.isEscape()) {
+                configFieldFocused = false;
+                return true;
+            }
+        }
         if (searchFocused) {
             if ((input.key() == GLFW.GLFW_KEY_DELETE || input.key() == GLFW.GLFW_KEY_BACKSPACE)
                 && input.hasCtrl() && !search.isEmpty()) {
@@ -890,6 +1119,10 @@ public final class CelesteScreen extends Screen {
 
     @Override
     public boolean charTyped(CharInput input) {
+        if (configFieldFocused && input.isValidChar() && configInput.length() < 120) {
+            configInput += input.asString();
+            return true;
+        }
         if (searchFocused && input.isValidChar() && search.length() < 32) {
             appendSearch(input.asString());
             collapseAllModules();
@@ -1338,5 +1571,80 @@ public final class CelesteScreen extends Screen {
         boolean contains(double mouseX, double mouseY) {
             return hovered(mouseX, mouseY, x, y, width, height);
         }
+    }
+
+    private record FieldHit(float x, float y, float width, float height) {
+        boolean contains(double mouseX, double mouseY) {
+            return hovered(mouseX, mouseY, x, y, width, height);
+        }
+    }
+
+    private record ActionHit(String action, String tooltip, boolean helpOnly, float x, float y, float width, float height) {
+        boolean contains(double mouseX, double mouseY) {
+            return hovered(mouseX, mouseY, x, y, width, height);
+        }
+    }
+
+    private record ProfileHit(String name, float x, float y, float width, float height,
+                              float deleteX, float deleteY, float deleteWidth, float deleteHeight) {
+        boolean contains(double mouseX, double mouseY) {
+            return hovered(mouseX, mouseY, x, y, width, height);
+        }
+
+        boolean containsDelete(double mouseX, double mouseY) {
+            return deleteWidth > 0 && hovered(mouseX, mouseY, deleteX, deleteY, deleteWidth, deleteHeight);
+        }
+    }
+
+    private void runConfigAction(String action) {
+        ConfigProfileManager configs = ConfigProfileManager.getInstance();
+        try {
+            switch (action) {
+                case "Create" -> setConfigStatus("Created " + configs.create(configInput));
+                case "Save" -> {
+                    if (!configInput.isBlank()) {
+                        setConfigStatus("Saved " + configs.create(configInput));
+                    } else {
+                        configs.saveActive();
+                        setConfigStatus("Saved " + configs.active());
+                    }
+                }
+                case "Import" -> {
+                    configs.importFromPath(configInput);
+                    setConfigStatus("Imported " + configs.active());
+                }
+                case "Set Folder" -> {
+                    configs.setCloudDirectory(configInput);
+                    setConfigStatus("Cloud folder updated");
+                }
+                default -> {
+                }
+            }
+        } catch (RuntimeException exception) {
+            setConfigStatus(exception.getMessage() == null ? "Config action failed" : exception.getMessage());
+        }
+    }
+
+    private void runConfigLoad(String name) {
+        try {
+            ConfigProfileManager.getInstance().load(name);
+            setConfigStatus("Loaded " + name);
+        } catch (RuntimeException exception) {
+            setConfigStatus(exception.getMessage());
+        }
+    }
+
+    private void runConfigDelete(String name) {
+        try {
+            ConfigProfileManager.getInstance().delete(name);
+            setConfigStatus("Deleted " + name);
+        } catch (RuntimeException exception) {
+            setConfigStatus(exception.getMessage());
+        }
+    }
+
+    private void setConfigStatus(String message) {
+        configStatus = message == null ? "" : message;
+        configStatusUntil = System.nanoTime() + 4_000_000_000L;
     }
 }

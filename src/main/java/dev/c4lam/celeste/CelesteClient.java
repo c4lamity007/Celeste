@@ -1,6 +1,7 @@
 package dev.c4lam.celeste;
 
 import dev.c4lam.celeste.action.GameplayFoundation;
+import dev.c4lam.celeste.config.ConfigProfileManager;
 import dev.c4lam.celeste.config.InterfaceConfig;
 import dev.c4lam.celeste.friend.FriendManager;
 import dev.c4lam.celeste.gui.CelesteScreen;
@@ -42,6 +43,7 @@ public final class CelesteClient implements ClientModInitializer {
         ModuleManager modules = ModuleManager.getInstance();
         BuiltInFeatures.register(modules);
         modules.initialize();
+        ConfigProfileManager.getInstance().initialize();
         HudManager.getInstance().synchronizeModuleBackedElements();
 
         KeyBinding openGui = KeyBindingHelper.registerKeyBinding(new KeyBinding(

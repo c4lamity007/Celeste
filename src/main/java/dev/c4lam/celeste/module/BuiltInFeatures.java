@@ -15,7 +15,6 @@ import dev.c4lam.celeste.module.impl.combat.ShieldBreakFeature;
 import dev.c4lam.celeste.module.impl.combat.SmashGuideFeature;
 import dev.c4lam.celeste.module.impl.combat.SurroundFeature;
 import dev.c4lam.celeste.module.impl.combat.SwordAuraFeature;
-import dev.c4lam.celeste.module.impl.combat.TriggerFeature;
 import dev.c4lam.celeste.module.impl.combat.WindChargeFeature;
 import dev.c4lam.celeste.module.impl.combat.TBOTFeature;
 import dev.c4lam.celeste.module.impl.movement.ElytraFeature;
@@ -50,7 +49,6 @@ public final class BuiltInFeatures {
         modules.register(new SwordAuraFeature());
         modules.register(new AutoSwordFeature());
         modules.register(new ShieldBreakFeature());
-        modules.register(new TriggerFeature());
         modules.register(new TBOTFeature());
         modules.register(new MaceAuraFeature());
         modules.register(new WindChargeFeature());

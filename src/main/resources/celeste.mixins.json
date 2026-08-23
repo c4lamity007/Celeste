@@ -25,6 +25,7 @@
                    "KeyboardInputMoveFixMixin",
                    "LivingEntityRendererMixin",
                    "LivingEntityMoveFixMixin",
+                   "MinecraftClientAttackInvoker",
                    "PlayerInventorySlotMixin",
                    "module.KeyBindingAccessor",
                    "module.FullbrightLightmapMixin",

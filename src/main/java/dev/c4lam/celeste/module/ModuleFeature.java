@@ -28,6 +28,10 @@ public interface ModuleFeature {
     default void onEndTick(ModuleContext context) {
     }
 
+    /** Called once per rendered frame. Visible camera aim belongs here. */
+    default void onRenderFrame(ModuleContext context) {
+    }
+
     default void onWorldChanged(ModuleContext context) {
     }
 

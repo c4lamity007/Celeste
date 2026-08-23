@@ -211,20 +211,41 @@ public final class HudManager {
         RenderUtil.releaseBlur();
     }
 
-    public synchronized void saveLayout() {
+    public synchronized Properties exportLayout() {
         Properties values = new Properties();
         for (HudElementState state : elements) {
-            String prefix = state.type().name().toLowerCase(Locale.ROOT) + ".";
+            String prefix = "hud." + state.type().name().toLowerCase(Locale.ROOT) + ".";
             values.setProperty(prefix + "enabled", Boolean.toString(state.enabled()));
             values.setProperty(prefix + "x", Float.toString(state.x()));
             values.setProperty(prefix + "y", Float.toString(state.y()));
             values.setProperty(prefix + "scale", Float.toString(state.scale()));
         }
-        values.setProperty("target_hud.placement", targetPlacement.name());
+        values.setProperty("hud.target_hud.placement", targetPlacement.name());
+        return values;
+    }
+
+    public synchronized void importLayout(Properties values) {
+        if (values == null) {
+            return;
+        }
+        applyLayout(values);
+        saveLayout();
+    }
+
+    public synchronized void saveLayout() {
         try {
             Files.createDirectories(layoutFile.getParent());
             try (OutputStream output = Files.newOutputStream(layoutFile)) {
-                values.store(output, "Celeste HUD layout");
+                Properties stored = new Properties();
+                for (HudElementState state : elements) {
+                    String prefix = state.type().name().toLowerCase(Locale.ROOT) + ".";
+                    stored.setProperty(prefix + "enabled", Boolean.toString(state.enabled()));
+                    stored.setProperty(prefix + "x", Float.toString(state.x()));
+                    stored.setProperty(prefix + "y", Float.toString(state.y()));
+                    stored.setProperty(prefix + "scale", Float.toString(state.scale()));
+                }
+                stored.setProperty("target_hud.placement", targetPlacement.name());
+                stored.store(output, "Celeste HUD layout");
             }
         } catch (IOException ignored) {
         }
@@ -237,17 +258,24 @@ public final class HudManager {
         Properties values = new Properties();
         try (InputStream input = Files.newInputStream(layoutFile)) {
             values.load(input);
-            targetPlacement = TargetPlacement.parse(
-                values.getProperty("target_hud.placement"), TargetPlacement.HUD);
-            for (HudElementState state : elements) {
-                String prefix = state.type().name().toLowerCase(Locale.ROOT) + ".";
-                state.setEnabled(Boolean.parseBoolean(values.getProperty(prefix + "enabled", Boolean.toString(state.enabled()))));
-                float x = parseFloat(values.getProperty(prefix + "x"), state.x());
-                float y = parseFloat(values.getProperty(prefix + "y"), state.y());
-                state.setScale(parseFloat(values.getProperty(prefix + "scale"), 1.0f));
-                state.moveImmediately(x, y);
-            }
+            applyLayout(values);
         } catch (IOException ignored) {
+        }
+    }
+
+    private void applyLayout(Properties values) {
+        targetPlacement = TargetPlacement.parse(
+            values.getProperty("hud.target_hud.placement", values.getProperty("target_hud.placement")),
+            TargetPlacement.HUD);
+        for (HudElementState state : elements) {
+            String prefixed = "hud." + state.type().name().toLowerCase(Locale.ROOT) + ".";
+            String legacy = state.type().name().toLowerCase(Locale.ROOT) + ".";
+            String prefix = values.getProperty(prefixed + "enabled") != null ? prefixed : legacy;
+            state.setEnabled(Boolean.parseBoolean(values.getProperty(prefix + "enabled", Boolean.toString(state.enabled()))));
+            float x = parseFloat(values.getProperty(prefix + "x"), state.x());
+            float y = parseFloat(values.getProperty(prefix + "y"), state.y());
+            state.setScale(parseFloat(values.getProperty(prefix + "scale"), 1.0f));
+            state.moveImmediately(x, y);
         }
     }
 

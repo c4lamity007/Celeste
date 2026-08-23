@@ -97,9 +97,6 @@ public final class LungeSwapFeature extends InterceptFeature {
             return;
         }
         ItemStack weapon = client.player.getInventory().getStack(slot);
-        if (client.player.isBelowMinimumAttackCharge(weapon, 0)) {
-            return;
-        }
 
         LivingEntity directTarget = directTarget(client);
         if (client.crosshairTarget instanceof EntityHitResult && directTarget == null) {
@@ -129,7 +126,7 @@ public final class LungeSwapFeature extends InterceptFeature {
         }
         ItemStack stack = client.player.getInventory().getStack(plan.slot);
         PiercingWeaponComponent piercing = stack.get(DataComponentTypes.PIERCING_WEAPON);
-        if (piercing == null || client.player.isBelowMinimumAttackCharge(stack, 0)) {
+        if (piercing == null) {
             return;
         }
 

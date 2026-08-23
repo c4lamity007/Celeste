@@ -116,6 +116,30 @@ public final class InterfaceConfig {
         dirty = true;
     }
 
+    public static synchronized Properties exportState() {
+        Properties values = new Properties();
+        values.setProperty("interface.scale", Float.toString(scale));
+        values.setProperty("interface.glassy", Float.toString(glassy));
+        values.setProperty("interface.passes", Integer.toString(passes));
+        values.setProperty("interface.offset", Float.toString(offset));
+        return values;
+    }
+
+    public static synchronized void importState(Properties values) {
+        if (values == null) {
+            return;
+        }
+        scale = loadScale(values.getProperty("interface.scale", values.getProperty("scale")));
+        glassy = clamp(values.getProperty("interface.glassy", values.getProperty("glassy")),
+            DEFAULT_GLASSY, MIN_GLASSY, MAX_GLASSY, 0.1f);
+        passes = Math.round(clamp(values.getProperty("interface.passes", values.getProperty("passes")),
+            DEFAULT_PASSES, MIN_PASSES, MAX_PASSES, 1.0f));
+        offset = clamp(values.getProperty("interface.offset", values.getProperty("offset")),
+            DEFAULT_OFFSET, MIN_OFFSET, MAX_OFFSET, 1.0f);
+        dirty = true;
+        save();
+    }
+
     public static synchronized void close() {
         save();
     }

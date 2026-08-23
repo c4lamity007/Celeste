@@ -2,39 +2,61 @@ package dev.c4lam.celeste.module.impl.combat;
 
 import dev.c4lam.celeste.action.ActionScheduler;
 import dev.c4lam.celeste.friend.FriendManager;
-import dev.c4lam.celeste.mixin.module.KeyBindingAccessor;
+import dev.c4lam.celeste.mixin.MinecraftClientAttackInvoker;
 import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.module.ModuleFeature;
-import dev.c4lam.celeste.module.impl.combat.CombatLoadout;
-import dev.c4lam.celeste.module.impl.combat.Targeting;
-import dev.c4lam.celeste.rotation.Rotation;
-import dev.c4lam.celeste.rotation.RotationManager;
-import dev.c4lam.celeste.rotation.RotationTask;
-import dev.c4lam.celeste.rotation.MoveFixMode;
+import dev.c4lam.celeste.silent.SilentSlotManager;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
-import net.minecraft.client.option.KeyBinding;
-import net.minecraft.client.util.InputUtil;
-import net.minecraft.client.util.Window;
+import net.minecraft.component.DataComponentTypes;
+import net.minecraft.component.type.AttackRangeComponent;
+import net.minecraft.component.type.PiercingWeaponComponent;
 import net.minecraft.entity.Entity;
-import net.minecraft.entity.LivingEntity;
-import net.minecraft.util.hit.EntityHitResult;
-import net.minecraft.util.math.Vec3d;
-import net.minecraft.item.Items;
 import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.util.Hand;
-import org.lwjgl.glfw.GLFW;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.registry.tag.ItemTags;
+import net.minecraft.util.hit.EntityHitResult;
+import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.Box;
+import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.RaycastContext;
 
-import java.util.function.Predicate;
+import java.util.Random;
 
 /**
- * True Trigger Bot that automatically attacks when an entity is in crosshair
- * and conditions are met, without requiring the player to hold the attack button.
+ * Priv Client trigger bot: vanilla-crosshair attacks with sampled swing delay,
+ * optional crit/sprint waits, and an axe shield-break sequence.
  */
 public final class TBOTFeature implements ModuleFeature {
     private static final int PRIORITY = 100;
-    
-    private long lastAttackTime = 0;
+    private static final Random RANDOM = new Random();
+    private static final double DEFAULT_SWING_MIN = 72.0D;
+    private static final double DEFAULT_SWING_MAX = 96.0D;
+    private static final double DEFAULT_DELAY_MIN = 1.0D;
+    private static final double DEFAULT_DELAY_MAX = 2.0D;
+
+    private final FriendManager friends = FriendManager.getInstance();
+    private int tickCounter;
+    private int nextTick;
+    private double cooldownThreshold = 0.88D;
+    private EntityHitResult cachedHit;
+    private int cachedSlot = -1;
+    private float cachedYaw;
+    private float cachedPitch;
+    private Entity cachedCamera;
+    private boolean cacheReady;
+
+    private ShieldState shieldState = ShieldState.IDLE;
+    private int shieldOriginalSlot = -1;
+    private int shieldAxeSlot = -1;
+    private int shieldTargetId = -1;
+    private int shieldNextTick;
+
+    private enum ShieldState {
+        IDLE, WAIT_SWAP, WAIT_CLICK, WAIT_BACK
+    }
 
     @Override
     public String name() {
@@ -42,214 +64,355 @@ public final class TBOTFeature implements ModuleFeature {
     }
 
     @Override
-    public void onEnable(ModuleContext context) {
-        // No special enable logic needed
-    }
-
-    @Override
     public void onStartTick(ModuleContext context) {
+        tickCounter++;
+        cacheReady = false;
+        cachedHit = null;
         MinecraftClient client = context.client();
-        if (client == null || client.player == null || client.world == null || client.interactionManager == null) {
+        if (client.player == null || client.world == null || client.interactionManager == null
+            || client.currentScreen != null) {
+            resetShield(client.player, true);
             return;
         }
 
-        // Check activation key (-1 means always active)
-        int activationKey = context.keybind("Activation Key");
-        boolean shouldProcess = true;
-        if (activationKey != -1) {
-            Window window = client.getWindow();
-            if (window != null) {
-                shouldProcess = GLFW.glfwGetKey(window.getHandle(), activationKey) == GLFW.GLFW_PRESS;
-            } else {
-                shouldProcess = false;
-            }
-        }
-        
-        if (!shouldProcess) {
+        if (shieldState != ShieldState.IDLE) {
             return;
         }
 
-        // Get cooldown setting (with random variance if enabled)
-        double baseCooldown = context.slider("Cooldown", 0.1);
-        double cooldown = baseCooldown;
-        if (context.toggle("Random Delay", false)) {
-            double variance = context.slider("Delay Variance", 0.05);
-            if (variance > 0) {
-                cooldown += (Math.random() * 2 - 1) * variance;
-                cooldown = Math.max(0.0, cooldown); // Ensure non-negative
-            }
-        }
-        
-        // Prevent spamming
-        long now = System.nanoTime();
-        if (now - lastAttackTime < (long)(cooldown * 1_000_000_000)) {
+        if (isShielding(client.player)) {
             return;
         }
 
-        // Find target in crosshair
-        LivingEntity target = findTargetInCrosshair(client, context);
+        EntityHitResult attackHit = freshVanillaAttackPlayerHit(client);
+        PlayerEntity target = attackHit == null ? null : playerFrom(attackHit);
+        boolean noCooldownBreak = context.toggle("Shield Break No Cooldown", true);
+        if (isShielding(target) && noCooldownBreak && startShieldBreak(client, target)) {
+            scheduleAttack(context);
+            return;
+        }
+        if (tickCounter < nextTick) {
+            return;
+        }
         if (target == null) {
+            cooldownThreshold = sample(context, "Swing Delay Min", DEFAULT_SWING_MIN,
+                "Swing Delay Max", DEFAULT_SWING_MAX) / 100.0D;
             return;
         }
-
-        // Perform attack
-        performAttack(client, target, context);
-        
-        // Update last attack time
-        lastAttackTime = now;
+        if (isShielding(target) && startShieldBreak(client, target)) {
+            scheduleAttack(context);
+        }
     }
 
     @Override
     public void onActionTick(ModuleContext context) {
-        // TBOT doesn't need action tick logic - everything happens in onStartTick
+        MinecraftClient client = context.client();
+        if (client.player == null || client.world == null || client.interactionManager == null
+            || client.currentScreen != null) {
+            return;
+        }
+
+        if (shieldState != ShieldState.IDLE) {
+            tickShieldBreak(context);
+            return;
+        }
+        if (isShielding(client.player) || tickCounter < nextTick) {
+            return;
+        }
+
+        EntityHitResult attackHit = freshVanillaAttackPlayerHit(client);
+        PlayerEntity target = attackHit == null ? null : playerFrom(attackHit);
+        if (target == null || isShielding(target)) {
+            return;
+        }
+        if (!canRunTriggerAttack(client.player,
+            context.toggle("Prioritize Crits", true),
+            context.toggle("Prioritize Sprint", false))) {
+            return;
+        }
+        if (client.player.getAttackCooldownProgress(0.0F) < cooldownThreshold) {
+            return;
+        }
+        if (ActionScheduler.getInstance().hasExecuted()) {
+            return;
+        }
+        ActionScheduler.getInstance().submit(this, PRIORITY, actionClient -> {
+            if (attackVanillaCrosshairPlayer(actionClient, attackHit, target)) {
+                scheduleAttack(context);
+            }
+        });
     }
 
     @Override
     public void onDisable(ModuleContext context) {
-        // No special disable logic needed
+        resetShield(context.client().player, true);
+        nextTick = 0;
+        cooldownThreshold = 0.88D;
+        cacheReady = false;
+        cachedHit = null;
     }
 
-    private LivingEntity findTargetInCrosshair(MinecraftClient client, ModuleContext context) {
-        if (!(client.crosshairTarget instanceof EntityHitResult hit)) {
-            return null;
-        }
-        
-        Entity entity = hit.getEntity();
-        if (!(entity instanceof LivingEntity living)) {
-            return null;
-        }
-        
-        // Validate target based on settings
-        if (!isValidTarget(living, client, context)) {
-            return null;
-        }
-        
-        // Check range
-        double range = context.slider("Range", 4.5);
-        if (client.player.squaredDistanceTo(living) > range * range) {
-            return null;
-        }
-        
-        // Check FOV
-        double fov = context.slider("FOV", 60.0);
-        if (!Targeting.inFov(client.player, living, fov)) {
-            return null;
-        }
-        
-        return living;
+    @Override
+    public void onWorldChanged(ModuleContext context) {
+        onDisable(context);
     }
 
-    private boolean isValidTarget(LivingEntity target, MinecraftClient client, ModuleContext context) {
-        if (target == null || !target.isAlive()) {
+    private void scheduleAttack(ModuleContext context) {
+        cooldownThreshold = sample(context, "Swing Delay Min", DEFAULT_SWING_MIN,
+            "Swing Delay Max", DEFAULT_SWING_MAX) / 100.0D;
+        nextTick = tickCounter + Math.max(1, (int) Math.round(
+            sample(context, "Delay Ticks Min", DEFAULT_DELAY_MIN, "Delay Ticks Max", DEFAULT_DELAY_MAX)));
+    }
+
+    private static boolean canRunTriggerAttack(ClientPlayerEntity player, boolean prioritizeCrits,
+                                               boolean prioritizeRunHop) {
+        boolean midair = !player.isOnGround();
+        return (!midair || !prioritizeCrits || canCrit(player))
+            && (!midair || !prioritizeRunHop || player.isSprinting());
+    }
+
+    private static boolean canCrit(ClientPlayerEntity player) {
+        return !player.isOnGround() && player.fallDistance > 0.08F
+            && !player.isClimbing() && !player.isGliding();
+    }
+
+    private boolean startShieldBreak(MinecraftClient client, PlayerEntity target) {
+        int axeSlot = shieldBreakerAxeSlot(client, target);
+        if (axeSlot < 0) {
             return false;
         }
-        
-        // Check if it's the player themselves
-        if (target == client.player) {
-            return false;
-        }
-        
-        // Check friendlies
-        if (context.toggle("Ignore Friendlies", true) && 
-            target instanceof PlayerEntity player && 
-            FriendManager.getInstance().isFriend(player)) {
-            return false;
-        }
-        
-        // Check invisibles
-        if (context.toggle("Ignore Invisible", true) && 
-            target.isInvisible()) {
-            return false;
-        }
-        
-        // Check creatives
-        if (context.toggle("Ignore Creatives", true) && 
-            target instanceof PlayerEntity player && 
-            player.isCreative()) {
-            return false;
-        }
-        
-        // Check spectators
-        if (context.toggle("Ignore Spectators", true) && 
-            target instanceof PlayerEntity player && 
-            player.isSpectator()) {
-            return false;
-        }
-        
+        shieldOriginalSlot = client.player.getInventory().getSelectedSlot();
+        shieldAxeSlot = axeSlot;
+        shieldTargetId = target.getId();
+        shieldState = ShieldState.WAIT_SWAP;
+        shieldNextTick = tickCounter + millisecondsToTicks(90.0D);
         return true;
     }
 
-    private void performAttack(MinecraftClient client, LivingEntity target, ModuleContext context) {
-        // Request smooth rotation to target for better accuracy
-        double fov = context.slider("FOV", 60.0);
-        RotationManager.getInstance().submit(RotationTask.builder(
-                this, 
-                Rotation.lookingAt(client.player, Targeting.aimPoint(target))
-            )
-            .priority(PRIORITY)
-            .lifetimeTicks(1)
-            .smoothing(10.0F, 10.0F)  // Smooth but responsive
-            .sensitivityQuantized(true)
-            .moveFix(MoveFixMode.STRICT)
-            .build());
-        
-        // Perform the attack
-        ActionScheduler.getInstance().submit(this, PRIORITY, actionClient -> {
-            if (actionClient.player == null || 
-                actionClient.world == null || 
-                actionClient.interactionManager == null) {
-                return;
+    private int shieldBreakerAxeSlot(MinecraftClient client, PlayerEntity target) {
+        if (shieldState != ShieldState.IDLE
+            || !client.player.getMainHandStack().isIn(ItemTags.SWORDS)
+            || !isShielding(target)) {
+            return -1;
+        }
+        return findAxeSlot(client.player);
+    }
+
+    private static int findAxeSlot(ClientPlayerEntity player) {
+        int visible = player.getInventory().getSelectedSlot();
+        if (player.getInventory().getStack(visible).isIn(ItemTags.AXES)) {
+            return visible;
+        }
+        for (int slot = 0; slot < 9; slot++) {
+            if (player.getInventory().getStack(slot).isIn(ItemTags.AXES)) {
+                return slot;
             }
-            
-            // Re-validate target is still valid
-            LivingEntity currentTarget = findTargetInCrosshair(actionClient, 
-                    new ModuleContext(actionClient, context.module()));
-            if (currentTarget == null || !currentTarget.isAlive()) {
-                return;
+        }
+        return -1;
+    }
+
+    private void tickShieldBreak(ModuleContext context) {
+        if (tickCounter < shieldNextTick) {
+            return;
+        }
+        MinecraftClient client = context.client();
+        PlayerEntity target = findPlayerById(client, shieldTargetId);
+        if (target == null || !isValidPlayerTarget(client.player, target)
+            || client.player.squaredDistanceTo(target) > 4.35D * 4.35D) {
+            resetShield(client.player, true);
+            return;
+        }
+        if (!isShielding(target)) {
+            resetShield(client.player, true);
+            return;
+        }
+        switch (shieldState) {
+            case WAIT_SWAP -> {
+                if (!SilentSlotManager.getInstance().selectVisibleSlot(client, shieldAxeSlot)) {
+                    resetShield(client.player, true);
+                    return;
+                }
+                shieldState = ShieldState.WAIT_CLICK;
+                shieldNextTick = tickCounter + millisecondsToTicks(80.0D);
             }
-            
-            // Check if we can attack with current weapon
-            int slot = CombatLoadout.attackSlot(actionClient, currentTarget, CombatLoadout.Weapon.CURRENT);
-            if (slot < 0) {
-                return;
+            case WAIT_CLICK -> {
+                EntityHitResult attackHit = freshVanillaAttackPlayerHit(client);
+                if (!isSameAttackTarget(attackHit, target)) {
+                    resetShield(client.player, true);
+                    return;
+                }
+                if (ActionScheduler.getInstance().hasExecuted()) {
+                    return;
+                }
+                ActionScheduler.getInstance().submit(this, PRIORITY, actionClient -> {
+                    if (attackVanillaCrosshairPlayer(actionClient, attackHit, target)) {
+                        shieldState = ShieldState.WAIT_BACK;
+                        shieldNextTick = tickCounter + millisecondsToTicks(90.0D);
+                    }
+                });
             }
-            
-            // Check attack cooldown
-            double cooldown = context.slider("Cooldown", 0.1);
-            if (!Targeting.attackReady(actionClient, cooldown)) {
-                return;
+            case WAIT_BACK -> {
+                if (shieldOriginalSlot >= 0 && shieldOriginalSlot < 9) {
+                    SilentSlotManager.getInstance().selectVisibleSlot(client, shieldOriginalSlot);
+                }
+                resetShield(client.player, false);
             }
-            
-            // Perform silent swap if enabled
-            boolean swapped = false;
-            if (context.toggle("Silent Swap", true)) {
-                swapped = CombatLoadout.runWithSlot(
-                        this, 
-                        actionClient, 
-                        slot, 
-                        PRIORITY, 
-                        true, 
-                        () -> {
-                            actionClient.interactionManager.attackEntity(
-                                    actionClient.player, 
-                                    currentTarget
-                            );
-                            actionClient.player.swingHand(Hand.MAIN_HAND);
-                        }
-                );
-            } else {
-                // Normal attack without silent swap
-                actionClient.interactionManager.attackEntity(
-                        actionClient.player, 
-                        currentTarget
-                );
-                actionClient.player.swingHand(Hand.MAIN_HAND);
+            default -> resetShield(client.player, true);
+        }
+    }
+
+    private void resetShield(ClientPlayerEntity player, boolean restore) {
+        if (restore && player != null && shieldState != ShieldState.IDLE
+            && shieldOriginalSlot >= 0 && shieldOriginalSlot < 9) {
+            SilentSlotManager.getInstance().selectVisibleSlot(MinecraftClient.getInstance(), shieldOriginalSlot);
+        }
+        shieldState = ShieldState.IDLE;
+        shieldOriginalSlot = -1;
+        shieldAxeSlot = -1;
+        shieldTargetId = -1;
+        shieldNextTick = 0;
+    }
+
+    private EntityHitResult freshVanillaAttackPlayerHit(MinecraftClient client) {
+        ClientPlayerEntity self = client.player;
+        if (self == null || client.world == null || client.interactionManager == null) {
+            return null;
+        }
+        int selectedSlot = self.getInventory().getSelectedSlot();
+        Entity camera = client.getCameraEntity() == null ? self : client.getCameraEntity();
+        float cameraYaw = camera.getYaw();
+        float cameraPitch = camera.getPitch();
+        if (cacheReady && selectedSlot == cachedSlot && cachedCamera == camera
+            && cachedYaw == cameraYaw && cachedPitch == cameraPitch) {
+            return cachedHit;
+        }
+
+        HitResult result = self.getCrosshairTarget(1.0F, camera);
+        EntityHitResult hit = result instanceof EntityHitResult entityHit
+            && entityHit.getEntity() instanceof PlayerEntity target
+            && isValidPlayerTarget(self, target) ? entityHit : null;
+        if (hit != null) {
+            AttackRangeComponent attackRange = self.getMainHandStack().get(DataComponentTypes.ATTACK_RANGE);
+            if (attackRange != null && !attackRange.isWithinRange(self, hit.getPos())) {
+                hit = null;
             }
-            
-            // Mark swap if we used silent swap
-            if (swapped) {
-                CombatLoadout.markSwap(actionClient, swapped);
+        }
+        cacheReady = true;
+        cachedSlot = selectedSlot;
+        cachedCamera = camera;
+        cachedYaw = cameraYaw;
+        cachedPitch = cameraPitch;
+        cachedHit = hit;
+        return hit;
+    }
+
+    private boolean attackVanillaCrosshairPlayer(MinecraftClient client, EntityHitResult hit,
+                                                 PlayerEntity expected) {
+        if (client.player == null || !isSameAttackTarget(hit, expected)
+            || !isValidPlayerTarget(client.player, expected)) {
+            return false;
+        }
+        ClientPlayerEntity self = client.player;
+        ItemStack held = self.getMainHandStack();
+        if (self.isSpectator() || self.hasVehicle()
+            || !held.isItemEnabled(client.world.getEnabledFeatures())
+            || self.isBelowMinimumAttackCharge(held, 0)) {
+            return false;
+        }
+        AttackRangeComponent attackRange = held.get(DataComponentTypes.ATTACK_RANGE);
+        if (attackRange != null && !attackRange.isWithinRange(self, hit.getPos())) {
+            return false;
+        }
+        PiercingWeaponComponent piercing = held.get(DataComponentTypes.PIERCING_WEAPON);
+        if (piercing != null && client.interactionManager.hasLimitedAttackSpeed()
+            && piercingPathContainsFriend(client)) {
+            return false;
+        }
+        MinecraftClientAttackInvoker invoker = (MinecraftClientAttackInvoker) client;
+        if (invoker.celeste$getAttackCooldown() > 0) {
+            return false;
+        }
+        HitResult previous = client.crosshairTarget;
+        client.crosshairTarget = hit;
+        try {
+            invoker.celeste$invokeDoAttack();
+        } finally {
+            client.crosshairTarget = previous;
+        }
+        return true;
+    }
+
+    private boolean piercingPathContainsFriend(MinecraftClient client) {
+        if (client.player == null || client.world == null) {
+            return true;
+        }
+        Vec3d start = client.player.getEyePos();
+        Vec3d direction = client.player.getRotationVec(1.0F);
+        if (direction.lengthSquared() < 1.0E-8D) {
+            return true;
+        }
+        double range = 6.0D;
+        Vec3d end = start.add(direction.normalize().multiply(range));
+        HitResult block = client.world.raycast(new RaycastContext(
+            start, end, RaycastContext.ShapeType.COLLIDER,
+            RaycastContext.FluidHandling.NONE, client.player));
+        double maximumDistance = block.getType() == HitResult.Type.MISS
+            ? range * range : start.squaredDistanceTo(block.getPos());
+        for (PlayerEntity player : client.world.getPlayers()) {
+            if (!player.isAlive() || player.isRemoved() || !friends.isFriend(player)) {
+                continue;
             }
-        });
+            Box corridor = player.getBoundingBox().expand(0.35D);
+            var intersection = corridor.raycast(start, end);
+            if (intersection.isPresent()
+                && start.squaredDistanceTo(intersection.get()) <= maximumDistance + 1.0E-6D) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isValidPlayerTarget(ClientPlayerEntity self, PlayerEntity target) {
+        return self != null && target != null && target != self && target.isAlive()
+            && !target.isRemoved() && !target.isSpectator() && !target.isCreative()
+            && target.isAttackable() && !friends.isFriend(target);
+    }
+
+    private static boolean isSameAttackTarget(EntityHitResult hit, PlayerEntity expected) {
+        return hit != null && expected != null && hit.getEntity().getId() == expected.getId();
+    }
+
+    private static PlayerEntity playerFrom(EntityHitResult hit) {
+        return hit.getEntity() instanceof PlayerEntity player ? player : null;
+    }
+
+    private static PlayerEntity findPlayerById(MinecraftClient client, int id) {
+        if (client.world == null) {
+            return null;
+        }
+        Entity entity = client.world.getEntityById(id);
+        return entity instanceof PlayerEntity player ? player : null;
+    }
+
+    private static boolean isShielding(PlayerEntity target) {
+        if (target == null) {
+            return false;
+        }
+        boolean holdingShield = target.getMainHandStack().isOf(Items.SHIELD)
+            || target.getOffHandStack().isOf(Items.SHIELD);
+        return holdingShield && (target.isBlocking()
+            || target.isUsingItem() && target.getActiveItem().isOf(Items.SHIELD));
+    }
+
+    private static double sample(ModuleContext context, String minLabel, double minFallback,
+                                 String maxLabel, double maxFallback) {
+        double min = context.slider(minLabel, minFallback);
+        double max = context.slider(maxLabel, maxFallback);
+        double low = Math.min(min, max);
+        double high = Math.max(min, max);
+        return low + RANDOM.nextDouble() * Math.max(0.0D, high - low);
+    }
+
+    private static int millisecondsToTicks(double milliseconds) {
+        return Math.max(1, (int) Math.ceil(Math.max(0.0D, milliseconds) / 50.0D));
     }
 }
