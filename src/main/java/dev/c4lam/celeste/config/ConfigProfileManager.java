@@ -1,5 +1,7 @@
 package dev.c4lam.celeste.config;
 
+import dev.c4lam.celeste.gui.model.GuiCatalog;
+import dev.c4lam.celeste.gui.model.GuiModule;
 import dev.c4lam.celeste.hud.HudManager;
 import dev.c4lam.celeste.module.ModuleManager;
 import net.fabricmc.loader.api.FabricLoader;
@@ -54,6 +56,7 @@ public final class ConfigProfileManager {
         if (listProfiles().isEmpty()) {
             create(DEFAULT_PROFILE);
         }
+        ConfigLibrary.getInstance().initialize();
         initialized = true;
     }
 
@@ -319,6 +322,85 @@ public final class ConfigProfileManager {
         } catch (IOException exception) {
             throw new IllegalStateException("Could not encode config", exception);
         }
+    }
+
+    public record ConfigEntry(String name, long modifiedMillis) {
+    }
+
+    public synchronized List<ConfigEntry> listEntries() {
+        List<ConfigEntry> entries = new ArrayList<>();
+        if (!Files.isDirectory(configsDir)) {
+            return entries;
+        }
+        try (var stream = Files.list(configsDir)) {
+            stream.filter(path -> path.getFileName().toString().toLowerCase(Locale.ROOT).endsWith(".png"))
+                .sorted((left, right) -> left.getFileName().toString().compareToIgnoreCase(right.getFileName().toString()))
+                .forEach(path -> {
+                    String name = stripExtension(path.getFileName().toString(), ".png");
+                    if (name.isBlank()) {
+                        return;
+                    }
+                    long modified = 0L;
+                    try {
+                        modified = Files.getLastModifiedTime(path).toMillis();
+                    } catch (IOException ignored) {
+                    }
+                    entries.add(new ConfigEntry(name, modified));
+                });
+        } catch (IOException exception) {
+            LOGGER.error("Could not list configs", exception);
+        }
+        return entries;
+    }
+
+    public synchronized List<String> enabledModules(String rawName) {
+        String name = sanitize(rawName);
+        Path file = configFile(name);
+        if (!Files.isRegularFile(file)) {
+            return List.of();
+        }
+        try {
+            return enabledFrom(readPng(file));
+        } catch (RuntimeException exception) {
+            LOGGER.warn("Could not read modules from {}", file, exception);
+            return List.of();
+        }
+    }
+
+    public synchronized String importSnapshot(String rawName, Properties snapshot) {
+        String name = sanitize(rawName);
+        if (name.isEmpty()) {
+            name = "imported";
+        }
+        String candidate = name;
+        int suffix = 2;
+        while (Files.isRegularFile(configFile(candidate))) {
+            candidate = name + "-" + suffix++;
+        }
+        Properties copy = new Properties();
+        if (snapshot != null) {
+            copy.putAll(snapshot);
+        }
+        writePng(configFile(candidate), copy);
+        return candidate;
+    }
+
+    public Path rootDirectory() {
+        return root;
+    }
+
+    static List<String> enabledFrom(Properties properties) {
+        List<String> names = new ArrayList<>();
+        if (properties == null) {
+            return names;
+        }
+        for (GuiModule module : GuiCatalog.modules()) {
+            String key = module.name().toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "_").replaceAll("^_|_$", "");
+            if (Boolean.parseBoolean(properties.getProperty("module." + key + ".enabled"))) {
+                names.add(module.name());
+            }
+        }
+        return names;
     }
 
     static String sanitize(String raw) {
