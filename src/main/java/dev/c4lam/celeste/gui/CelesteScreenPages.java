@@ -2,6 +2,7 @@ package dev.c4lam.celeste.gui;
 
 import static dev.c4lam.celeste.gui.CelesteScreenTypes.*;
 
+import dev.c4lam.celeste.config.InterfaceConfig;
 import dev.c4lam.celeste.friend.FriendManager;
 import dev.c4lam.celeste.gui.model.CelestePage;
 import dev.c4lam.celeste.render.RenderUtil;
