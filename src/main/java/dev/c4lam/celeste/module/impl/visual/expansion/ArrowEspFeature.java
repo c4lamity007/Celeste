@@ -12,17 +12,13 @@ import net.minecraft.util.Identifier;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.RotationAxis;
 import net.minecraft.util.math.Vec3d;
-import org.joml.Quaternionf;
-import org.joml.Vector3f;
 
 import java.awt.Color;
 
-/** Off-screen direction arrows for nearby players. */
+/** Direction arrows for nearby players. Always drawn, including on-screen. */
 public final class ArrowEspFeature implements ModuleFeature {
     private static final int MAX_ARROWS = 64;
     private static final int MAX_PLAYER_VISITS = 256;
-    private static final float ON_SCREEN_MARGIN = 36.0F;
-    private static final float BEHIND_Z = -0.08F;
     private static final int DEFAULT_COLOR = 0xFF4FA3;
     private volatile boolean enabled;
     private volatile double range = 96.0D;
@@ -69,7 +65,6 @@ public final class ArrowEspFeature implements ModuleFeature {
         matrices.loadIdentity();
         Vec3d camera = client.gameRenderer.getCamera().getCameraPos();
         float cameraYaw = client.gameRenderer.getCamera().getYaw();
-        float tickProgress = client.getRenderTickCounter().getTickProgress(true);
         double maxRange = range;
         double rangeSquared = maxRange * maxRange;
         float centerX = width * 0.5F;
@@ -87,9 +82,6 @@ public final class ArrowEspFeature implements ModuleFeature {
             }
             double distanceSquared = self.squaredDistanceTo(player);
             if (distanceSquared > rangeSquared || distanceSquared < 1.0E-5D) {
-                continue;
-            }
-            if (isOnScreen(client, player, tickProgress, width, height)) {
                 continue;
             }
 
@@ -128,35 +120,6 @@ public final class ArrowEspFeature implements ModuleFeature {
             matrices.pop();
             count++;
         }
-    }
-
-    private static boolean isOnScreen(
-        MinecraftClient client,
-        AbstractClientPlayerEntity player,
-        float tickProgress,
-        float width,
-        float height
-    ) {
-        Vec3d mid = player.getLerpedPos(tickProgress).add(0.0D, player.getHeight() * 0.5D, 0.0D);
-        var camera = client.gameRenderer.getCamera();
-        Vec3d cameraPos = camera.getCameraPos();
-        Vector3f view = new Vector3f(
-            (float) (mid.x - cameraPos.x),
-            (float) (mid.y - cameraPos.y),
-            (float) (mid.z - cameraPos.z)
-        );
-        new Quaternionf(camera.getRotation()).conjugate().transform(view);
-        if (view.z >= BEHIND_Z) {
-            return false;
-        }
-        float fov = client.options.getFov().getValue();
-        float tanHalf = (float) Math.tan(Math.toRadians(Math.max(1.0D, fov)) * 0.5D);
-        float ndcX = view.x / -view.z / (tanHalf * (width / height));
-        float ndcY = view.y / -view.z / tanHalf;
-        float screenX = (ndcX * 0.5F + 0.5F) * width;
-        float screenY = (1.0F - (ndcY * 0.5F + 0.5F)) * height;
-        return screenX >= ON_SCREEN_MARGIN && screenX <= width - ON_SCREEN_MARGIN
-            && screenY >= ON_SCREEN_MARGIN && screenY <= height - ON_SCREEN_MARGIN;
     }
 
     private void update(ModuleContext context) {
