@@ -1,0 +1,185 @@
+package dev.c4lam.celeste.module.impl.movement;
+
+import dev.c4lam.celeste.action.ActionScheduler;
+import dev.c4lam.celeste.friend.FriendManager;
+import dev.c4lam.celeste.module.ModuleContext;
+import dev.c4lam.celeste.module.ModuleFeature;
+import dev.c4lam.celeste.rotation.Rotation;
+import dev.c4lam.celeste.rotation.RotationManager;
+import dev.c4lam.celeste.rotation.RotationTask;
+import dev.c4lam.celeste.rotation.MoveFixMode;
+import dev.c4lam.celeste.silent.SilentSlotManager;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.network.ClientPlayerEntity;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.util.hit.EntityHitResult;
+import net.minecraft.util.hit.HitResult;
+import net.minecraft.util.math.Vec3d;
+import net.minecraft.world.RaycastContext;
+import org.lwjgl.glfw.GLFW;
+
+public final class TBOTFeature implements ModuleFeature {
+    private static final int PRIORITY = 150;
+    
+    private double teleportRange = 5.0D;
+    private double teleportOffsetY = 0.0D;
+    private double teleportOffsetXZ = 1.5D;
+    private boolean teleportBehind = true;
+    private int teleportDelay = 5;
+    private int key = GLFW.GLFW_KEY_B;
+    private int lastTeleportAge = Integer.MIN_VALUE;
+    
+    @Override
+    public String name() {
+        return "TBOT";
+    }
+
+    @Override
+    public void onEnable(ModuleContext context) {
+        // No special enable logic needed
+    }
+
+    @Override
+    public void onStartTick(ModuleContext context) {
+        MinecraftClient client = context.client();
+        if (client.player == null || client.world == null || client.interactionManager == null) {
+            return;
+        }
+
+        // Check if TBOT key is pressed
+        boolean keyDown = isKeyDown(client);
+        if (!keyDown) {
+            return;
+        }
+
+        // Prevent spamming
+        if (client.player.age - lastTeleportAge < teleportDelay) {
+            return;
+        }
+
+        // Find target entity
+        LivingEntity target = findTarget(client);
+        if (target == null) {
+            return;
+        }
+
+        // Calculate teleport position
+        Vec3d teleportPos = calculateTeleportPosition(client.player, target);
+        if (teleportPos == null) {
+            return;
+        }
+
+        // Request rotation to target for better accuracy
+        RotationManager.getInstance().submit(RotationTask.builder(this, 
+                new Rotation(client.player.getYaw(), client.player.getPitch()))
+            .priority(PRIORITY)
+            .lifetimeTicks(1)
+            .smoothing(180.0F, 180.0F)
+            .sensitivityQuantized(true)
+            .moveFix(MoveFixMode.STRICT)
+            .build());
+
+        // Perform teleport
+        ActionScheduler.getInstance().submit(this, PRIORITY, teleportClient -> {
+            if (teleportClient.player == null || teleportClient.world == null) {
+                return;
+            }
+            
+            // Check if target is still valid
+            LivingEntity currentTarget = findTarget(teleportClient);
+            if (currentTarget == null || !currentTarget.isAlive()) {
+                return;
+            }
+            
+            // Recalculate position based on current target
+            Vec3d currentPos = calculateTeleportPosition(teleportClient.player, currentTarget);
+            if (currentPos == null) {
+                return;
+            }
+            
+             // Perform the teleport
+             teleportClient.player.setPos(currentPos.x, currentPos.y, currentPos.z);
+            
+            lastTeleportAge = teleportClient.player.age;
+        });
+    }
+
+    @Override
+    public void onActionTick(ModuleContext context) {
+        // TBOT doesn't need action tick logic
+    }
+
+    @Override
+    public void onDisable(ModuleContext context) {
+        // No special disable logic needed
+    }
+
+    private LivingEntity findTarget(MinecraftClient client) {
+        if (client.player == null || client.world == null) {
+            return null;
+        }
+
+        // First check crosshair
+        if (client.crosshairTarget instanceof EntityHitResult hit) {
+            Entity entity = hit.getEntity();
+             if (entity instanceof LivingEntity living 
+                 && living != client.player 
+                 && living.isAlive() 
+                 && (!(living instanceof PlayerEntity) || !FriendManager.getInstance().isFriend((PlayerEntity) living))) {
+                return living;
+            }
+        }
+
+        // Then check nearby entities
+        double range = teleportRange + teleportOffsetXZ;
+        return client.world.getPlayers().stream()
+                .filter(p -> p != client.player 
+                        && p.isAlive() 
+                        && !FriendManager.getInstance().isFriend(p)
+                        && client.player.squaredDistanceTo(p) <= range * range)
+                .findAny()
+                .orElse(null);
+    }
+
+    private Vec3d calculateTeleportPosition(PlayerEntity player, LivingEntity target) {
+        if (player == null || target == null) {
+            return null;
+        }
+
+        Vec3d targetPos = target.getBoundingBox().getCenter();
+        Vec3d playerPos = player.getBoundingBox().getCenter();
+
+        // Calculate direction from target to player
+        Vec3d toPlayer = playerPos.subtract(targetPos);
+        if (toPlayer.lengthSquared() < 1.0E-8D) {
+            toPlayer = new Vec3d(1.0D, 0.0D, 0.0D); // Default direction if too close
+        }
+        toPlayer = toPlayer.normalize();
+
+        Vec3d offset;
+        if (teleportBehind) {
+            // Teleport behind the target
+            offset = toPlayer.multiply(-teleportOffsetXZ);
+        } else {
+            // Teleport to the side (simplified - to the right)
+            Vec3d up = new Vec3d(0.0D, 1.0D, 0.0D);
+            Vec3d right = toPlayer.crossProduct(up).normalize();
+            offset = right.multiply(teleportOffsetXZ);
+        }
+
+        // Apply Y offset
+        offset = offset.add(0.0D, teleportOffsetY, 0.0D);
+
+        return targetPos.add(offset);
+    }
+
+    private boolean isKeyDown(MinecraftClient client) {
+        if (key < 0 || client.getWindow() == null) {
+            return false;
+        }
+        return org.lwjgl.glfw.GLFW.glfwGetKey(client.getWindow().getHandle(), key)
+                == GLFW.GLFW_PRESS;
+    }
+}

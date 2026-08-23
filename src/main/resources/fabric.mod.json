@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "celeste",
+  "version": "${version}",
+  "name": "Celeste Client",
+  "description": "A focused, clean-room anarchy client for Minecraft 1.21.11.",
+  "authors": [
+    "c4lam"
+  ],
+  "license": "All-Rights-Reserved",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "dev.c4lam.celeste.CelesteClient"
+    ]
+  },
+  "mixins": [
+    "celeste.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.3",
+    "minecraft": "~1.21.11",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}

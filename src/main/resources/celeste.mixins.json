@@ -1,0 +1,41 @@
+﻿{
+    "required":  true,
+    "minVersion":  "0.8",
+    "package":  "dev.c4lam.celeste.mixin",
+    "compatibilityLevel":  "JAVA_21",
+    "priority":  2000,
+    "client":  [
+                   "ChatScreenMediaMixin",
+                   "BoatFlightClientPlayerMixin",
+                   "BoatFlightCommonNetworkMixin",
+                   "BoatFlightConnectionMixin",
+                   "BoatFlightMinecraftClientMixin",
+                   "BoatFlightNetworkMixin",
+                   "ClientPlayNetworkHandlerTimeMixin",
+                   "ClientPlayerEntityRotationMixin",
+                   "ClientPlayerInteractionManagerAccessor",
+                   "ClientPlayerInteractionManagerRotationMixin",
+                   "ClientPlayerInteractionManagerSlotMixin",
+                   "EntityMoveFixMixin",
+                   "FakeFlyCameraMixin",
+                   "FakeFlyEntityRendererMixin",
+                   "GameRendererMixin",
+                   "InGameHudAccessor",
+                   "InGameHudMixin",
+                   "KeyboardInputMoveFixMixin",
+                   "LivingEntityRendererMixin",
+                   "LivingEntityMoveFixMixin",
+                   "PlayerInventorySlotMixin",
+                   "module.KeyBindingAccessor",
+                   "module.FullbrightLightmapMixin",
+                   "module.VisualSwingDurationMixin",
+                   "expansion.SwordExpansionMinecraftClientMixin",
+                   "expansion.SwordExpansionInteractionManagerMixin",
+                   "expansion.KeepSprintAttackMixin",
+                   "expansion.inventory.InventoryExpansionHandledScreenAccessor",
+                   "expansion.inventory.MinecraftClientUseInvoker"
+               ],
+    "injectors":  {
+                      "defaultRequire":  1
+                  }
+}

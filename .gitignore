@@ -1,0 +1,12 @@
+.gradle/
+build/
+out/
+.idea/
+*.iml
+*.bak
+*.orig
+*.new
+
+run/
+logs/
+*.log

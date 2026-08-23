@@ -1,0 +1,30 @@
+package dev.redstones.mediaplayerinfo.impl.win;
+
+import dev.redstones.mediaplayerinfo.IMediaSession;
+import dev.redstones.mediaplayerinfo.MediaInfo;
+
+/** Exact JNI method/constructor shape exported by MediaPlayerInfo.dll. */
+public final class WindowsMediaSession implements IMediaSession {
+    private final MediaInfo media;
+    private final String owner;
+    private final int index;
+    public static int cycle = -1;
+
+    public WindowsMediaSession(MediaInfo media, String owner, int index) {
+        this.media = media;
+        this.owner = owner == null ? "System media" : owner;
+        this.index = index;
+    }
+
+    @Override public MediaInfo getMedia() { return media; }
+    @Override public String getOwner() { return owner; }
+    public int getIndex() { return index; }
+    @Override public native void play();
+    @Override public native void pause();
+    @Override public native void playPause();
+    @Override public native void stop();
+    @Override public native void next();
+    @Override public native void previous();
+    @Override public native void swapCycle();
+    @Override public native int getCycleType();
+}
