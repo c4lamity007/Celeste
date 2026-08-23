@@ -32,33 +32,20 @@ enum FrostedOption {
     final float minimum;
     final float maximum;
     FrostedOption(String label, String description, float minimum, float maximum) {
-        this.label = label;
-        this.description = description;
-        this.minimum = minimum;
-        this.maximum = maximum;
+        this.label = label; this.description = description; this.minimum = minimum; this.maximum = maximum;
     }
     abstract float value();
     abstract void set(double value);
 }
 
 final class SpringAnimation {
-    private boolean initialized;
-    private float value;
-    private float velocity;
-    private long lastUpdateAt;
+    private boolean initialized; private float value; private float velocity; private long lastUpdateAt;
     float update(float target, float smoothTimeSeconds) {
         long now = System.nanoTime();
-        if (!initialized) {
-            initialized = true;
-            value = target;
-            lastUpdateAt = now;
-            return value;
-        }
+        if (!initialized) { initialized = true; value = target; lastUpdateAt = now; return value; }
         float deltaSeconds = CelesteScreenTypes.clamp((now - lastUpdateAt) / 1_000_000_000.0f, 0.0f, 0.05f);
         lastUpdateAt = now;
-        if (deltaSeconds <= 0.0f) {
-            return value;
-        }
+        if (deltaSeconds <= 0.0f) return value;
         float omega = 2.0f / Math.max(0.001f, smoothTimeSeconds);
         float x = omega * deltaSeconds;
         float decay = 1.0f / (1.0f + x + 0.48f * x * x + 0.235f * x * x * x);
@@ -66,51 +53,26 @@ final class SpringAnimation {
         float temporary = (velocity + omega * change) * deltaSeconds;
         velocity = (velocity - omega * temporary) * decay;
         value = target + (change + temporary) * decay;
-        if (Math.abs(value - target) < 0.0001f && Math.abs(velocity) < 0.0001f) {
-            value = target;
-            velocity = 0.0f;
-        }
+        if (Math.abs(value - target) < 0.0001f && Math.abs(velocity) < 0.0001f) { value = target; velocity = 0.0f; }
         return CelesteScreenTypes.clamp(value, 0.0f, 1.0f);
     }
 }
 
 final class TimedAnimation {
-    private boolean initialized;
-    private float start;
-    private float value;
-    private float target;
-    private long startedAt;
+    private boolean initialized; private float start; private float value; private float target; private long startedAt;
     TimedAnimation() {}
-    TimedAnimation(float initialValue) {
-        initialized = true;
-        start = initialValue;
-        value = initialValue;
-        target = initialValue;
-        startedAt = System.nanoTime();
-    }
+    TimedAnimation(float initialValue) { initialized = true; start = value = target = initialValue; startedAt = System.nanoTime(); }
     float update(float requestedTarget, long durationNanos) {
         long now = System.nanoTime();
-        if (!initialized) {
-            initialized = true;
-            start = requestedTarget;
-            value = requestedTarget;
-            target = requestedTarget;
-            startedAt = now;
-            return value;
-        }
+        if (!initialized) { initialized = true; start = value = target = requestedTarget; startedAt = now; return value; }
         value = sample(now, durationNanos);
-        if (Float.compare(requestedTarget, target) != 0) {
-            start = value;
-            target = requestedTarget;
-            startedAt = now;
-        }
+        if (Float.compare(requestedTarget, target) != 0) { start = value; target = requestedTarget; startedAt = now; }
         value = sample(now, durationNanos);
         return value;
     }
     private float sample(long now, long durationNanos) {
         float elapsed = CelesteScreenTypes.clamp((now - startedAt) / (float) durationNanos, 0, 1);
-        float eased = 1.0f - (float) Math.pow(1.0f - elapsed, 3);
-        return start + (target - start) * eased;
+        return start + (target - start) * (1.0f - (float) Math.pow(1.0f - elapsed, 3));
     }
 }
 
@@ -135,33 +97,22 @@ record FieldHit(float x, float y, float width, float height) {
 record ActionHit(String action, String tooltip, boolean helpOnly, float x, float y, float width, float height) {
     boolean contains(double mouseX, double mouseY) { return CelesteScreenTypes.hovered(mouseX, mouseY, x, y, width, height); }
 }
-record ProfileHit(String name, float x, float y, float width, float height,
-        float deleteX, float deleteY, float deleteWidth, float deleteHeight) {
+record ProfileHit(String name, float x, float y, float width, float height, float deleteX, float deleteY, float deleteWidth, float deleteHeight) {
     boolean contains(double mouseX, double mouseY) { return CelesteScreenTypes.hovered(mouseX, mouseY, x, y, width, height); }
-    boolean containsDelete(double mouseX, double mouseY) {
-        return deleteWidth > 0 && CelesteScreenTypes.hovered(mouseX, mouseY, deleteX, deleteY, deleteWidth, deleteHeight);
-    }
+    boolean containsDelete(double mouseX, double mouseY) { return deleteWidth > 0 && CelesteScreenTypes.hovered(mouseX, mouseY, deleteX, deleteY, deleteWidth, deleteHeight); }
 }
 record ConfigAction(String id, String label, String help) {}
 
 final class CelesteScreenTypes {
     private CelesteScreenTypes() {}
-    static float centeredTextY(float y, float height, float fontSize) {
-        return y + (height - fontSize) * 0.5f - 0.2f;
-    }
-    static boolean pulse() {
-        return (System.currentTimeMillis() / 500) % 2 == 0;
-    }
+    static float centeredTextY(float y, float height, float fontSize) { return y + (height - fontSize) * 0.5f - 0.2f; }
+    static boolean pulse() { return (System.currentTimeMillis() / 500) % 2 == 0; }
     static String keyName(int keyCode) {
-        if (keyCode == GLFW.GLFW_KEY_UNKNOWN) {
-            return "Unbound";
-        }
+        if (keyCode == GLFW.GLFW_KEY_UNKNOWN) return "Unbound";
         return InputUtil.Type.KEYSYM.createFromCode(keyCode).getLocalizedText().getString();
     }
     static String sliderValue(double value) {
-        if (Math.abs(value - Math.rint(value)) < 0.0001) {
-            return Integer.toString((int) Math.rint(value));
-        }
+        if (Math.abs(value - Math.rint(value)) < 0.0001) return Integer.toString((int) Math.rint(value));
         return String.format(Locale.ROOT, "%.2f", value).replaceAll("0+$", "").replaceAll("\\.$", "");
     }
     static String trim(String value, int maximum) {
@@ -170,12 +121,8 @@ final class CelesteScreenTypes {
     static boolean hovered(double mouseX, double mouseY, float x, float y, float width, float height) {
         return mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + height;
     }
-    static float clamp(float value, float minimum, float maximum) {
-        return Math.max(minimum, Math.min(maximum, value));
-    }
-    static Color color(int red, int green, int blue, int alpha) {
-        return new Color(red, green, blue, alpha);
-    }
+    static float clamp(float value, float minimum, float maximum) { return Math.max(minimum, Math.min(maximum, value)); }
+    static Color color(int red, int green, int blue, int alpha) { return new Color(red, green, blue, alpha); }
     static Color withAlpha(Color color, int alpha) {
         return new Color(color.getRed(), color.getGreen(), color.getBlue(), Math.max(0, Math.min(255, alpha)));
     }
@@ -185,25 +132,25 @@ final class CelesteScreenTypes {
             Math.round(from.getRed() + (to.getRed() - from.getRed()) * t),
             Math.round(from.getGreen() + (to.getGreen() - from.getGreen()) * t),
             Math.round(from.getBlue() + (to.getBlue() - from.getBlue()) * t),
-            Math.round(from.getAlpha() + (to.getAlpha() - from.getAlpha()) * t)
-        );
+            Math.round(from.getAlpha() + (to.getAlpha() - from.getAlpha()) * t));
     }
     static List<String> wrapTooltip(String text, float font, float maxWidth) {
         List<String> lines = new ArrayList<>();
-        String[] words = text.split(" ");
         StringBuilder line = new StringBuilder();
-        for (String word : words) {
+        for (String word : text.split(" ")) {
             String next = line.isEmpty() ? word : line + " " + word;
-            if (Fonts.regular().getWidth(next, font) > maxWidth && !line.isEmpty()) {
-                lines.add(line.toString());
-                line = new StringBuilder(word);
-            } else {
-                line = new StringBuilder(next);
-            }
+            if (Fonts.regular().getWidth(next, font) > maxWidth && !line.isEmpty()) { lines.add(line.toString()); line = new StringBuilder(word); }
+            else line = new StringBuilder(next);
         }
-        if (!line.isEmpty()) {
-            lines.add(line.toString());
-        }
+        if (!line.isEmpty()) lines.add(line.toString());
         return lines;
     }
+    static void layout(CelesteScreen s) { CelesteScreenOps.layout(s); }
+    static float pageEntrance(CelesteScreen s, int i) { return CelesteScreenOps.pageEntrance(s, i); }
+    static float hoverAnimation(CelesteScreen s, Object k, boolean h) { return CelesteScreenOps.hoverAnimation(s, k, h); }
+    static int visibleSearchLength(CelesteScreen s, long n) { return CelesteScreenOps.visibleSearchLength(s, n); }
+    static float searchCharacterFade(CelesteScreen s, int i, long n) { return CelesteScreenOps.searchCharacterFade(s, i, n); }
+    static float settingsButtonX(CelesteScreen s) { return CelesteScreenOps.settingsButtonX(s); }
+    static float settingsButtonY(CelesteScreen s) { return CelesteScreenOps.settingsButtonY(s); }
+    static float openAnimation(CelesteScreen s) { return CelesteScreenOps.openAnimation(s); }
 }
