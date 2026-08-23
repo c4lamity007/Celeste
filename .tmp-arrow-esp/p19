@@ -1,0 +1,80 @@
+            float x = omega * deltaSeconds;
+            float decay = 1.0f / (1.0f + x + 0.48f * x * x + 0.235f * x * x * x);
+            float change = value - target;
+            float temporary = (velocity + omega * change) * deltaSeconds;
+            velocity = (velocity - omega * temporary) * decay;
+            value = target + (change + temporary) * decay;
+
+            if (Math.abs(value - target) < 0.0001f && Math.abs(velocity) < 0.0001f) {
+                value = target;
+                velocity = 0.0f;
+            }
+            return clamp(value, 0.0f, 1.0f);
+        }
+    }
+
+    private static final class TimedAnimation {
+        private boolean initialized;
+        private float start;
+        private float value;
+        private float target;
+        private long startedAt;
+
+        TimedAnimation() {
+        }
+
+        TimedAnimation(float initialValue) {
+            initialized = true;
+            start = initialValue;
+            value = initialValue;
+            target = initialValue;
+            startedAt = System.nanoTime();
+        }
+
+        float update(float requestedTarget, long durationNanos) {
+            long now = System.nanoTime();
+            if (!initialized) {
+                initialized = true;
+                start = requestedTarget;
+                value = requestedTarget;
+                target = requestedTarget;
+                startedAt = now;
+                return value;
+            }
+
+            value = sample(now, durationNanos);
+            if (Float.compare(requestedTarget, target) != 0) {
+                start = value;
+                target = requestedTarget;
+                startedAt = now;
+            }
+            value = sample(now, durationNanos);
+            return value;
+        }
+
+        private float sample(long now, long durationNanos) {
+            float elapsed = clamp((now - startedAt) / (float) durationNanos, 0, 1);
+            float eased = 1.0f - (float) Math.pow(1.0f - elapsed, 3);
+            return start + (target - start) * eased;
+        }
+    }
+
+    private record NavHit(CelestePage page, float x, float y, float width, float height) {
+        boolean contains(double mouseX, double mouseY) {
+            return hovered(mouseX, mouseY, x, y, width, height);
+        }
+    }
+
+    private record ModuleHit(GuiModule module, float x, float y, float width, float height) {
+        boolean contains(double mouseX, double mouseY) {
+            return hovered(mouseX, mouseY, x, y, width, height);
+        }
+    }
+
+    private record SettingHit(GuiSetting setting, float x, float y, float width, float height) {
+        boolean contains(double mouseX, double mouseY) {
+            return hovered(mouseX, mouseY, x, y, width, height);
+        }
+    }
+
+    private record ConfigHit(FrostedOption option, float x, float y, float width, float height) {

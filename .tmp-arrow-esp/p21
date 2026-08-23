@@ -1,0 +1,6 @@
+
+    private void setConfigStatus(String message) {
+        configStatus = message == null ? "" : message;
+        configStatusUntil = System.nanoTime() + 4_000_000_000L;
+    }
+}
