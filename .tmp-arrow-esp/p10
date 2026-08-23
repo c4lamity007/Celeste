@@ -1,0 +1,80 @@
+
+    private record ConfigAction(String id, String label, String help) {
+    }
+
+    private void drawConfigRow(MatrixStack matrices, float x, float y, float width,
+                               String label, String value, float opacity) {
+        RenderUtil.RECT.draw(matrices, x, y, width, 25, 7,
+            withAlpha(CONTROL, Math.round(190 * opacity)));
+        Fonts.regular().drawText(matrices, label, x + 10,
+            centeredTextY(y, 25, 7.1f), 7.1f,
+            withAlpha(MUTED, Math.round(255 * opacity)));
+        float valueWidth = Fonts.semibold().getWidth(value, 7.1f);
+        Fonts.semibold().drawText(matrices, value, x + width - 10 - valueWidth,
+            centeredTextY(y, 25, 7.1f), 7.1f,
+            withAlpha(TEXT, Math.round(255 * opacity)));
+    }
+
+    private void drawPlaceholder(MatrixStack matrices, String glyph, String title, String description, String action, float animation) {
+        float entrance = pageEntrance(1);
+        animation *= entrance;
+        float cardWidth = Math.min(390, contentWidth - 30);
+        float x = contentX + (contentWidth - cardWidth) / 2;
+        float y = contentY + 34 + (1.0f - entrance) * 8.0f;
+        RenderUtil.RECT.draw(matrices, x, y, cardWidth, 174, 15, withAlpha(CARD, Math.round(185 * animation)));
+        RenderUtil.GRADIENT_RECT.draw(matrices, x + cardWidth / 2 - 25, y + 24, 50, 50, 15,
+            withAlpha(color(255, 58, 155, 220), Math.round(220 * animation)),
+            withAlpha(color(157, 33, 153, 220), Math.round(220 * animation)),
+            withAlpha(color(215, 37, 132, 220), Math.round(220 * animation)),
+            withAlpha(color(112, 25, 128, 220), Math.round(220 * animation)));
+        Fonts.bold().drawCenteredText(matrices, glyph, x + cardWidth / 2,
+            centeredTextY(y + 24, 50, 15), 15, withAlpha(Color.WHITE, Math.round(255 * animation)));
+        Fonts.bold().drawCenteredText(matrices, title, x + cardWidth / 2, y + 91, 13, withAlpha(TEXT, Math.round(255 * animation)));
+        Fonts.regular().drawCenteredText(matrices, description, x + cardWidth / 2, y + 113, 8, withAlpha(MUTED, Math.round(255 * animation)));
+        RenderUtil.RECT.draw(matrices, x + cardWidth / 2 - 55, y + 139, 110, 25, 7, withAlpha(ACCENT_SOFT, Math.round(195 * animation)));
+        Fonts.semibold().drawCenteredText(matrices, action, x + cardWidth / 2, y + 147, 8.2f, withAlpha(TEXT, Math.round(255 * animation)));
+    }
+
+    private void drawSettingsPage(MatrixStack matrices, int mouseX, int mouseY, float animation) {
+        float gap = 10;
+        float cardWidth = (contentWidth - gap) / 2;
+        float cardHeight = 82;
+        FrostedOption[] options = FrostedOption.values();
+        for (int index = 0; index < options.length; index++) {
+            boolean rightColumn = options[index] == FrostedOption.PASSES;
+            int row = options[index] == FrostedOption.OFFSET ? 1 : 0;
+            float optionX = contentX + (rightColumn ? cardWidth + gap : 0);
+            float entrance = pageEntrance(index + 1);
+            drawConfigCard(
+                matrices,
+                options[index],
+                optionX,
+                contentY + 5 + row * (cardHeight + gap) + (1.0f - entrance) * 7.0f,
+                cardWidth,
+                cardHeight,
+                mouseX,
+                mouseY,
+                animation * entrance
+            );
+        }
+
+        float buttonX = settingsButtonX();
+        float buttonEntrance = pageEntrance(options.length + 1);
+        float buttonY = settingsButtonY();
+        boolean buttonHovered = hovered(mouseX, mouseY, buttonX, buttonY, 157, 29);
+        float buttonHover = hoverAnimation(SETTINGS_BUTTON_HOVER_KEY, buttonHovered);
+        RenderUtil.RECT.draw(matrices, buttonX, buttonY, 157, 29, 8,
+            withAlpha(blend(CONTROL, ACCENT_SOFT, buttonHover), Math.round(205 * animation * buttonEntrance)));
+        Fonts.semibold().drawCenteredText(matrices, "Open Minecraft options", buttonX + 78.5f,
+            centeredTextY(buttonY, 29, 8.3f), 8.3f,
+            withAlpha(TEXT, Math.round(255 * animation * buttonEntrance)));
+    }
+
+    private void drawConfigCard(
+        MatrixStack matrices,
+        FrostedOption option,
+        float x,
+        float y,
+        float width,
+        float height,
+        int mouseX,
