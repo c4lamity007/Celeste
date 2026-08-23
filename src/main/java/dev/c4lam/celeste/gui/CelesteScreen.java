@@ -1,3 +1,35 @@
 package dev.c4lam.celeste.gui;
 
-// See workspace file - this upload is a marker if you see only this.
+import dev.c4lam.celeste.config.ConfigLibrary;
+import dev.c4lam.celeste.config.ConfigProfileManager;
+import dev.c4lam.celeste.config.InterfaceConfig;
+import dev.c4lam.celeste.friend.FriendManager;
+import dev.c4lam.celeste.gui.model.CelestePage;
+import dev.c4lam.celeste.gui.model.GuiCatalog;
+import dev.c4lam.celeste.gui.model.GuiModule;
+import dev.c4lam.celeste.gui.model.GuiSetting;
+import dev.c4lam.celeste.hud.HudEditorScreen;
+import dev.c4lam.celeste.render.GuiRenderer;
+import dev.c4lam.celeste.render.GuiTextures;
+import dev.c4lam.celeste.render.RenderUtil;
+import dev.c4lam.celeste.render.font.Font;
+import dev.c4lam.celeste.render.font.Fonts;
+import net.minecraft.client.gui.Click;
+import net.minecraft.client.gui.DrawContext;
+import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.gui.screen.option.OptionsScreen;
+import net.minecraft.client.input.CharInput;
+import net.minecraft.client.input.KeyInput;
+import net.minecraft.client.util.InputUtil;
+import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.text.Text;
+import net.minecraft.util.Identifier;
+import org.joml.Vector4f;
+import org.lwjgl.glfw.GLFW;
+
+import java.awt.Color;
+import java.util.ArrayList;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
