@@ -19,7 +19,6 @@ import dev.c4lam.celeste.module.impl.combat.WindChargeFeature;
 import dev.c4lam.celeste.module.impl.combat.TBOTFeature;
 import dev.c4lam.celeste.module.impl.movement.ElytraFeature;
 import dev.c4lam.celeste.module.impl.movement.BoatFlightFeature;
-import dev.c4lam.celeste.module.impl.movement.FakeFlyFeature;
 import dev.c4lam.celeste.module.impl.movement.SafeWalkFeature;
 import dev.c4lam.celeste.module.impl.movement.SprintFeature;
 import dev.c4lam.celeste.module.impl.visual.EntityEspFeature;
@@ -71,7 +70,6 @@ public final class BuiltInFeatures {
         modules.register(new SafeWalkFeature());
         modules.register(new ElytraFeature());
         modules.register(new BoatFlightFeature());
-        modules.register(new FakeFlyFeature());
         modules.register(new FullbrightFeature());
         
         EntityEspFeature entityEsp = new EntityEspFeature();

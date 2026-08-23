@@ -5,7 +5,6 @@ import dev.c4lam.celeste.rotation.MoveFixMode;
 import dev.c4lam.celeste.rotation.RotationManager;
 import dev.c4lam.celeste.module.expansion.inventory.SilentInventoryScreen;
 import dev.c4lam.celeste.module.impl.movement.BoatFlightFeature;
-import dev.c4lam.celeste.module.impl.movement.FakeFlyFeature;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.input.Input;
 import net.minecraft.client.input.KeyboardInput;
@@ -33,8 +32,7 @@ public abstract class KeyboardInputMoveFixMixin extends Input {
             BoatFlightFeature.captureGuidedMovement(client.player);
         }
         if (client.player != null && client.player.input == (Object) this
-            && (FakeFlyFeature.shouldZeroVanillaInput(client.player)
-                || BoatFlightFeature.shouldZeroVanillaInput(client.player))) {
+            && BoatFlightFeature.shouldZeroVanillaInput(client.player)) {
             movementVector = Vec2f.ZERO;
             playerInput = PlayerInput.DEFAULT;
             return;
