@@ -208,10 +208,8 @@ public final class GuiCatalog {
         new GuiModule("Arrow ESP", "Points toward nearby players", CelestePage.VISUALS, false,
             slider("Range", "Maximum render distance", 64, 16, 128, 4),
             slider("Opacity", "Indicator opacity", .8, .1, 1, .05),
-            mode("Arrow Style", "Arrow style", "Default", "Default", "Arrow 2", "Arrow 3"),
-            slider("Red", "Red color value", 255, 0, 255, 1),
-            slider("Green", "Green color value", 79, 0, 255, 1),
-            slider("Blue", "Blue color value", 163, 0, 255, 1)),
+            mode("Arrow Style", "Arrow style", "Arrow 2", "Arrow 2", "Arrow 3"),
+            colorPick("Color", "Arrow color", 255, 79, 163)),
         new GuiModule("Item ESP", "Highlights dropped item entities", CelestePage.VISUALS, false,
             slider("Range", "Maximum render distance", 64, 8, 128, 4),
             slider("Opacity", "Box opacity", .75, .1, 1, .05)),
@@ -243,6 +241,9 @@ public final class GuiCatalog {
     private static GuiSetting.Keybind bind() {
         return new GuiSetting.Keybind("Bind", "Toggle this module", GLFW.GLFW_KEY_UNKNOWN);
     }
+    private static GuiSetting.ColorPick colorPick(String label, String description, int red, int green, int blue) {
+        return new GuiSetting.ColorPick(label, description, red, green, blue);
+    }
     private static GuiSetting.Keybind actionKey(int key) {
         return new GuiSetting.Keybind("Action", "Perform this module's action", key);
     }
@@ -253,5 +254,3 @@ public final class GuiCatalog {
         return settings;
     }
 }
-
-
