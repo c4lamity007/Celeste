@@ -1,0 +1,80 @@
+
+        float fitScale = Math.min(1.0f, Math.min(
+            Math.max(0.1f, (referenceWidth - 20.0f) / 690.0f),
+            Math.max(0.1f, (referenceHeight - 20.0f) / 430.0f)
+        ));
+        float designWidth = referenceWidth / fitScale;
+        float designHeight = referenceHeight / fitScale;
+        float margin = 22;
+        panelWidth = Math.min(1040, Math.max(690, designWidth - margin * 2));
+        panelHeight = Math.min(600, Math.max(430, designHeight - margin * 2));
+
+        float requestedReferenceScale = fitScale * COMPACT_SCALE
+            * (renderedInterfaceScale / InterfaceConfig.DEFAULT_SCALE);
+        float maximumReferenceScale = Math.min(
+            Math.max(0.1f, (referenceWidth - 12.0f) / panelWidth),
+            Math.max(0.1f, (referenceHeight - 12.0f) / panelHeight)
+        );
+        uiScale = normalization * Math.min(requestedReferenceScale, maximumReferenceScale);
+
+        float virtualWidth = width / uiScale;
+        float virtualHeight = height / uiScale;
+        panelX = (virtualWidth - panelWidth) / 2;
+        panelY = (virtualHeight - panelHeight) / 2;
+        sidebarWidth = Math.min(205, Math.max(174, panelWidth * 0.205f));
+        contentX = panelX + sidebarWidth + 23;
+        contentWidth = panelX + panelWidth - 22 - contentX;
+        contentY = panelY + 72;
+        contentHeight = panelHeight - 91;
+    }
+
+    private List<GuiModule> filteredModules() {
+        int visibleLength = visibleSearchLength(System.nanoTime());
+        String query = search.substring(0, visibleLength).toLowerCase(Locale.ROOT).trim();
+        return GuiCatalog.modules().stream()
+            .filter(module -> module.page() == selectedPage)
+            .filter(module -> query.isEmpty()
+                || module.name().toLowerCase(Locale.ROOT).contains(query)
+                || module.description().toLowerCase(Locale.ROOT).contains(query))
+            .toList();
+    }
+
+    private void updateDraggedSlider(double mouseX) {
+        if (draggingSlider == null) {
+            return;
+        }
+        for (SettingHit hit : settingHits) {
+            if (hit.setting() != draggingSlider) {
+                continue;
+            }
+            float sliderX = hit.x();
+            double progress = clamp((float) ((mouseX - sliderX) / hit.width()), 0, 1);
+            draggingSlider.setValue(draggingSlider.minimum() + (draggingSlider.maximum() - draggingSlider.minimum()) * progress);
+            break;
+        }
+    }
+
+    private void updateDraggedConfig(double mouseX) {
+        if (draggingConfig == null) {
+            return;
+        }
+        double progress = clamp((float) ((mouseX - draggingConfig.x()) / draggingConfig.width()), 0, 1);
+        FrostedOption option = draggingConfig.option();
+        option.set(option.minimum + (option.maximum - option.minimum) * progress);
+    }
+
+    private void deletePreviousSearchWord() {
+        int end = search.length();
+        while (end > 0 && search.charAt(end - 1) == ' ') {
+            end--;
+        }
+        int start = end;
+        while (start > 0 && search.charAt(start - 1) != ' ') {
+            start--;
+        }
+        setSearchLength(start);
+    }
+
+    private void appendSearch(String value) {
+        if (value.isEmpty()) {
+            return;

@@ -1,0 +1,80 @@
+        }
+        int available = 32 - search.length();
+        String addition = value.substring(0, Math.min(available, value.length()));
+        long now = System.nanoTime();
+        search += addition;
+        for (int index = 0; index < addition.length(); index++) {
+            searchRevealTimes.add(now + SEARCH_REVEAL_DELAY_NANOS + index * 12_000_000L);
+        }
+    }
+
+    private void setSearchLength(int length) {
+        int clampedLength = Math.max(0, Math.min(length, search.length()));
+        search = search.substring(0, clampedLength);
+        while (searchRevealTimes.size() > clampedLength) {
+            searchRevealTimes.remove(searchRevealTimes.size() - 1);
+        }
+    }
+
+    private int visibleSearchLength(long now) {
+        while (searchRevealTimes.size() < search.length()) {
+            searchRevealTimes.add(now);
+        }
+        int visible = 0;
+        while (visible < search.length() && searchRevealTimes.get(visible) <= now) {
+            visible++;
+        }
+        return visible;
+    }
+
+    private float searchCharacterFade(int index, long now) {
+        if (index < 0 || index >= searchRevealTimes.size()) {
+            return 1.0f;
+        }
+        float elapsed = clamp((now - searchRevealTimes.get(index)) / (float) SEARCH_FADE_NANOS, 0, 1);
+        return 1.0f - (float) Math.pow(1.0f - elapsed, 3);
+    }
+
+    private void collapseAllModules() {
+        expandedModule = null;
+        expansionAnimations.clear();
+    }
+
+    private boolean isControlDown() {
+        if (client == null || client.getWindow() == null) {
+            return false;
+        }
+        long handle = client.getWindow().getHandle();
+        return GLFW.glfwGetKey(handle, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS
+            || GLFW.glfwGetKey(handle, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS;
+    }
+
+    private void updateInterfaceScaleAnimation() {
+        long now = System.nanoTime();
+        float deltaSeconds = clamp((now - lastScaleUpdateAt) / 1_000_000_000.0f, 0.0f, 0.05f);
+        lastScaleUpdateAt = now;
+        if (deltaSeconds <= 0.0f) {
+            return;
+        }
+
+        // Critically damped motion keeps wheel steps fluid without overshoot
+        // and remains consistent at different frame rates.
+        float target = InterfaceConfig.scale();
+        float smoothTime = 0.14f;
+        float omega = 2.0f / smoothTime;
+        float x = omega * deltaSeconds;
+        float decay = 1.0f / (1.0f + x + 0.48f * x * x + 0.235f * x * x * x);
+        float change = renderedInterfaceScale - target;
+        float temporary = (interfaceScaleVelocity + omega * change) * deltaSeconds;
+        interfaceScaleVelocity = (interfaceScaleVelocity - omega * temporary) * decay;
+        renderedInterfaceScale = target + (change + temporary) * decay;
+
+        if (Math.abs(renderedInterfaceScale - target) < 0.0001f
+            && Math.abs(interfaceScaleVelocity) < 0.0001f) {
+            renderedInterfaceScale = target;
+            interfaceScaleVelocity = 0.0f;
+        }
+    }
+
+    private float hoverAnimation(Object key, boolean hovered) {
+        return hoverAnimations
