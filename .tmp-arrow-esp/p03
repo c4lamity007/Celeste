@@ -1,0 +1,80 @@
+            }
+            drawNavItem(matrices, page, itemX, cursorY, itemWidth, itemHeight, mouseX, mouseY, animation);
+            cursorY += itemHeight + 4;
+        }
+
+        cursorY += 16;
+        regular.drawText(matrices, "OTHER", itemX + 4, cursorY - 14, 7.1f, withAlpha(DIM, Math.round(255 * animation)));
+        for (CelestePage page : CelestePage.values()) {
+            if (page.feature()) {
+                continue;
+            }
+            drawNavItem(matrices, page, itemX, cursorY, itemWidth, itemHeight, mouseX, mouseY, animation);
+            cursorY += itemHeight + 4;
+        }
+    }
+
+    private void drawNavItem(
+        MatrixStack matrices,
+        CelestePage page,
+        float x,
+        float y,
+        float width,
+        float height,
+        int mouseX,
+        int mouseY,
+        float animation
+    ) {
+        boolean selected = page == selectedPage;
+        boolean hovered = hovered(mouseX, mouseY, x, y, width, height);
+        float hover = hoverAnimation(page, hovered);
+        float selection = navigationAnimations
+            .computeIfAbsent(page, ignored -> new TimedAnimation())
+            .update(selected ? 1.0f : 0.0f, NAVIGATION_ANIMATION_NANOS);
+        if (hover > 0.001f && selection < 0.98f) {
+            RenderUtil.RECT.draw(matrices, x, y, width, height, 8,
+                withAlpha(color(69, 42, 65, 135), Math.round(135 * animation * hover * (1.0f - selection))));
+        }
+        if (selection > 0.001f) {
+            RenderUtil.GRADIENT_RECT.draw(matrices, x, y, width, height, 8,
+                withAlpha(color(255, 46, 150, 230), Math.round(230 * animation * selection)),
+                withAlpha(color(183, 34, 146, 225), Math.round(225 * animation * selection)),
+                withAlpha(color(221, 36, 126, 225), Math.round(225 * animation * selection)),
+                withAlpha(color(133, 29, 132, 220), Math.round(220 * animation * selection)));
+        }
+
+        float iconX = x + 8;
+        float iconY = y + 6;
+        float iconSize = 17;
+        if (page == CelestePage.MOVEMENT && (hovered || selected)) {
+            double phase = System.nanoTime() / 100_000_000.0;
+            float step = (float) Math.sin(phase);
+            float stretch = 1.0f + (float) Math.sin(phase * 2.0) * 0.035f;
+            iconX += step * 0.8f;
+            iconY -= Math.abs((float) Math.cos(phase)) * 0.7f;
+            iconSize *= stretch;
+            iconX += (17 - iconSize) * 0.5f;
+            iconY += (17 - iconSize) * 0.5f;
+        }
+        Color iconColor = blend(MUTED, Color.WHITE, Math.max(selection, hover * 0.35f));
+        Color labelColor = blend(TEXT, Color.WHITE, Math.max(selection, hover * 0.22f));
+        if (page.icon() != null) {
+            RenderUtil.TEXTURE_RECT.draw(matrices, iconX, iconY, iconSize, iconSize, 0,
+                withAlpha(iconColor, Math.round((215 + 40 * selection) * animation)), 0, 0, 1, 1, page.icon());
+        } else {
+            Fonts.bold().drawCenteredText(matrices, page.fallbackGlyph(), iconX + 8.5f, iconY + 1, 10.5f,
+                withAlpha(iconColor, Math.round((215 + 40 * selection) * animation)));
+        }
+        Fonts.semibold().drawText(matrices, page.label(), x + 34, centeredTextY(y, height, 9.4f), 9.4f,
+            withAlpha(labelColor, Math.round(255 * animation)));
+        navHits.add(new NavHit(page, x, y, width, height));
+    }
+
+    private void drawHeader(MatrixStack matrices, int mouseX, int mouseY, float y, float animation) {
+        float headerX = panelX + sidebarWidth + 23;
+        contentX = headerX;
+        contentWidth = panelX + panelWidth - 22 - contentX;
+
+        Font bold = Fonts.bold();
+        Font regular = Fonts.regular();
+        float pageEntrance = pageEntrance(0);

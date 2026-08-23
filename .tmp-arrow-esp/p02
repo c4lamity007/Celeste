@@ -1,0 +1,80 @@
+
+        float animatedY = panelY + (1.0f - animation) * 18.0f;
+        Color glassTop = withAlpha(PANEL_TOP, Math.round(PANEL_TOP.getAlpha() * animation));
+        Color glassBottom = withAlpha(PANEL_BOTTOM, Math.round(PANEL_BOTTOM.getAlpha() * animation));
+
+        RenderUtil.BLUR_RECT.draw(
+            matrices,
+            panelX,
+            animatedY,
+            panelWidth,
+            panelHeight,
+            new Vector4f(18.0f),
+            glassTop,
+            glassTop,
+            glassBottom,
+            glassBottom,
+            InterfaceConfig.glassTintMix()
+        );
+        Color sidebarGlass = withAlpha(SIDEBAR, Math.round(SIDEBAR.getAlpha() * animation));
+        RenderUtil.BLUR_RECT.draw(
+            matrices,
+            panelX + 1,
+            animatedY + 1,
+            sidebarWidth,
+            panelHeight - 2,
+            new Vector4f(17, 0, 17, 0),
+            sidebarGlass,
+            sidebarGlass,
+            sidebarGlass,
+            sidebarGlass,
+            InterfaceConfig.glassTintMix()
+        );
+
+        drawSidebar(matrices, virtualMouseX, virtualMouseY, animatedY, animation);
+        drawHeader(matrices, virtualMouseX, virtualMouseY, animatedY, animation);
+
+        contentY = animatedY + 72;
+        contentHeight = panelHeight - 91;
+        GuiRenderer.getInstance().pushScissor(contentX * uiScale, contentY * uiScale, contentWidth * uiScale, contentHeight * uiScale);
+        if (selectedPage.feature()) {
+            drawModulePage(matrices, virtualMouseX, virtualMouseY, animation);
+        } else {
+            drawUtilityPage(matrices, virtualMouseX, virtualMouseY, animation);
+        }
+        GuiRenderer.getInstance().popScissor();
+        colorPicker.drawPopup(matrices);
+        if (colorPicker.isDragging()) {
+            colorPicker.drag(virtualMouseX, virtualMouseY);
+        }
+        if (!pendingTooltip.isEmpty()) {
+            drawHoverTooltip(matrices, pendingTooltipX, pendingTooltipY, pendingTooltip, animation);
+        }
+
+        if (draggingSlider != null) {
+            updateDraggedSlider(virtualMouseX);
+        }
+        if (draggingConfig != null) {
+            updateDraggedConfig(virtualMouseX);
+        }
+    }
+
+    private void drawSidebar(MatrixStack matrices, int mouseX, int mouseY, float y, float animation) {
+        float logoSize = 48;
+        RenderUtil.TEXTURE_RECT.draw(matrices, panelX + 15, y + 14, logoSize, logoSize, 12,
+            withAlpha(Color.WHITE, Math.round(255 * animation)), 0, 0, 1, 1, LOGO);
+
+        Font bold = Fonts.bold();
+        Font regular = Fonts.regular();
+        bold.drawText(matrices, "Celeste Client", panelX + 69, y + 24, 12.5f, withAlpha(TEXT, Math.round(255 * animation)));
+        regular.drawText(matrices, "Version 1.0", panelX + 69, y + 42, 8.5f, withAlpha(MUTED, Math.round(255 * animation)));
+
+        float itemX = panelX + 14;
+        float itemWidth = sidebarWidth - 28;
+        float itemHeight = 29;
+        float cursorY = y + 91;
+
+        regular.drawText(matrices, "FEATURES", itemX + 4, cursorY - 14, 7.1f, withAlpha(DIM, Math.round(255 * animation)));
+        for (CelestePage page : CelestePage.values()) {
+            if (!page.feature()) {
+                continue;
