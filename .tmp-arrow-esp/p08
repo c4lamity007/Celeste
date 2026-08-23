@@ -1,0 +1,80 @@
+        configFieldHit = new FieldHit(x, fieldY, width - 26, 32);
+        drawHelpChip(matrices, x + width - 18, fieldY + 7, mouseX, mouseY, fieldOpacity,
+            "Type a short name to save, or paste a PNG path to import.");
+        cursor += 42;
+
+        ConfigAction[] actions = {
+            new ConfigAction("Save", "Save", "Saves what you are using right now as a PNG config."),
+            new ConfigAction("Import", "Import", "Loads a PNG from the path you pasted above."),
+            new ConfigAction("Set Folder", "Folder", "Sets the folder where config PNGs are stored.")
+        };
+        float buttonEntrance = pageEntrance(card++);
+        float buttonY = cursor + (1.0f - buttonEntrance) * 6.0f;
+        float buttonOpacity = animation * buttonEntrance;
+        float gap = 8;
+        float slotWidth = (width - gap * (actions.length - 1)) / actions.length;
+        for (int index = 0; index < actions.length; index++) {
+            ConfigAction action = actions[index];
+            float slotX = x + index * (slotWidth + gap);
+            float buttonWidth = slotWidth - 20;
+            boolean hovered = hovered(mouseX, mouseY, slotX, buttonY, buttonWidth, 28);
+            RenderUtil.RECT.draw(matrices, slotX, buttonY, buttonWidth, 28, 7,
+                withAlpha(hovered ? ACCENT_SOFT : CONTROL, Math.round(210 * buttonOpacity)));
+            Fonts.semibold().drawCenteredText(matrices, action.label, slotX + buttonWidth / 2,
+                centeredTextY(buttonY, 28, 6.8f), 6.8f, withAlpha(TEXT, Math.round(255 * buttonOpacity)));
+            actionHits.add(new ActionHit(action.id, action.help, false, slotX, buttonY, buttonWidth, 28));
+            if (hovered) {
+                setPendingTooltip(mouseX, mouseY, action.help);
+            }
+            drawHelpChip(matrices, slotX + slotWidth - 16, buttonY + 5, mouseX, mouseY, buttonOpacity, action.help);
+        }
+        cursor += 42;
+
+        cursor = drawConfigGrid(matrices, mouseX, mouseY, animation, card, x, width, cursor,
+            "Saved configs", "Each card is a PNG. Click one to switch.", configs.listProfiles(), configs.active());
+
+        float totalHeight = cursor - (contentY + contentScroll) + 12;
+        float minimum = Math.min(0, contentHeight - totalHeight);
+        targetScroll = Math.max(minimum, Math.min(0, targetScroll));
+    }
+
+    private float drawConfigGrid(
+        MatrixStack matrices,
+        int mouseX,
+        int mouseY,
+        float animation,
+        int stagger,
+        float x,
+        float width,
+        float cursor,
+        String title,
+        String hint,
+        List<String> names,
+        String activeName
+    ) {
+        float titleEntrance = pageEntrance(stagger);
+        Fonts.semibold().drawText(matrices, title, x, cursor + (1.0f - titleEntrance) * 4.0f, 8.0f,
+            withAlpha(TEXT, Math.round(255 * animation * titleEntrance)));
+        Fonts.regular().drawText(matrices, hint, x + Fonts.semibold().getWidth(title, 8.0f) + 8,
+            cursor + 1.4f + (1.0f - titleEntrance) * 4.0f, 6.2f,
+            withAlpha(DIM, Math.round(255 * animation * titleEntrance)));
+        cursor += 22;
+        if (names.isEmpty()) {
+            Fonts.regular().drawText(matrices, "None yet. Name it above, then press Save.",
+                x, cursor, 6.6f, withAlpha(MUTED, Math.round(255 * animation * titleEntrance)));
+            return cursor + 26;
+        }
+        float gap = 9;
+        float cardWidth = (width - gap * 2) / 3.0f;
+        float cardHeight = 58;
+        for (int index = 0; index < names.size(); index++) {
+            String name = names.get(index);
+            int column = index % 3;
+            int row = index / 3;
+            float cardX = x + column * (cardWidth + gap);
+            float cardY = cursor + row * (cardHeight + gap) + (1.0f - pageEntrance(stagger + 1 + index)) * 5.0f;
+            float opacity = animation * pageEntrance(stagger + 1 + index);
+            boolean active = name.equals(activeName);
+            boolean hovered = hovered(mouseX, mouseY, cardX, cardY, cardWidth, cardHeight);
+            RenderUtil.RECT.draw(matrices, cardX, cardY, cardWidth, cardHeight, 10,
+                withAlpha(active ? ACCENT_SOFT : hovered ? CARD_HOVER : CARD, Math.round(205 * opacity)));

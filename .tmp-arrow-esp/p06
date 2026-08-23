@@ -1,0 +1,80 @@
+            Fonts.regular().drawText(matrices, setting.label(), x + 9, y + 7.4f, 8.2f,
+                withAlpha(TEXT, Math.round(255 * animation)));
+            Fonts.regular().drawText(matrices, trim(setting.description(), 34), x + 9, y + 20.6f, 6.5f,
+                withAlpha(DIM, Math.round(255 * animation)));
+
+            if (setting instanceof GuiSetting.Toggle toggle) {
+                drawToggle(matrices, toggle, x + width - 37, y + 9, toggle.value(), animation);
+            } else if (setting instanceof GuiSetting.Slider slider) {
+                float sliderX = x + width - 93;
+                float sliderY = y + 22;
+                float sliderWidth = 76;
+                float visualProgress = sliderAnimations
+                    .computeIfAbsent(slider, ignored -> new SpringAnimation())
+                    .update((float) slider.progress(), SLIDER_SMOOTH_TIME_SECONDS);
+                RenderUtil.RECT.draw(matrices, sliderX, sliderY, sliderWidth, 3, 1.5f, withAlpha(color(86, 59, 82, 230), Math.round(230 * animation)));
+                RenderUtil.RECT.draw(matrices, sliderX, sliderY, sliderWidth * visualProgress, 3, 1.5f, withAlpha(ACCENT, Math.round(255 * animation)));
+                String value = sliderValue(slider.value());
+                Fonts.semibold().drawCenteredText(matrices, value, sliderX + sliderWidth / 2, y + 7, 7.2f,
+                    withAlpha(TEXT, Math.round(255 * animation)));
+            } else if (setting instanceof GuiSetting.Mode mode) {
+                String value = mode.value();
+                float valueWidth = Math.max(46, Fonts.semibold().getWidth(value, 7.2f) + 17);
+                float valueX = x + width - valueWidth - 9;
+                RenderUtil.RECT.draw(matrices, valueX, y + 8, valueWidth, 18, 5, withAlpha(CONTROL, Math.round(205 * animation)));
+                Fonts.semibold().drawCenteredText(matrices, value, valueX + valueWidth / 2,
+                    centeredTextY(y + 8, 18, 7.2f), 7.2f, withAlpha(TEXT, Math.round(255 * animation)));
+            } else if (setting instanceof GuiSetting.Keybind keybind) {
+                String value = listeningKeybind == keybind ? "Press key" : keyName(keybind.keyCode());
+                float valueWidth = Math.max(51, Fonts.semibold().getWidth(value, 7.2f) + 17);
+                float valueX = x + width - valueWidth - 9;
+                RenderUtil.RECT.draw(matrices, valueX, y + 8, valueWidth, 18, 5,
+                    withAlpha(listeningKeybind == keybind ? ACCENT_SOFT : CONTROL, Math.round(205 * animation)));
+                Fonts.semibold().drawCenteredText(matrices, value, valueX + valueWidth / 2,
+                    centeredTextY(y + 8, 18, 7.2f), 7.2f, withAlpha(TEXT, Math.round(255 * animation)));
+            } else if (setting instanceof GuiSetting.ColorPick colorPick) {
+                colorPicker.drawSwatch(matrices, colorPick, x + width - 37, y + 9, animation);
+            }
+
+            if (interactive) {
+                if (setting instanceof GuiSetting.Slider) {
+                    settingHits.add(new SettingHit(setting, x + width - 93, y + 14, 76, 17));
+                } else if (setting instanceof GuiSetting.ColorPick) {
+                    settingHits.add(new SettingHit(setting, x + width - 37, y + 9, 16, 16));
+                } else {
+                    settingHits.add(new SettingHit(setting, x, y, width, 34));
+                }
+            }
+
+            if (settingIndex < settingCount - 1) {
+                RenderUtil.RECT.draw(matrices, x + 9, y + 36.5f, width - 18, 0.75f, 0.375f,
+                    withAlpha(color(92, 67, 88, 255), Math.round(42 * animation)));
+            }
+
+            settingIndex++;
+            y += 39;
+        }
+    }
+
+    private void drawUtilityPage(MatrixStack matrices, int mouseX, int mouseY, float animation) {
+        switch (selectedPage) {
+            case FRIENDS -> drawFriendsPage(matrices, animation);
+            case CONFIGS -> drawConfigsPage(matrices, mouseX, mouseY, animation);
+            case HUD -> drawPlaceholder(matrices, "H", "HUD editor", "Arrange interface widgets on screen.", "Open editor", animation);
+            case SETTINGS -> drawSettingsPage(matrices, mouseX, mouseY, animation);
+            default -> {
+            }
+        }
+    }
+
+    private void drawFriendsPage(MatrixStack matrices, float animation) {
+        List<FriendManager.Friend> friends = FriendManager.getInstance().getFriends();
+        if (!friends.isEmpty()) {
+            float gap = 9;
+            float cardWidth = (contentWidth - gap * 2) / 3.0f;
+            float cardHeight = 48;
+            float startY = contentY + contentScroll + 7;
+            for (int index = 0; index < friends.size(); index++) {
+                FriendManager.Friend friend = friends.get(index);
+                int column = index % 3;
+                int row = index / 3;

@@ -1,0 +1,80 @@
+                float entrance = pageEntrance(index);
+                float x = contentX + column * (cardWidth + gap);
+                float y = startY + row * (cardHeight + gap) + (1.0f - entrance) * 7.0f;
+                Color top = withAlpha(color(45, 29, 43, 205), Math.round(205 * animation * entrance));
+                Color bottom = withAlpha(color(22, 15, 25, 220), Math.round(220 * animation * entrance));
+                RenderUtil.BLUR_RECT.draw(matrices, x, y, cardWidth, cardHeight, new Vector4f(10),
+                    top, top, bottom, bottom, InterfaceConfig.glassTintMix());
+                float avatarX = x + 9;
+                float avatarY = y + 9;
+                RenderUtil.RECT.draw(matrices, avatarX, avatarY, 30, 30, 8,
+                    withAlpha(ACCENT_SOFT, Math.round(220 * animation * entrance)));
+                String initial = friend.lastKnownName().substring(0, 1).toUpperCase(Locale.ROOT);
+                Fonts.bold().drawCenteredText(matrices, initial, avatarX + 15,
+                    centeredTextY(avatarY, 30, 10.0f), 10.0f,
+                    withAlpha(TEXT, Math.round(255 * animation * entrance)));
+                float textCenter = x + 44 + (cardWidth - 49) / 2.0f;
+                Fonts.semibold().drawCenteredText(matrices, friend.lastKnownName(), textCenter,
+                    centeredTextY(y + 8, 18, 8.0f), 8.0f,
+                    withAlpha(TEXT, Math.round(255 * animation * entrance)));
+                Fonts.regular().drawCenteredText(matrices, "Middle-click to remove", textCenter,
+                    centeredTextY(y + 25, 14, 5.8f), 5.8f,
+                    withAlpha(MUTED, Math.round(255 * animation * entrance)));
+                friendHits.add(new FriendHit(friend, x, y, cardWidth, cardHeight));
+            }
+            int rows = (friends.size() + 2) / 3;
+            float totalHeight = 7 + rows * cardHeight + Math.max(0, rows - 1) * gap + 7;
+            float minimum = Math.min(0, contentHeight - totalHeight);
+            targetScroll = Math.max(minimum, Math.min(0, targetScroll));
+            return;
+        }
+        float entrance = pageEntrance(1);
+        float centerX = contentX + contentWidth / 2;
+        float centerY = contentY + Math.min(105, contentHeight * 0.34f) + (1.0f - entrance) * 8.0f;
+        Fonts.semibold().drawCenteredText(matrices, "You have no friends.", centerX, centerY, 12.2f,
+            withAlpha(TEXT, Math.round(255 * animation * entrance)));
+        Fonts.regular().drawCenteredText(matrices, "Then Add friends by middle clicking them!", centerX, centerY + 22, 8.7f,
+            withAlpha(MUTED, Math.round(255 * animation * entrance)));
+    }
+
+    private void drawConfigsPage(MatrixStack matrices, int mouseX, int mouseY, float animation) {
+        ConfigProfileManager configs = ConfigProfileManager.getInstance();
+        float x = contentX;
+        float width = contentWidth;
+        float cursor = contentY + contentScroll + 8;
+        int card = 0;
+
+        float headerEntrance = pageEntrance(card++);
+        float headerOpacity = animation * headerEntrance;
+        float headerHeight = 72;
+        RenderUtil.BLUR_RECT.draw(matrices, x, cursor + (1.0f - headerEntrance) * 7.0f, width, headerHeight, new Vector4f(12),
+            withAlpha(color(44, 27, 43, 205), Math.round(205 * headerOpacity)),
+            withAlpha(color(44, 27, 43, 205), Math.round(205 * headerOpacity)),
+            withAlpha(color(18, 12, 21, 222), Math.round(222 * headerOpacity)),
+            withAlpha(color(18, 12, 21, 222), Math.round(222 * headerOpacity)),
+            InterfaceConfig.glassTintMix());
+        Fonts.semibold().drawText(matrices, "Your configs", x + 16, cursor + 14, 10.4f,
+            withAlpha(TEXT, Math.round(255 * headerOpacity)));
+        Fonts.regular().drawText(matrices, "1. Name it   2. Save   3. Click a card to use it",
+            x + 16, cursor + 32, 6.6f, withAlpha(MUTED, Math.round(255 * headerOpacity)));
+        String status = !configStatus.isEmpty() && System.nanoTime() < configStatusUntil
+            ? configStatus : "Using  " + configs.active();
+        Fonts.regular().drawText(matrices, status, x + 16, cursor + 48, 6.4f,
+            withAlpha(!configStatus.isEmpty() && System.nanoTime() < configStatusUntil ? ACCENT : DIM,
+                Math.round(255 * headerOpacity)));
+        drawHelpChip(matrices, x + width - 28, cursor + 14, mouseX, mouseY, headerOpacity,
+            "Every config is a PNG. Save one for legit, one for crystal, then click a card to swap. Those PNGs are what a cloud host would use later.");
+        cursor += headerHeight + 10;
+
+        float fieldEntrance = pageEntrance(card++);
+        float fieldY = cursor + (1.0f - fieldEntrance) * 6.0f;
+        float fieldOpacity = animation * fieldEntrance;
+        boolean fieldHovered = hovered(mouseX, mouseY, x, fieldY, width - 26, 32);
+        RenderUtil.RECT.draw(matrices, x, fieldY, width - 26, 32, 8,
+            withAlpha(blend(CONTROL, CARD_HOVER, fieldHovered || configFieldFocused ? 1.0f : 0.0f),
+                Math.round(210 * fieldOpacity)));
+        String fieldText = configInput.isEmpty()
+            ? (configFieldFocused ? (pulse() ? "|" : "") : "Name this config, e.g. legit")
+            : configInput + (configFieldFocused && pulse() ? "|" : "");
+        Fonts.regular().drawText(matrices, trim(fieldText, 52), x + 12, centeredTextY(fieldY, 32, 7.4f), 7.4f,
+            withAlpha(configInput.isEmpty() && !configFieldFocused ? DIM : TEXT, Math.round(255 * fieldOpacity)));
