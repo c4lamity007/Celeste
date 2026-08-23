@@ -26,6 +26,11 @@ public record ModuleContext(MinecraftClient client, GuiModule module) {
         return setting instanceof GuiSetting.Keybind bind ? bind.keyCode() : -1;
     }
 
+    public int colorPick(String label, int fallbackRgb) {
+        GuiSetting setting = setting(label);
+        return setting instanceof GuiSetting.ColorPick pick ? pick.rgb() : fallbackRgb;
+    }
+
     public GuiSetting setting(String label) {
         for (GuiSetting setting : module.settings()) {
             if (setting.label().equalsIgnoreCase(label)) {

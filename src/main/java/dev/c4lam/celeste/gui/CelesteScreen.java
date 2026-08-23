@@ -74,6 +74,7 @@ public final class CelesteScreen extends Screen {
     private GuiSetting.Slider draggingSlider;
     private ConfigHit draggingConfig;
     private GuiSetting.Keybind listeningKeybind;
+    private final ColorPickerControl colorPicker = new ColorPickerControl();
 
     private final List<NavHit> navHits = new ArrayList<>();
     private final List<ModuleHit> moduleHits = new ArrayList<>();
@@ -208,6 +209,10 @@ public final class CelesteScreen extends Screen {
             drawUtilityPage(matrices, virtualMouseX, virtualMouseY, animation);
         }
         GuiRenderer.getInstance().popScissor();
+        colorPicker.drawPopup(matrices);
+        if (colorPicker.isDragging()) {
+            colorPicker.drag(virtualMouseX, virtualMouseY);
+        }
         if (selectedPage == CelestePage.CONFIGS) {
             drawContentFade(matrices, animation);
         }
@@ -528,11 +533,15 @@ public final class CelesteScreen extends Screen {
                     withAlpha(listeningKeybind == keybind ? ACCENT_SOFT : CONTROL, Math.round(205 * animation)));
                 Fonts.semibold().drawCenteredText(matrices, value, valueX + valueWidth / 2,
                     centeredTextY(y + 8, 18, 7.2f), 7.2f, withAlpha(TEXT, Math.round(255 * animation)));
+            } else if (setting instanceof GuiSetting.ColorPick colorPick) {
+                colorPicker.drawSwatch(matrices, colorPick, x + width - 37, y + 9, animation);
             }
 
             if (interactive) {
                 if (setting instanceof GuiSetting.Slider) {
                     settingHits.add(new SettingHit(setting, x + width - 93, y + 14, 76, 17));
+                } else if (setting instanceof GuiSetting.ColorPick) {
+                    settingHits.add(new SettingHit(setting, x + width - 37, y + 9, 16, 16));
                 } else {
                     settingHits.add(new SettingHit(setting, x, y, width, 34));
                 }
@@ -1009,6 +1018,13 @@ public final class CelesteScreen extends Screen {
         if (click.button() != GLFW.GLFW_MOUSE_BUTTON_LEFT && click.button() != GLFW.GLFW_MOUSE_BUTTON_RIGHT) {
             return false;
         }
+        if (colorPicker.mouseClicked(mouseX, mouseY)) {
+            return true;
+        }
+        if (colorPicker.isOpen() && !colorPicker.popupContains(mouseX, mouseY)) {
+            colorPicker.close();
+            return true;
+        }
 
         if (selectedPage.feature() || selectedPage == CelestePage.CONFIGS) {
             float searchWidth = Math.min(176, contentWidth * 0.32f);
@@ -1115,6 +1131,8 @@ public final class CelesteScreen extends Screen {
                 updateDraggedSlider(mouseX);
             } else if (hit.setting() instanceof GuiSetting.Keybind keybind) {
                 listeningKeybind = keybind;
+            } else if (hit.setting() instanceof GuiSetting.ColorPick pick) {
+                colorPicker.toggle(pick, hit.x(), hit.y());
             }
             return true;
         }
@@ -1137,11 +1155,27 @@ public final class CelesteScreen extends Screen {
     @Override
     public boolean mouseReleased(Click click) {
         double mouseX = click.x() / uiScale;
+        double mouseY = click.y() / uiScale;
+        colorPicker.mouseReleased(mouseX, mouseY);
         updateDraggedSlider(mouseX);
         updateDraggedConfig(mouseX);
         draggingSlider = null;
         draggingConfig = null;
         return super.mouseReleased(click);
+    }
+
+    @Override
+    public boolean mouseDragged(Click click, double deltaX, double deltaY) {
+        colorPicker.drag(click.x() / uiScale, click.y() / uiScale);
+        if (draggingSlider != null) {
+            updateDraggedSlider(click.x() / uiScale);
+            return true;
+        }
+        if (draggingConfig != null) {
+            updateDraggedConfig(click.x() / uiScale);
+            return true;
+        }
+        return super.mouseDragged(click, deltaX, deltaY);
     }
 
     @Override
@@ -1374,6 +1408,7 @@ public final class CelesteScreen extends Screen {
     private void collapseAllModules() {
         expandedModule = null;
         expansionAnimations.clear();
+        colorPicker.close();
     }
 
     private boolean isControlDown() {

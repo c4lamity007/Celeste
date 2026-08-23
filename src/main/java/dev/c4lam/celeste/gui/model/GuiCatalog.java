@@ -135,9 +135,15 @@ public final class GuiCatalog {
             slider("Delay", "Ticks between placements", 2, 1, 10, 1), silentSwap()),
         new GuiModule("Auto Drain", "Buckets nearby water", CelestePage.CRYSTAL, false,
             slider("Delay", "Ticks between collection attempts", 4, 1, 20, 1), silentSwap()),
-        new GuiModule("Auto Refill", "Refills the hotbar", CelestePage.CRYSTAL, false,
-            slider("Delay", "Ticks between clicks", 3, 1, 20, 1),
-            mode("Mode", "Items eligible for refill", "Combat", "Potions", "Combat")),
+        new GuiModule("Potion Refill", "Refills splash pots", CelestePage.CRYSTAL, false,
+            mode("Mode", "How potions are chosen", "Automatic", "Hover", "Automatic"),
+            slider("Strength Slot", "Hotbar slot for strength (0 off)", 2, 0, 9, 1),
+            slider("Speed Slot", "Hotbar slot for speed (0 off)", 3, 0, 9, 1),
+            slider("Health Min", "First health hotbar slot", 4, 1, 9, 1),
+            slider("Health Max", "Last health hotbar slot", 9, 1, 9, 1),
+            slider("Delay", "Ticks between automatic swaps", 3, 1, 20, 1),
+            slider("CPS Min", "Minimum hover swaps per second", 8, 1, 20, 1),
+            slider("CPS Max", "Maximum hover swaps per second", 12, 1, 20, 1)),
         new GuiModule("Fast Place", "Repeats block place clicks", CelestePage.CRYSTAL, false,
             slider("Delay", "Ticks between repeated use clicks", 1, 0, 4, 1),
             toggle("Blocks only", "Only repeat while holding a block item", true)),
@@ -205,10 +211,8 @@ public final class GuiCatalog {
         new GuiModule("Arrow ESP", "Arrows toward players", CelestePage.VISUALS, false,
             slider("Range", "Maximum render distance", 64, 16, 128, 4),
             slider("Opacity", "Indicator opacity", .8, .1, 1, .05),
-            mode("Arrow Style", "Arrow style", "Default", "Default", "Arrow 2", "Arrow 3"),
-            slider("Red", "Red color value", 255, 0, 255, 1),
-            slider("Green", "Green color value", 79, 0, 255, 1),
-            slider("Blue", "Blue color value", 163, 0, 255, 1)),
+            mode("Arrow Style", "Arrow style", "Arrow 2", "Arrow 2", "Arrow 3"),
+            colorPick("Color", "Arrow color", 255, 79, 163)),
         new GuiModule("Item ESP", "Boxes dropped items", CelestePage.VISUALS, false,
             slider("Range", "Maximum render distance", 64, 8, 128, 4),
             slider("Opacity", "Box opacity", .75, .1, 1, .05)),
@@ -248,5 +252,9 @@ public final class GuiCatalog {
         settings[0] = actionKey(key);
         System.arraycopy(rest, 0, settings, 1, rest.length);
         return settings;
+    }
+
+    private static GuiSetting colorPick(String label, String description, int red, int green, int blue) {
+        return new GuiSetting.ColorPick(label, description, red, green, blue);
     }
 }

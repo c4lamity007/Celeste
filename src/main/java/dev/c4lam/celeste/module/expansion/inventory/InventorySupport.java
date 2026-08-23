@@ -273,6 +273,22 @@ public static boolean executeClick(MinecraftClient client, ClickIntent intent, i
         return true;
     }
 
+    public static boolean executeInventoryClick(MinecraftClient client, ClickIntent intent, int button,
+                                               SlotActionType actionType) {
+        if (intent == null || !playerInventoryAvailable(client) || client.world != intent.world()
+            || client.player.playerScreenHandler != intent.handler()
+            || intent.handler().syncId != intent.syncId()
+            || intent.slotId() < 0 || intent.slotId() >= intent.handler().slots.size()) {
+            return false;
+        }
+        Slot slot = intent.handler().slots.get(intent.slotId());
+        if (slot.id != intent.slotId() || !intent.matcher().test(slot.getStack())) {
+            return false;
+        }
+        client.interactionManager.clickSlot(intent.syncId(), intent.slotId(), button, actionType, client.player);
+        return true;
+    }
+
     public static Slot focusedSlot(MinecraftClient client) {
         if (!(client.currentScreen instanceof HandledScreen<?> handled)) {
             return null;

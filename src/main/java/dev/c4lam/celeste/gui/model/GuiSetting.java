@@ -2,7 +2,7 @@ package dev.c4lam.celeste.gui.model;
 
 import java.util.List;
 
-public sealed interface GuiSetting permits GuiSetting.Toggle, GuiSetting.Slider, GuiSetting.Mode, GuiSetting.Keybind {
+public sealed interface GuiSetting permits GuiSetting.Toggle, GuiSetting.Slider, GuiSetting.Mode, GuiSetting.Keybind, GuiSetting.ColorPick {
     String label();
 
     String description();
@@ -171,6 +171,97 @@ public sealed interface GuiSetting permits GuiSetting.Toggle, GuiSetting.Slider,
 
         public void setKeyCode(int keyCode) {
             this.keyCode = keyCode;
+        }
+    }
+
+    final class ColorPick implements GuiSetting {
+        private final String label;
+        private final String description;
+        private int rgb;
+
+        public ColorPick(String label, String description, int rgb) {
+            this.label = label;
+            this.description = description;
+            setRgb(rgb);
+        }
+
+        public ColorPick(String label, String description, int red, int green, int blue) {
+            this(label, description, pack(red, green, blue));
+        }
+
+        @Override
+        public String label() {
+            return label;
+        }
+
+        @Override
+        public String description() {
+            return description;
+        }
+
+        public int rgb() {
+            return rgb;
+        }
+
+        public int red() {
+            return rgb >> 16 & 0xFF;
+        }
+
+        public int green() {
+            return rgb >> 8 & 0xFF;
+        }
+
+        public int blue() {
+            return rgb & 0xFF;
+        }
+
+        public void setRgb(int rgb) {
+            this.rgb = rgb & 0xFFFFFF;
+        }
+
+        public void setRgb(int red, int green, int blue) {
+            setRgb(pack(red, green, blue));
+        }
+
+        public static Integer parse(String value) {
+            if (value == null) {
+                return null;
+            }
+            String text = value.trim();
+            if (text.isEmpty()) {
+                return null;
+            }
+            try {
+                if (text.charAt(0) == '#') {
+                    String hex = text.substring(1);
+                    if (hex.length() == 6) {
+                        return Integer.parseInt(hex, 16);
+                    }
+                    return null;
+                }
+                int comma = text.indexOf(',');
+                int last = text.lastIndexOf(',');
+                if (comma > 0 && last > comma) {
+                    int red = Integer.parseInt(text.substring(0, comma).trim());
+                    int green = Integer.parseInt(text.substring(comma + 1, last).trim());
+                    int blue = Integer.parseInt(text.substring(last + 1).trim());
+                    return pack(red, green, blue);
+                }
+            } catch (NumberFormatException ignored) {
+            }
+            return null;
+        }
+
+        public String serialized() {
+            return red() + "," + green() + "," + blue();
+        }
+
+        private static int pack(int red, int green, int blue) {
+            return clamp(red) << 16 | clamp(green) << 8 | clamp(blue);
+        }
+
+        private static int clamp(int channel) {
+            return Math.max(0, Math.min(255, channel));
         }
     }
 }

@@ -24,7 +24,7 @@ public final class InventoryExpansion {
         modules.register(new HoverTotemFeature());
         modules.register(new AutoWebFeature());
         modules.register(new AutoDrainFeature());
-        modules.register(new AutoRefillFeature());
+        modules.register(new PotionRefillFeature());
         modules.register(new FastPlaceFeature());
         modules.register(new FastExpFeature());
     }
