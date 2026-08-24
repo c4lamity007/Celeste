@@ -20,6 +20,8 @@ import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.option.OptionsScreen;
 import net.minecraft.client.input.CharInput;
 import net.minecraft.client.input.KeyInput;
+import net.minecraft.client.network.AbstractClientPlayerEntity;
+import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.text.Text;
@@ -29,10 +31,15 @@ import org.lwjgl.glfw.GLFW;
 
 import java.awt.Color;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
 
 /**
  * Celeste 1.0 Click GUI. Runtime behavior is attached through ModuleManager;
@@ -42,6 +49,14 @@ public final class CelesteScreen extends Screen {
     private static final Identifier LOGO = Identifier.of("celeste", "textures/gui/celeste-logo.png");
     private static final Identifier SEARCH_ICON = Identifier.of("celeste", "textures/gui/icons/search.png");
     private static final Identifier SETTINGS_ICON = Identifier.of("celeste", "textures/gui/icons/settings.png");
+    private static final Identifier STAR_ICON = Identifier.of("celeste", "textures/gui/icons/star.png");
+    private static final Identifier STAR_FILL_ICON = Identifier.of("celeste", "textures/gui/icons/star-fill.png");
+    private static final Identifier TRASH_ICON = Identifier.of("celeste", "textures/gui/icons/trash.png");
+    private static final Identifier CLOUD_ICON = Identifier.of("celeste", "textures/gui/icons/cloud-config.png");
+    private static final Color STAR_YELLOW = color(255, 210, 86, 255);
+    private static final float STAR_SMOOTH_TIME_SECONDS = 0.18f;
+    private static final Color TRASH_RED = color(232, 74, 82, 255);
+    private static final Color CLOUD_TAN = color(232, 204, 142, 255);
     private static final long TOGGLE_ANIMATION_NANOS = 125_000_000L;
     private static final long EXPANSION_ANIMATION_NANOS = 180_000_000L;
     private static final long NAVIGATION_ANIMATION_NANOS = 210_000_000L;
@@ -59,9 +74,12 @@ public final class CelesteScreen extends Screen {
     private static final Color DIM = color(135, 119, 135, 255);
     private static final Color ACCENT = color(255, 43, 143, 255);
     private static final Color ACCENT_SOFT = color(191, 33, 112, 175);
-    private static final Color PANEL_TOP = color(31, 18, 31, 244);
-    private static final Color PANEL_BOTTOM = color(14, 10, 17, 249);
+    private static final Color PANEL_TOP = color(25, 15, 25, 246);
+    private static final Color PANEL_BOTTOM = color(25, 15, 25, 246);
     private static final Color SIDEBAR = color(9, 6, 12, 222);
+    private static final Color RAIL_CARD = color(5, 3, 7, 240);
+    private static final Color CARD_TOP = color(20, 12, 22, 210);
+    private static final Color CARD_BOTTOM = color(8, 5, 10, 232);
     private static final Color CARD = color(41, 27, 40, 170);
     private static final Color CARD_HOVER = color(53, 34, 50, 192);
     private static final Color CARD_OPEN = color(48, 29, 46, 218);
@@ -72,6 +90,8 @@ public final class CelesteScreen extends Screen {
     private CelestePage selectedPage = CelestePage.SWORD;
     private GuiModule expandedModule;
     private GuiSetting.Slider draggingSlider;
+    private GuiSetting.Range draggingRange;
+    private boolean draggingRangeHigh;
     private ConfigHit draggingConfig;
     private GuiSetting.Keybind listeningKeybind;
     private final ColorPickerControl colorPicker = new ColorPickerControl();
@@ -81,13 +101,20 @@ public final class CelesteScreen extends Screen {
     private final List<SettingHit> settingHits = new ArrayList<>();
     private final List<ConfigHit> configHits = new ArrayList<>();
     private final List<FriendHit> friendHits = new ArrayList<>();
+    private final List<SuggestionHit> suggestionHits = new ArrayList<>();
     private final List<ProfileHit> profileHits = new ArrayList<>();
     private final List<ActionHit> actionHits = new ArrayList<>();
+    private int friendSuggestionIndex;
     private String configInput = "";
     private boolean configFieldFocused;
     private String configStatus = "";
     private long configStatusUntil;
     private FieldHit configFieldHit;
+    private String friendInput = "";
+    private boolean friendFieldFocused;
+    private String friendStatus = "";
+    private long friendStatusUntil;
+    private FieldHit friendFieldHit;
     private ConfigLibrary.Tab configTab = ConfigLibrary.Tab.MY;
     private String inspectConfigId = "";
     private final List<TabHit> configTabHits = new ArrayList<>();
@@ -100,10 +127,14 @@ public final class CelesteScreen extends Screen {
     private final Map<GuiModule, TimedAnimation> expansionAnimations = new IdentityHashMap<>();
     private final Map<CelestePage, TimedAnimation> navigationAnimations = new IdentityHashMap<>();
     private final Map<Object, TimedAnimation> hoverAnimations = new IdentityHashMap<>();
+    private final Map<String, TimedAnimation> namedHovers = new HashMap<>();
+    private final Map<String, SpringAnimation> starFills = new HashMap<>();
     private final List<Long> searchRevealTimes = new ArrayList<>();
 
     private float contentScroll;
     private float targetScroll;
+    private float configFade = 1.0f;
+    private float configScrollMin;
     private String search = "";
     private boolean searchFocused;
     private long openedAt;
@@ -143,6 +174,13 @@ public final class CelesteScreen extends Screen {
         layout();
         float animation = openAnimation();
         contentScroll += (targetScroll - contentScroll) * Math.min(1.0f, delta * 0.22f + 0.12f);
+        if (selectedPage == CelestePage.CONFIGS) {
+            boolean atBottom = contentScroll <= configScrollMin + 1.5f;
+            float fadeTarget = atBottom ? 0.0f : 1.0f;
+            configFade += (fadeTarget - configFade) * Math.min(1.0f, delta * 0.08f + 0.03f);
+        } else {
+            configFade = 1.0f;
+        }
 
         MatrixStack matrices = RenderUtil.matrices();
         matrices.loadIdentity();
@@ -158,11 +196,13 @@ public final class CelesteScreen extends Screen {
         settingHits.clear();
         configHits.clear();
         friendHits.clear();
+        suggestionHits.clear();
         profileHits.clear();
         actionHits.clear();
         configTabHits.clear();
         configIconHits.clear();
         configFieldHit = null;
+        friendFieldHit = null;
         pendingTooltip = "";
 
         float animatedY = panelY + (1.0f - animation) * 18.0f;
@@ -222,6 +262,9 @@ public final class CelesteScreen extends Screen {
 
         if (draggingSlider != null) {
             updateDraggedSlider(virtualMouseX);
+        }
+        if (draggingRange != null) {
+            updateDraggedRange(virtualMouseX);
         }
         if (draggingConfig != null) {
             updateDraggedConfig(virtualMouseX);
@@ -355,11 +398,7 @@ public final class CelesteScreen extends Screen {
         float searchY = y + 23;
         boolean hovered = hovered(mouseX, mouseY, searchX, searchY, searchWidth, 29);
         float focus = hoverAnimation(SEARCH_HOVER_KEY, hovered || searchFocused);
-        // Keep the idle search glass visually continuous with the navigation rail;
-        // focus adds the existing warm tint without turning the field into a dark inset.
-        Color searchColor = blend(SIDEBAR, color(51, 32, 49, SIDEBAR.getAlpha()), focus);
-        RenderUtil.RECT.draw(matrices, searchX, searchY, searchWidth, 29, 9,
-            withAlpha(searchColor, Math.round(SIDEBAR.getAlpha() * animation)));
+        drawRailCard(matrices, searchX, searchY, searchWidth, 29, 9, focus, animation);
         RenderUtil.TEXTURE_RECT.draw(matrices, searchX + 9 - focus * 0.5f, searchY + 8, 13, 13, 0,
             withAlpha(blend(MUTED, TEXT, focus * 0.45f), Math.round(235 * animation)), 0, 0, 1, 1, SEARCH_ICON);
         float textX = searchX + 28;
@@ -518,6 +557,23 @@ public final class CelesteScreen extends Screen {
                 String value = sliderValue(slider.value());
                 Fonts.semibold().drawCenteredText(matrices, value, sliderX + sliderWidth / 2, y + 7, 7.2f,
                     withAlpha(TEXT, Math.round(255 * animation)));
+            } else if (setting instanceof GuiSetting.Range range) {
+                float sliderX = x + width - 93;
+                float sliderY = y + 22;
+                float sliderWidth = 76;
+                float low = (float) range.lowProgress();
+                float high = (float) range.highProgress();
+                RenderUtil.RECT.draw(matrices, sliderX, sliderY, sliderWidth, 3, 1.5f, withAlpha(color(86, 59, 82, 230), Math.round(230 * animation)));
+                RenderUtil.RECT.draw(matrices, sliderX + sliderWidth * low, sliderY, sliderWidth * Math.max(0.02f, high - low), 3, 1.5f,
+                    withAlpha(ACCENT, Math.round(255 * animation)));
+                float knob = 8;
+                RenderUtil.RECT.draw(matrices, sliderX + sliderWidth * low - knob / 2.0f, sliderY - 2.5f, knob, knob, knob / 2.0f,
+                    withAlpha(Color.WHITE, Math.round(250 * animation)));
+                RenderUtil.RECT.draw(matrices, sliderX + sliderWidth * high - knob / 2.0f, sliderY - 2.5f, knob, knob, knob / 2.0f,
+                    withAlpha(Color.WHITE, Math.round(250 * animation)));
+                String value = sliderValue(range.low()) + " - " + sliderValue(range.high());
+                Fonts.semibold().drawCenteredText(matrices, value, sliderX + sliderWidth / 2, y + 7, 7.2f,
+                    withAlpha(TEXT, Math.round(255 * animation)));
             } else if (setting instanceof GuiSetting.Mode mode) {
                 String value = mode.value();
                 float valueWidth = Math.max(46, Fonts.semibold().getWidth(value, 7.2f) + 17);
@@ -538,7 +594,7 @@ public final class CelesteScreen extends Screen {
             }
 
             if (interactive) {
-                if (setting instanceof GuiSetting.Slider) {
+                if (setting instanceof GuiSetting.Slider || setting instanceof GuiSetting.Range) {
                     settingHits.add(new SettingHit(setting, x + width - 93, y + 14, 76, 17));
                 } else if (setting instanceof GuiSetting.ColorPick) {
                     settingHits.add(new SettingHit(setting, x + width - 37, y + 9, 16, 16));
@@ -559,7 +615,7 @@ public final class CelesteScreen extends Screen {
 
     private void drawUtilityPage(MatrixStack matrices, int mouseX, int mouseY, float animation) {
         switch (selectedPage) {
-            case FRIENDS -> drawFriendsPage(matrices, animation);
+            case FRIENDS -> drawFriendsPage(matrices, mouseX, mouseY, animation);
             case CONFIGS -> drawConfigsPage(matrices, mouseX, mouseY, animation);
             case HUD -> drawPlaceholder(matrices, "H", "HUD editor", "Arrange interface widgets on screen.", "Open editor", animation);
             case SETTINGS -> drawSettingsPage(matrices, mouseX, mouseY, animation);
@@ -568,54 +624,276 @@ public final class CelesteScreen extends Screen {
         }
     }
 
-    private void drawFriendsPage(MatrixStack matrices, float animation) {
+    private void drawFriendsPage(MatrixStack matrices, int mouseX, int mouseY, float animation) {
         List<FriendManager.Friend> friends = FriendManager.getInstance().getFriends();
-        if (!friends.isEmpty()) {
+        float x = contentX;
+        float width = contentWidth;
+        float cursor = contentY + contentScroll + 8;
+        float fieldY = cursor;
+        boolean fieldHovered = hovered(mouseX, mouseY, x, fieldY, width, 32);
+        drawRailCard(matrices, x, fieldY, width, 32, 8, fieldHovered || friendFieldFocused ? 1.0f : 0.0f, animation);
+        String placeholder = friendFieldFocused ? "" : "Type a username";
+        String fieldText = friendInput.isEmpty() ? placeholder : friendInput;
+        if (friendFieldFocused && pulse()) {
+            fieldText += "|";
+        }
+        Fonts.regular().drawText(matrices, trim(fieldText, 48), x + 12, centeredTextY(fieldY, 32, 7.4f), 7.4f,
+            withAlpha(friendInput.isEmpty() && !friendFieldFocused ? DIM : TEXT, Math.round(255 * animation)));
+        friendFieldHit = new FieldHit(x, fieldY, width, 32);
+        List<PlayerSuggestion> suggestions = friendFieldFocused ? friendSuggestions(friendInput) : List.of();
+        boolean hideFriends = !suggestions.isEmpty();
+        if (!friendStatus.isEmpty() && System.nanoTime() < friendStatusUntil && !hideFriends) {
+            Fonts.regular().drawText(matrices, friendStatus, x, fieldY + 38, 6.2f,
+                withAlpha(ACCENT, Math.round(255 * animation)));
+            cursor += 56;
+        } else {
+            cursor += 44;
+        }
+
+        if (hideFriends) {
+            drawFriendSuggestions(matrices, mouseX, mouseY, x, fieldY + 36, width, animation, suggestions);
+        } else if (friends.isEmpty()) {
+            float entrance = pageEntrance(1);
+            Fonts.semibold().drawCenteredText(matrices, "No friends yet", x + width / 2,
+                cursor + 28 + (1.0f - entrance) * 8.0f, 11.0f,
+                withAlpha(TEXT, Math.round(255 * animation * entrance)));
+            Fonts.regular().drawCenteredText(matrices, "Type a name to add someone nearby, or middle-click a player.",
+                x + width / 2, cursor + 50 + (1.0f - entrance) * 8.0f, 7.2f,
+                withAlpha(MUTED, Math.round(255 * animation * entrance)));
+        } else {
             float gap = 9;
-            float cardWidth = (contentWidth - gap * 2) / 3.0f;
-            float cardHeight = 48;
-            float startY = contentY + contentScroll + 7;
+            float cardWidth = (width - gap * 2) / 3.0f;
+            float cardHeight = 52;
             for (int index = 0; index < friends.size(); index++) {
                 FriendManager.Friend friend = friends.get(index);
                 int column = index % 3;
                 int row = index / 3;
                 float entrance = pageEntrance(index);
-                float x = contentX + column * (cardWidth + gap);
-                float y = startY + row * (cardHeight + gap) + (1.0f - entrance) * 7.0f;
-                Color top = withAlpha(color(45, 29, 43, 205), Math.round(205 * animation * entrance));
-                Color bottom = withAlpha(color(22, 15, 25, 220), Math.round(220 * animation * entrance));
-                RenderUtil.BLUR_RECT.draw(matrices, x, y, cardWidth, cardHeight, new Vector4f(10),
-                    top, top, bottom, bottom, InterfaceConfig.glassTintMix());
-                float avatarX = x + 9;
-                float avatarY = y + 9;
-                RenderUtil.RECT.draw(matrices, avatarX, avatarY, 30, 30, 8,
-                    withAlpha(ACCENT_SOFT, Math.round(220 * animation * entrance)));
-                String initial = friend.lastKnownName().substring(0, 1).toUpperCase(Locale.ROOT);
-                Fonts.bold().drawCenteredText(matrices, initial, avatarX + 15,
-                    centeredTextY(avatarY, 30, 10.0f), 10.0f,
+                float cardX = x + column * (cardWidth + gap);
+                float cardY = cursor + row * (cardHeight + gap) + (1.0f - entrance) * 7.0f;
+                drawPanelCard(matrices, cardX, cardY, cardWidth, cardHeight, 10, 0.0f, animation * entrance);
+                float avatarX = cardX + 9;
+                float avatarY = cardY + 11;
+                drawPlayerHead(matrices, skinFor(friend.uuid()), friend.lastKnownName(), avatarX, avatarY, 30, animation * entrance);
+                Fonts.semibold().drawText(matrices, trim(friend.lastKnownName(), 12), cardX + 46, cardY + 12, 7.6f,
                     withAlpha(TEXT, Math.round(255 * animation * entrance)));
-                float textCenter = x + 44 + (cardWidth - 49) / 2.0f;
-                Fonts.semibold().drawCenteredText(matrices, friend.lastKnownName(), textCenter,
-                    centeredTextY(y + 8, 18, 8.0f), 8.0f,
-                    withAlpha(TEXT, Math.round(255 * animation * entrance)));
-                Fonts.regular().drawCenteredText(matrices, "Middle-click to remove", textCenter,
-                    centeredTextY(y + 25, 14, 5.8f), 5.8f,
+                Fonts.regular().drawText(matrices, "Friend", cardX + 46, cardY + 30, 5.8f,
                     withAlpha(MUTED, Math.round(255 * animation * entrance)));
-                friendHits.add(new FriendHit(friend, x, y, cardWidth, cardHeight));
+                float deleteX = cardX + cardWidth - 22;
+                float deleteY = cardY + 6;
+                boolean deleteHovered = hovered(mouseX, mouseY, deleteX, deleteY, 16, 16);
+                Fonts.semibold().drawCenteredText(matrices, "×", deleteX + 8, centeredTextY(deleteY, 16, 9.0f), 9.0f,
+                    withAlpha(deleteHovered ? MUTED : color(135, 119, 135, 70), Math.round(255 * animation * entrance)));
+                if (deleteHovered) {
+                    setPendingTooltip(mouseX, mouseY, "Remove this friend.");
+                }
+                friendHits.add(new FriendHit(friend, cardX, cardY, cardWidth, cardHeight, deleteX, deleteY, 16, 16));
             }
             int rows = (friends.size() + 2) / 3;
-            float totalHeight = 7 + rows * cardHeight + Math.max(0, rows - 1) * gap + 7;
-            float minimum = Math.min(0, contentHeight - totalHeight);
-            targetScroll = Math.max(minimum, Math.min(0, targetScroll));
+            cursor += rows * cardHeight + Math.max(0, rows - 1) * gap + 12;
+        }
+
+        float totalHeight = cursor - (contentY + contentScroll) + 12;
+        float minimum = Math.min(0, contentHeight - totalHeight);
+        targetScroll = Math.max(minimum, Math.min(0, targetScroll));
+        configScrollMin = minimum;
+    }
+
+    private void drawFriendSuggestions(
+        MatrixStack matrices,
+        int mouseX,
+        int mouseY,
+        float x,
+        float y,
+        float width,
+        float animation,
+        List<PlayerSuggestion> suggestions
+    ) {
+        if (suggestions.isEmpty()) {
             return;
         }
-        float entrance = pageEntrance(1);
-        float centerX = contentX + contentWidth / 2;
-        float centerY = contentY + Math.min(105, contentHeight * 0.34f) + (1.0f - entrance) * 8.0f;
-        Fonts.semibold().drawCenteredText(matrices, "You have no friends.", centerX, centerY, 12.2f,
-            withAlpha(TEXT, Math.round(255 * animation * entrance)));
-        Fonts.regular().drawCenteredText(matrices, "Then Add friends by middle clicking them!", centerX, centerY + 22, 8.7f,
-            withAlpha(MUTED, Math.round(255 * animation * entrance)));
+        friendSuggestionIndex = Math.max(0, Math.min(friendSuggestionIndex, suggestions.size() - 1));
+        float rowHeight = 30;
+        float height = 8 + suggestions.size() * rowHeight;
+        drawRailCard(matrices, x, y, width, height, 10, 0.0f, animation);
+        for (int index = 0; index < suggestions.size(); index++) {
+            PlayerSuggestion suggestion = suggestions.get(index);
+            float rowY = y + 4 + index * rowHeight;
+            boolean hovered = hovered(mouseX, mouseY, x + 4, rowY, width - 8, rowHeight);
+            if (hovered) {
+                friendSuggestionIndex = index;
+            }
+            boolean selected = index == friendSuggestionIndex;
+            if (selected) {
+                RenderUtil.RECT.draw(matrices, x + 4, rowY, width - 8, rowHeight - 2, 7,
+                    withAlpha(color(255, 255, 255, 14), Math.round(14 * animation)));
+            }
+            drawPlayerHead(matrices, suggestion.skin(), suggestion.name(), x + 10, rowY + 2, 24, animation);
+            Fonts.semibold().drawText(matrices, trim(suggestion.name(), 22), x + 42, centeredTextY(rowY, rowHeight - 2, 8.0f), 8.0f,
+                withAlpha(TEXT, Math.round(255 * animation)));
+            suggestionHits.add(new SuggestionHit(suggestion, x + 4, rowY, width - 8, rowHeight));
+        }
+    }
+
+    private void drawRailCard(
+        MatrixStack matrices,
+        float x,
+        float y,
+        float width,
+        float height,
+        float radius,
+        float hover,
+        float animation
+    ) {
+        Color tint = blend(RAIL_CARD, color(12, 8, 16, RAIL_CARD.getAlpha()), hover * 0.35f);
+        RenderUtil.BLUR_RECT.draw(
+            matrices,
+            x,
+            y,
+            width,
+            height,
+            radius,
+            withAlpha(tint, Math.round(tint.getAlpha() * animation)),
+            InterfaceConfig.glassTintMix()
+        );
+    }
+
+    private void drawPanelCard(
+        MatrixStack matrices,
+        float x,
+        float y,
+        float width,
+        float height,
+        float radius,
+        float hover,
+        float animation
+    ) {
+        Color top = blend(CARD_TOP, color(32, 20, 34, 220), hover * 0.45f);
+        Color bottom = blend(CARD_BOTTOM, color(14, 9, 16, 240), hover * 0.35f);
+        RenderUtil.BLUR_RECT.draw(
+            matrices,
+            x,
+            y,
+            width,
+            height,
+            new Vector4f(radius),
+            withAlpha(top, Math.round(top.getAlpha() * animation)),
+            withAlpha(top, Math.round(top.getAlpha() * animation)),
+            withAlpha(bottom, Math.round(bottom.getAlpha() * animation)),
+            withAlpha(bottom, Math.round(bottom.getAlpha() * animation)),
+            InterfaceConfig.glassTintMix()
+        );
+    }
+
+    private void drawPlayerHead(
+        MatrixStack matrices,
+        Identifier skin,
+        String name,
+        float x,
+        float y,
+        float size,
+        float animation
+    ) {
+        float radius = Math.max(5.0f, size * 0.28f);
+        RenderUtil.RECT.draw(matrices, x, y, size, size, radius,
+            color(255, 78, 162, Math.round(210 * animation)));
+        if (skin != null) {
+            float inset = Math.max(1.0f, size * 0.06f);
+            Vector4f corners = new Vector4f(Math.max(3.0f, radius - 1.0f));
+            RenderUtil.TEXTURE_RECT.draw(
+                matrices, x + inset, y + inset, size - inset * 2, size - inset * 2, corners,
+                withAlpha(Color.WHITE, Math.round(255 * animation)),
+                8.0f / 64.0f, 8.0f / 64.0f, 8.0f / 64.0f, 8.0f / 64.0f,
+                GuiTextures.view(skin), GuiTextures.nearest(), true
+            );
+            RenderUtil.TEXTURE_RECT.draw(
+                matrices, x + inset, y + inset, size - inset * 2, size - inset * 2, corners,
+                withAlpha(Color.WHITE, Math.round(255 * animation)),
+                40.0f / 64.0f, 8.0f / 64.0f, 8.0f / 64.0f, 8.0f / 64.0f,
+                GuiTextures.view(skin), GuiTextures.nearest(), true
+            );
+            return;
+        }
+        String initial = name == null || name.isBlank() ? "?" : name.substring(0, 1).toUpperCase(Locale.ROOT);
+        Fonts.bold().drawCenteredText(matrices, initial, x + size / 2.0f,
+            centeredTextY(y, size, size * 0.38f), size * 0.38f,
+            withAlpha(TEXT, Math.round(255 * animation)));
+    }
+
+    private Identifier skinFor(UUID uuid) {
+        if (client == null || uuid == null) {
+            return null;
+        }
+        if (client.world != null) {
+            for (AbstractClientPlayerEntity player : client.world.getPlayers()) {
+                if (uuid.equals(player.getUuid())) {
+                    return player.getSkin().body().texturePath();
+                }
+            }
+        }
+        if (client.getNetworkHandler() != null) {
+            PlayerListEntry entry = client.getNetworkHandler().getPlayerListEntry(uuid);
+            if (entry != null) {
+                return entry.getSkinTextures().body().texturePath();
+            }
+        }
+        return null;
+    }
+
+    private List<PlayerSuggestion> friendSuggestions(String query) {
+        List<PlayerSuggestion> suggestions = new ArrayList<>();
+        if (client == null || client.player == null) {
+            return suggestions;
+        }
+        String needle = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
+        FriendManager friends = FriendManager.getInstance();
+        UUID self = client.player.getUuid();
+        Set<UUID> seen = new HashSet<>();
+
+        if (client.world != null) {
+            for (AbstractClientPlayerEntity player : client.world.getPlayers()) {
+                UUID uuid = player.getUuid();
+                if (uuid.equals(self) || friends.isFriend(uuid) || !seen.add(uuid)) {
+                    continue;
+                }
+                String name = player.getName().getString();
+                if (!needle.isEmpty() && !name.toLowerCase(Locale.ROOT).contains(needle)) {
+                    continue;
+                }
+                suggestions.add(new PlayerSuggestion(uuid, name, player.getSkin().body().texturePath()));
+            }
+        }
+        if (!needle.isEmpty() && client.getNetworkHandler() != null) {
+            for (PlayerListEntry entry : client.getNetworkHandler().getPlayerList()) {
+                if (entry.getProfile() == null) {
+                    continue;
+                }
+                UUID uuid = entry.getProfile().id();
+                String name = entry.getProfile().name();
+                if (uuid == null || name == null || uuid.equals(self) || friends.isFriend(uuid) || !seen.add(uuid)) {
+                    continue;
+                }
+                if (!name.toLowerCase(Locale.ROOT).contains(needle)) {
+                    continue;
+                }
+                suggestions.add(new PlayerSuggestion(uuid, name, entry.getSkinTextures().body().texturePath()));
+            }
+        }
+        suggestions.sort(Comparator.comparing(PlayerSuggestion::name, String.CASE_INSENSITIVE_ORDER));
+        if (suggestions.size() > 6) {
+            return List.copyOf(suggestions.subList(0, 6));
+        }
+        return suggestions;
+    }
+
+    private void addSuggestedFriend(PlayerSuggestion suggestion) {
+        boolean added = FriendManager.getInstance().addFriend(suggestion.uuid(), suggestion.name());
+        friendStatus = added ? "Added " + suggestion.name() : suggestion.name() + " is already a friend";
+        friendStatusUntil = System.nanoTime() + 4_000_000_000L;
+        if (added) {
+            friendInput = "";
+            friendSuggestionIndex = 0;
+        }
     }
 
     private void drawConfigsPage(MatrixStack matrices, int mouseX, int mouseY, float animation) {
@@ -658,9 +936,8 @@ public final class CelesteScreen extends Screen {
             float fieldOpacity = animation * fieldEntrance;
             float fieldWidth = width - 176;
             boolean fieldHovered = hovered(mouseX, mouseY, x, fieldY, fieldWidth, 28);
-            RenderUtil.RECT.draw(matrices, x, fieldY, fieldWidth, 28, 8,
-                withAlpha(blend(CONTROL, CARD_HOVER, fieldHovered || configFieldFocused ? 1.0f : 0.0f),
-                    Math.round(210 * fieldOpacity)));
+            drawRailCard(matrices, x, fieldY, fieldWidth, 28, 8,
+                fieldHovered || configFieldFocused ? 1.0f : 0.0f, fieldOpacity);
             String fieldText = configInput.isEmpty()
                 ? (configFieldFocused ? (pulse() ? "|" : "") : "Name, path, or folder")
                 : configInput + (configFieldFocused && pulse() ? "|" : "");
@@ -677,8 +954,7 @@ public final class CelesteScreen extends Screen {
             float buttonX = x + fieldWidth + 8;
             for (ConfigAction action : actions) {
                 boolean hovered = hovered(mouseX, mouseY, buttonX, fieldY, 38, 28);
-                RenderUtil.RECT.draw(matrices, buttonX, fieldY, 38, 28, 7,
-                    withAlpha(hovered ? ACCENT_SOFT : CONTROL, Math.round(210 * fieldOpacity)));
+                drawRailCard(matrices, buttonX, fieldY, 38, 28, 7, hovered ? 1.0f : 0.0f, fieldOpacity);
                 Fonts.semibold().drawCenteredText(matrices, action.label, buttonX + 19,
                     centeredTextY(fieldY, 28, 5.8f), 5.8f, withAlpha(TEXT, Math.round(255 * fieldOpacity)));
                 actionHits.add(new ActionHit(action.id, action.help, false, buttonX, fieldY, 38, 28));
@@ -726,13 +1002,11 @@ public final class CelesteScreen extends Screen {
                     && entry.name().equals(ConfigProfileManager.getInstance().active());
                 boolean hovered = hovered(mouseX, mouseY, cardX, cardY, cardWidth, cardHeight);
                 boolean inspect = entry.id().equals(inspectConfigId);
-                Color fill = inspect ? CARD_OPEN : active ? ACCENT_SOFT : hovered ? CARD_HOVER : CARD;
-                RenderUtil.RECT.draw(matrices, cardX, cardY, cardWidth, cardHeight, 11,
-                    withAlpha(fill, Math.round(200 * opacity)));
+                drawPanelCard(matrices, cardX, cardY, cardWidth, cardHeight, 11,
+                    inspect || active ? 0.7f : hovered ? 0.45f : 0.0f, opacity);
 
                 float thumb = 42;
-                RenderUtil.RECT.draw(matrices, cardX + 10, cardY + 16, thumb, thumb, 9,
-                    withAlpha(ACCENT_SOFT, Math.round(230 * opacity)));
+                drawRailCard(matrices, cardX + 10, cardY + 16, thumb, thumb, 9, 0.0f, opacity);
                 Fonts.bold().drawCenteredText(matrices, entry.initial(), cardX + 10 + thumb / 2,
                     centeredTextY(cardY + 16, thumb, 13.0f), 13.0f,
                     withAlpha(TEXT, Math.round(255 * opacity)));
@@ -743,34 +1017,40 @@ public final class CelesteScreen extends Screen {
                 Fonts.regular().drawText(matrices, entry.dateLabel(), textX, cardY + 29, 6.3f,
                     withAlpha(MUTED, Math.round(255 * opacity)));
 
-                float iconY = cardY + 48;
-                float icon = 16;
+                float iconY = cardY + 47;
+                float icon = 18;
                 float iconX = textX;
                 boolean favourite = library.isFavourite(entry.id());
-                drawConfigGlyph(matrices, iconX, iconY, icon, "★", favourite ? color(255, 206, 74, 255) : DIM, opacity);
+                boolean starHovered = hovered(mouseX, mouseY, iconX, iconY, icon, icon);
+                drawStarIcon(matrices, entry.id(), favourite, starHovered, iconX, iconY, icon, opacity);
                 configIconHits.add(new IconHit("star", entry.id(), iconX, iconY, icon, icon));
-                if (hovered(mouseX, mouseY, iconX, iconY, icon, icon)) {
+                if (starHovered) {
                     setPendingTooltip(mouseX, mouseY, favourite ? "Remove favourite" : "Favourite");
                 }
-                iconX += 22;
-                RenderUtil.TEXTURE_RECT.draw(matrices, iconX, iconY, icon, icon, 0,
-                    withAlpha(inspect ? TEXT : MUTED, Math.round(255 * opacity)), 0, 0, 1, 1, SETTINGS_ICON);
+                iconX += 24;
+                boolean gearHovered = hovered(mouseX, mouseY, iconX, iconY, icon, icon);
+                drawTintedIcon(matrices, SETTINGS_ICON, iconX, iconY, icon,
+                    blend(MUTED, Color.WHITE, namedHover("gear-" + entry.id(), gearHovered) * 0.35f), opacity);
                 configIconHits.add(new IconHit("gear", entry.id(), iconX, iconY, icon, icon));
-                if (hovered(mouseX, mouseY, iconX, iconY, icon, icon)) {
+                if (gearHovered) {
                     setPendingTooltip(mouseX, mouseY, "Modules in this config");
                 }
-                iconX += 22;
+                iconX += 24;
                 if (entry.origin() != ConfigLibrary.Tab.MY) {
-                    drawConfigGlyph(matrices, iconX, iconY, icon, "↓", MUTED, opacity);
+                    boolean cloudHovered = hovered(mouseX, mouseY, iconX, iconY, icon, icon);
+                    drawTintedIcon(matrices, CLOUD_ICON, iconX, iconY, icon,
+                        blend(MUTED, CLOUD_TAN, namedHover("cloud-" + entry.id(), cloudHovered)), opacity);
                     configIconHits.add(new IconHit("download", entry.id(), iconX, iconY, icon, icon));
-                    if (hovered(mouseX, mouseY, iconX, iconY, icon, icon)) {
+                    if (cloudHovered) {
                         setPendingTooltip(mouseX, mouseY, "Copy into My Configs");
                     }
+                    iconX += 24;
                 }
-                iconX += 22;
-                drawConfigGlyph(matrices, iconX, iconY, icon, "✕", MUTED, opacity);
+                boolean trashHovered = hovered(mouseX, mouseY, iconX, iconY, icon, icon);
+                drawTintedIcon(matrices, TRASH_ICON, iconX, iconY, icon,
+                    blend(MUTED, TRASH_RED, namedHover("trash-" + entry.id(), trashHovered)), opacity);
                 configIconHits.add(new IconHit("trash", entry.id(), iconX, iconY, icon, icon));
-                if (hovered(mouseX, mouseY, iconX, iconY, icon, icon)) {
+                if (trashHovered) {
                     String trash = entry.origin() == ConfigLibrary.Tab.MY && configTab != ConfigLibrary.Tab.FAVOURITE
                         ? "Delete this config"
                         : configTab == ConfigLibrary.Tab.FAVOURITE
@@ -795,8 +1075,7 @@ public final class CelesteScreen extends Screen {
                 float panelHeight = 28 + Math.max(1, modules.size()) * 13 + 12;
                 float panelX = x + width - panelWidth;
                 float panelY = contentY + 8;
-                RenderUtil.RECT.draw(matrices, panelX, panelY, panelWidth, panelHeight, 10,
-                    withAlpha(color(16, 10, 18, 236), Math.round(236 * animation)));
+                drawRailCard(matrices, panelX, panelY, panelWidth, panelHeight, 10, 0.0f, animation);
                 Fonts.semibold().drawText(matrices, "Enabled", panelX + 10, panelY + 8, 7.4f,
                     withAlpha(TEXT, Math.round(255 * animation)));
                 if (modules.isEmpty()) {
@@ -814,17 +1093,64 @@ public final class CelesteScreen extends Screen {
         float totalHeight = cursor - (contentY + contentScroll) + 18;
         float minimum = Math.min(0, contentHeight - totalHeight);
         targetScroll = Math.max(minimum, Math.min(0, targetScroll));
+        configScrollMin = minimum;
     }
 
-    private void drawConfigGlyph(MatrixStack matrices, float x, float y, float size, String glyph, Color color, float opacity) {
-        Fonts.semibold().drawCenteredText(matrices, glyph, x + size / 2, centeredTextY(y, size, 8.2f), 8.2f,
-            withAlpha(color, Math.round(255 * opacity)));
+    private void drawStarIcon(
+        MatrixStack matrices,
+        String id,
+        boolean favourite,
+        boolean hovered,
+        float x,
+        float y,
+        float size,
+        float opacity
+    ) {
+        float fill = starFills.computeIfAbsent(id, ignored -> new SpringAnimation())
+            .update(favourite ? 1.0f : 0.0f, STAR_SMOOTH_TIME_SECONDS);
+        Color color = blend(MUTED, STAR_YELLOW, fill);
+        if (fill < 0.995f) {
+            drawTintedIcon(matrices, STAR_ICON, x, y, size, color, opacity);
+        }
+        if (fill > 0.004f) {
+            drawTintedIcon(matrices, STAR_FILL_ICON, x, y, size, withAlpha(color, Math.round(fill * 255)), opacity);
+        }
+    }
+
+    private void drawTintedIcon(
+        MatrixStack matrices,
+        Identifier texture,
+        float x,
+        float y,
+        float size,
+        Color color,
+        float opacity
+    ) {
+        RenderUtil.TEXTURE_RECT.draw(
+            matrices,
+            x,
+            y,
+            size,
+            size,
+            0,
+            withAlpha(color, Math.round(color.getAlpha() * opacity)),
+            0,
+            0,
+            1,
+            1,
+            texture
+        );
+    }
+
+    private float namedHover(String key, boolean hovered) {
+        return namedHovers.computeIfAbsent(key, ignored -> new TimedAnimation())
+            .update(hovered ? 1.0f : 0.0f, HOVER_ANIMATION_NANOS);
     }
 
     private void drawContentFade(MatrixStack matrices, float animation) {
-        float height = 46;
+        float height = 28;
         Color clear = withAlpha(PANEL_BOTTOM, 0);
-        Color solid = withAlpha(PANEL_BOTTOM, Math.round(PANEL_BOTTOM.getAlpha() * animation));
+        Color solid = withAlpha(PANEL_BOTTOM, Math.round(PANEL_BOTTOM.getAlpha() * 0.55f * animation * Math.max(0.0f, Math.min(1.0f, configFade))));
         RenderUtil.GRADIENT_RECT.draw(
             matrices,
             contentX - 2,
@@ -940,8 +1266,7 @@ public final class CelesteScreen extends Screen {
         float buttonY = settingsButtonY();
         boolean buttonHovered = hovered(mouseX, mouseY, buttonX, buttonY, 157, 29);
         float buttonHover = hoverAnimation(SETTINGS_BUTTON_HOVER_KEY, buttonHovered);
-        RenderUtil.RECT.draw(matrices, buttonX, buttonY, 157, 29, 8,
-            withAlpha(blend(CONTROL, ACCENT_SOFT, buttonHover), Math.round(205 * animation * buttonEntrance)));
+        drawRailCard(matrices, buttonX, buttonY, 157, 29, 8, buttonHover, animation * buttonEntrance);
         Fonts.semibold().drawCenteredText(matrices, "Open Minecraft options", buttonX + 78.5f,
             centeredTextY(buttonY, 29, 8.3f), 8.3f,
             withAlpha(TEXT, Math.round(255 * animation * buttonEntrance)));
@@ -960,14 +1285,12 @@ public final class CelesteScreen extends Screen {
     ) {
         boolean hovered = hovered(mouseX, mouseY, x, y, width, height);
         float hover = hoverAnimation(option, hovered);
-        RenderUtil.RECT.draw(matrices, x, y, width, height, 11,
-            withAlpha(blend(CARD, CARD_HOVER, hover), Math.round((175 + 17 * hover) * animation)));
+        drawPanelCard(matrices, x, y, width, height, 11, hover, animation);
         Fonts.semibold().drawText(matrices, option.label, x + 14, y + 13, 9.5f,
             withAlpha(TEXT, Math.round(255 * animation)));
         String value = sliderValue(option.value());
         float valueWidth = Math.max(35, Fonts.semibold().getWidth(value, 7.5f) + 14);
-        RenderUtil.RECT.draw(matrices, x + width - valueWidth - 12, y + 9, valueWidth, 19, 6,
-            withAlpha(CONTROL, Math.round(210 * animation)));
+        drawRailCard(matrices, x + width - valueWidth - 12, y + 9, valueWidth, 19, 6, 0.0f, animation);
         Fonts.semibold().drawCenteredText(matrices, value, x + width - valueWidth / 2 - 12,
             centeredTextY(y + 9, 19, 7.5f), 7.5f,
             withAlpha(TEXT, Math.round(255 * animation)));
@@ -1006,6 +1329,15 @@ public final class CelesteScreen extends Screen {
     public boolean mouseClicked(Click click, boolean doubled) {
         double mouseX = click.x() / uiScale;
         double mouseY = click.y() / uiScale;
+        if (selectedPage == CelestePage.FRIENDS && click.button() == GLFW.GLFW_MOUSE_BUTTON_RIGHT) {
+            boolean insideContent = hovered(mouseX, mouseY, contentX, contentY, contentWidth, contentHeight);
+            if (insideContent) {
+                friendFieldFocused = true;
+                searchFocused = false;
+                configFieldFocused = false;
+                return true;
+            }
+        }
         if (click.button() == GLFW.GLFW_MOUSE_BUTTON_MIDDLE && selectedPage == CelestePage.FRIENDS) {
             for (FriendHit hit : friendHits) {
                 if (hit.contains(mouseX, mouseY)) {
@@ -1026,14 +1358,45 @@ public final class CelesteScreen extends Screen {
             return true;
         }
 
+        if (selectedPage == CelestePage.FRIENDS && click.button() == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+            for (SuggestionHit hit : suggestionHits) {
+                if (hit.contains(mouseX, mouseY)) {
+                    addSuggestedFriend(hit.suggestion());
+                    friendFieldFocused = true;
+                    searchFocused = false;
+                    configFieldFocused = false;
+                    return true;
+                }
+            }
+            if (friendFieldHit != null && friendFieldHit.contains(mouseX, mouseY)) {
+                friendFieldFocused = true;
+                friendSuggestionIndex = 0;
+                searchFocused = false;
+                configFieldFocused = false;
+                return true;
+            }
+            friendFieldFocused = false;
+        } else if (selectedPage != CelestePage.FRIENDS) {
+            friendFieldFocused = false;
+        }
+
         if (selectedPage.feature() || selectedPage == CelestePage.CONFIGS) {
             float searchWidth = Math.min(176, contentWidth * 0.32f);
             float searchX = panelX + panelWidth - 22 - searchWidth;
             float searchY = panelY + (1.0f - openAnimation()) * 18.0f + 23;
-            searchFocused = hovered(mouseX, mouseY, searchX, searchY, searchWidth, 29);
-            if (searchFocused) {
+            boolean onSearch = hovered(mouseX, mouseY, searchX, searchY, searchWidth, 29);
+            if (onSearch && click.button() == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+                searchFocused = true;
                 configFieldFocused = false;
+                friendFieldFocused = false;
                 return true;
+            }
+            if (searchFocused && click.button() == GLFW.GLFW_MOUSE_BUTTON_LEFT && !onSearch) {
+                searchFocused = false;
+                float offWidth = searchX - contentX - 8;
+                if (offWidth > 0 && hovered(mouseX, mouseY, contentX, searchY, offWidth, 29)) {
+                    return true;
+                }
             }
         } else {
             searchFocused = false;
@@ -1057,6 +1420,14 @@ public final class CelesteScreen extends Screen {
         }
 
         boolean insideContent = hovered(mouseX, mouseY, contentX, contentY, contentWidth, contentHeight);
+        if (insideContent && selectedPage == CelestePage.FRIENDS && click.button() == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+            for (FriendHit hit : friendHits) {
+                if (hit.containsDelete(mouseX, mouseY)) {
+                    FriendManager.getInstance().removeFriend(hit.friend().uuid());
+                    return true;
+                }
+            }
+        }
         if (insideContent && selectedPage == CelestePage.CONFIGS && click.button() == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
             for (TabHit hit : configTabHits) {
                 if (hit.contains(mouseX, mouseY)) {
@@ -1129,6 +1500,12 @@ public final class CelesteScreen extends Screen {
             } else if (hit.setting() instanceof GuiSetting.Slider slider) {
                 draggingSlider = slider;
                 updateDraggedSlider(mouseX);
+            } else if (hit.setting() instanceof GuiSetting.Range range) {
+                draggingRange = range;
+                float lowX = hit.x() + hit.width() * (float) range.lowProgress();
+                float highX = hit.x() + hit.width() * (float) range.highProgress();
+                draggingRangeHigh = Math.abs(mouseX - highX) <= Math.abs(mouseX - lowX);
+                updateDraggedRange(mouseX);
             } else if (hit.setting() instanceof GuiSetting.Keybind keybind) {
                 listeningKeybind = keybind;
             } else if (hit.setting() instanceof GuiSetting.ColorPick pick) {
@@ -1158,8 +1535,10 @@ public final class CelesteScreen extends Screen {
         double mouseY = click.y() / uiScale;
         colorPicker.mouseReleased(mouseX, mouseY);
         updateDraggedSlider(mouseX);
+        updateDraggedRange(mouseX);
         updateDraggedConfig(mouseX);
         draggingSlider = null;
+        draggingRange = null;
         draggingConfig = null;
         return super.mouseReleased(click);
     }
@@ -1169,6 +1548,10 @@ public final class CelesteScreen extends Screen {
         colorPicker.drag(click.x() / uiScale, click.y() / uiScale);
         if (draggingSlider != null) {
             updateDraggedSlider(click.x() / uiScale);
+            return true;
+        }
+        if (draggingRange != null) {
+            updateDraggedRange(click.x() / uiScale);
             return true;
         }
         if (draggingConfig != null) {
@@ -1200,6 +1583,45 @@ public final class CelesteScreen extends Screen {
                 : input.key());
             listeningKeybind = null;
             return true;
+        }
+        if (friendFieldFocused) {
+            List<PlayerSuggestion> suggestions = friendSuggestions(friendInput);
+            if (!suggestions.isEmpty()) {
+                if (input.key() == GLFW.GLFW_KEY_DOWN) {
+                    friendSuggestionIndex = Math.min(suggestions.size() - 1, friendSuggestionIndex + 1);
+                    return true;
+                }
+                if (input.key() == GLFW.GLFW_KEY_UP) {
+                    friendSuggestionIndex = Math.max(0, friendSuggestionIndex - 1);
+                    return true;
+                }
+            }
+            if ((input.key() == GLFW.GLFW_KEY_DELETE || input.key() == GLFW.GLFW_KEY_BACKSPACE) && !friendInput.isEmpty()) {
+                friendInput = friendInput.substring(0, friendInput.length() - 1);
+                friendSuggestionIndex = 0;
+                return true;
+            }
+            if (input.key() == GLFW.GLFW_KEY_TAB && !suggestions.isEmpty()) {
+                friendInput = suggestions.get(Math.max(0, Math.min(friendSuggestionIndex, suggestions.size() - 1))).name();
+                return true;
+            }
+            if (input.isEnter()) {
+                if (!suggestions.isEmpty()) {
+                    int index = Math.max(0, Math.min(friendSuggestionIndex, suggestions.size() - 1));
+                    addSuggestedFriend(suggestions.get(index));
+                } else {
+                    friendStatus = FriendManager.getInstance().addFriendByName(client, friendInput);
+                    friendStatusUntil = System.nanoTime() + 4_000_000_000L;
+                    if (friendStatus.startsWith("Added")) {
+                        friendInput = "";
+                    }
+                }
+                return true;
+            }
+            if (input.isEscape()) {
+                friendFieldFocused = false;
+                return true;
+            }
         }
         if (configFieldFocused) {
             if ((input.key() == GLFW.GLFW_KEY_DELETE || input.key() == GLFW.GLFW_KEY_BACKSPACE)
@@ -1245,6 +1667,11 @@ public final class CelesteScreen extends Screen {
 
     @Override
     public boolean charTyped(CharInput input) {
+        if (friendFieldFocused && input.isValidChar() && friendInput.length() < 16) {
+            friendInput += input.asString();
+            friendSuggestionIndex = 0;
+            return true;
+        }
         if (configFieldFocused && input.isValidChar() && configInput.length() < 120) {
             configInput += input.asString();
             return true;
@@ -1276,6 +1703,7 @@ public final class CelesteScreen extends Screen {
         GuiRenderer.getInstance().clearScissors();
         RenderUtil.releaseBlur();
         draggingSlider = null;
+        draggingRange = null;
         draggingConfig = null;
         listeningKeybind = null;
         super.removed();
@@ -1340,6 +1768,25 @@ public final class CelesteScreen extends Screen {
             float sliderX = hit.x();
             double progress = clamp((float) ((mouseX - sliderX) / hit.width()), 0, 1);
             draggingSlider.setValue(draggingSlider.minimum() + (draggingSlider.maximum() - draggingSlider.minimum()) * progress);
+            break;
+        }
+    }
+
+    private void updateDraggedRange(double mouseX) {
+        if (draggingRange == null) {
+            return;
+        }
+        for (SettingHit hit : settingHits) {
+            if (hit.setting() != draggingRange) {
+                continue;
+            }
+            double progress = clamp((float) ((mouseX - hit.x()) / hit.width()), 0, 1);
+            double value = draggingRange.minimum() + (draggingRange.maximum() - draggingRange.minimum()) * progress;
+            if (draggingRangeHigh) {
+                draggingRange.setHigh(value);
+            } else {
+                draggingRange.setLow(value);
+            }
             break;
         }
     }
@@ -1694,7 +2141,21 @@ public final class CelesteScreen extends Screen {
         }
     }
 
-    private record FriendHit(FriendManager.Friend friend, float x, float y, float width, float height) {
+    private record FriendHit(FriendManager.Friend friend, float x, float y, float width, float height,
+                             float deleteX, float deleteY, float deleteWidth, float deleteHeight) {
+        boolean contains(double mouseX, double mouseY) {
+            return hovered(mouseX, mouseY, x, y, width, height);
+        }
+
+        boolean containsDelete(double mouseX, double mouseY) {
+            return deleteWidth > 0 && hovered(mouseX, mouseY, deleteX, deleteY, deleteWidth, deleteHeight);
+        }
+    }
+
+    private record PlayerSuggestion(UUID uuid, String name, Identifier skin) {
+    }
+
+    private record SuggestionHit(PlayerSuggestion suggestion, float x, float y, float width, float height) {
         boolean contains(double mouseX, double mouseY) {
             return hovered(mouseX, mouseY, x, y, width, height);
         }

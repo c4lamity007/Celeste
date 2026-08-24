@@ -8,12 +8,11 @@ public enum HudElementType {
     ARMOR("Armor", 148, 34),
     KEYBINDS("Keybinds", 122, 48),
     COOLDOWNS("Cooldowns", 122, 34),
-    ARRAYLIST("Arraylist", 126, 62),
+    ARRAYLIST("Arraylist", 150, 180),
     WATERMARK("Watermark", 164, 30),
     TPS("TPS", 66, 27),
     FPS("FPS", 66, 27),
-    SPOTIFY("Media HUD", 190, 82),
-    SILENT_ROTATION("Silent Rotation", 120, 20);
+    SPOTIFY("Media HUD", 190, 82);
 
     private final String label;
     private final float width;

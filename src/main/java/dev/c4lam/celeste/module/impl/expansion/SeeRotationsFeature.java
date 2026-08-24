@@ -1,41 +1,27 @@
 package dev.c4lam.celeste.module.impl.expansion;
 
-import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.module.ModuleFeature;
 import dev.c4lam.celeste.rotation.RotationManager;
-import dev.c4lam.celeste.rotation.RotationTask;
 import net.minecraft.client.MinecraftClient;
-import net.minecraft.client.option.Perspective;
 import net.minecraft.entity.LivingEntity;
 
 public final class SeeRotationsFeature implements ModuleFeature {
-    private static volatile boolean enabled;
+    private static volatile boolean auraEnabled;
+    private static volatile boolean seeRotations;
 
     @Override
     public String name() {
         return "See Rotations";
     }
 
-    @Override
-    public void onEnable(ModuleContext context) {
-        enabled = true;
-    }
-
-    @Override
-    public void onDisable(ModuleContext context) {
-        enabled = false;
-    }
-
-    @Override
-    public void onStartTick(ModuleContext context) {
-    }
-
-    @Override
-    public void onActionTick(ModuleContext context) {
+    public static void syncFromAura(boolean enabled, boolean show) {
+        auraEnabled = enabled;
+        seeRotations = show;
     }
 
     public static boolean shouldApply(MinecraftClient client) {
-        return enabled
+        return auraEnabled
+                && seeRotations
                 && client.player != null
                 && RotationManager.getInstance().isActive()
                 && client.options.getPerspective().ordinal() != 0;

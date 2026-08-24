@@ -196,6 +196,19 @@ public final class RotationManager {
         return serverRotation;
     }
 
+    /**
+     * Lets the owning module refine the already-selected silent look between
+     * ticks without touching the camera. Packets still go out on the tick.
+     */
+    public void hold(Object owner, Rotation rotation, MoveFixMode mode) {
+        if (rotation == null || !isOwnedBy(owner)) {
+            return;
+        }
+        serverRotation = rotation;
+        moveFixMode = mode.packetRepresentable();
+        active = true;
+    }
+
     public MoveFixMode moveFixMode() {
         return active ? moveFixMode : MoveFixMode.OFF;
     }

@@ -201,8 +201,8 @@ final class PotionRefillFeature implements ModuleFeature {
         if (hotbar < 0 || hotbar > 8) return null;
         int strength = uiSlot(context.slider("Strength Slot", 2.0D), true);
         int speed = uiSlot(context.slider("Speed Slot", 3.0D), true);
-        int healthMin = uiSlot(context.slider("Health Min", 4.0D), false);
-        int healthMax = uiSlot(context.slider("Health Max", 9.0D), false);
+        int healthMin = uiSlot(context.rangeLow("Health Slots", 4.0D), false);
+        int healthMax = uiSlot(context.rangeHigh("Health Slots", 9.0D), false);
         if (healthMin > healthMax) {
             int swap = healthMin;
             healthMin = healthMax;

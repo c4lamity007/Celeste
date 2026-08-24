@@ -345,6 +345,8 @@ public final class ModuleManager implements AutoCloseable {
                 toggle.setValue(Boolean.parseBoolean(value));
             } else if (setting instanceof GuiSetting.Slider slider) {
                 slider.setValue(Double.parseDouble(value));
+            } else if (setting instanceof GuiSetting.Range range) {
+                range.setSerialized(value);
             } else if (setting instanceof GuiSetting.Mode mode) {
                 mode.setValue(value);
             } else if (setting instanceof GuiSetting.Keybind bind) {
@@ -362,6 +364,7 @@ public final class ModuleManager implements AutoCloseable {
     private static String value(GuiSetting setting) {
         if (setting instanceof GuiSetting.Toggle toggle) return Boolean.toString(toggle.value());
         if (setting instanceof GuiSetting.Slider slider) return Double.toString(slider.value());
+        if (setting instanceof GuiSetting.Range range) return range.serialized();
         if (setting instanceof GuiSetting.Mode mode) return mode.value();
         if (setting instanceof GuiSetting.Keybind bind) return Integer.toString(bind.keyCode());
         if (setting instanceof GuiSetting.ColorPick pick) return pick.serialized();

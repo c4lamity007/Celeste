@@ -16,6 +16,16 @@ public record ModuleContext(MinecraftClient client, GuiModule module) {
         return setting instanceof GuiSetting.Slider slider ? slider.value() : fallback;
     }
 
+    public double rangeLow(String label, double fallback) {
+        GuiSetting setting = setting(label);
+        return setting instanceof GuiSetting.Range range ? range.low() : fallback;
+    }
+
+    public double rangeHigh(String label, double fallback) {
+        GuiSetting setting = setting(label);
+        return setting instanceof GuiSetting.Range range ? range.high() : fallback;
+    }
+
     public String mode(String label, String fallback) {
         GuiSetting setting = setting(label);
         return setting instanceof GuiSetting.Mode mode ? mode.value() : fallback;

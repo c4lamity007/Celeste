@@ -32,7 +32,8 @@
                    "expansion.SwordExpansionInteractionManagerMixin",
                    "expansion.KeepSprintAttackMixin",
                    "expansion.inventory.InventoryExpansionHandledScreenAccessor",
-                   "expansion.inventory.MinecraftClientUseInvoker"
+                   "expansion.inventory.MinecraftClientUseInvoker",
+                   "expansion.inventory.ClientPlayerInteractionManagerOwnFluidMixin"
                ],
     "injectors":  {
                       "defaultRequire":  1

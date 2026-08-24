@@ -2,7 +2,9 @@ package dev.c4lam.celeste.friend;
 
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
+import dev.c4lam.celeste.config.ConfigImageCodec;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.util.hit.EntityHitResult;
@@ -10,6 +12,8 @@ import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -44,11 +48,15 @@ public final class FriendManager implements AutoCloseable {
     private final Path friendFile = FabricLoader.getInstance().getConfigDir()
         .resolve("celeste")
         .resolve("friends.properties");
+    private final Path privateDir = FabricLoader.getInstance().getConfigDir()
+        .resolve("celeste")
+        .resolve("private-friends");
     private final Map<UUID, Friend> friends = new LinkedHashMap<>();
 
     private boolean initialized;
     private boolean dirty;
     private boolean middleMouseDown;
+    private UUID sessionUuid;
 
     private FriendManager() {
     }
@@ -96,6 +104,40 @@ public final class FriendManager implements AutoCloseable {
 
     public boolean addFriend(PlayerEntity player) {
         return player != null && addFriend(player.getUuid(), player.getName().getString());
+    }
+
+    /**
+     * Adds a friend by username from the current world or tab list.
+     *
+     * @return a status string for the GUI
+     */
+    public synchronized String addFriendByName(MinecraftClient client, String rawName) {
+        if (rawName == null || rawName.isBlank()) {
+            return "Type a username first";
+        }
+        String name = rawName.trim();
+        if (client != null && client.world != null) {
+            for (PlayerEntity player : client.world.getPlayers()) {
+                if (player.getName().getString().equalsIgnoreCase(name)) {
+                    boolean added = addFriend(player.getUuid(), player.getName().getString());
+                    return added ? "Added " + player.getName().getString() : player.getName().getString() + " is already a friend";
+                }
+            }
+        }
+        if (client != null && client.getNetworkHandler() != null) {
+            for (PlayerListEntry entry : client.getNetworkHandler().getPlayerList()) {
+                if (entry.getProfile() == null) {
+                    continue;
+                }
+                String profileName = entry.getProfile().name();
+                UUID profileId = entry.getProfile().id();
+                if (profileName != null && profileId != null && profileName.equalsIgnoreCase(name)) {
+                    boolean added = addFriend(profileId, profileName);
+                    return added ? "Added " + profileName : profileName + " is already a friend";
+                }
+            }
+        }
+        return "Couldn't find " + name + " in this world";
     }
 
     /**
@@ -165,6 +207,7 @@ public final class FriendManager implements AutoCloseable {
     }
 
     private void onEndClientTick(MinecraftClient client) {
+        syncSession(client);
         boolean down = GLFW.glfwGetMouseButton(client.getWindow().getHandle(), GLFW.GLFW_MOUSE_BUTTON_MIDDLE)
             == GLFW.GLFW_PRESS;
         boolean pressed = down && !middleMouseDown;
@@ -262,6 +305,7 @@ public final class FriendManager implements AutoCloseable {
 
             temporary = null;
             dirty = false;
+            savePrivatePng();
         } catch (IOException exception) {
             LOGGER.error("Could not save friend list to {}", friendFile, exception);
         } finally {
@@ -272,6 +316,94 @@ public final class FriendManager implements AutoCloseable {
                     LOGGER.debug("Could not remove temporary friend file {}", temporary, exception);
                 }
             }
+        }
+    }
+
+    private void syncSession(MinecraftClient client) {
+        if (client == null || client.player == null) {
+            return;
+        }
+        UUID uuid = client.player.getUuid();
+        if (uuid.equals(sessionUuid)) {
+            return;
+        }
+        if (dirty) {
+            save();
+        }
+        boolean switchedAccounts = sessionUuid != null;
+        sessionUuid = uuid;
+        loadPrivatePng(switchedAccounts);
+    }
+
+    private Path privateFile() {
+        return sessionUuid == null ? null : privateDir.resolve(sessionUuid + ".png");
+    }
+
+    private boolean hasAnyPrivatePng() {
+        if (!Files.isDirectory(privateDir)) {
+            return false;
+        }
+        try (var stream = Files.list(privateDir)) {
+            return stream.anyMatch(path -> path.getFileName().toString().endsWith(".png"));
+        } catch (IOException exception) {
+            return false;
+        }
+    }
+
+    private void savePrivatePng() {
+        Path file = privateFile();
+        if (file == null) {
+            return;
+        }
+        try {
+            Files.createDirectories(privateDir);
+            Properties properties = new Properties();
+            properties.setProperty("schema", "1");
+            friends.values().forEach(friend -> properties.setProperty(
+                FRIEND_KEY_PREFIX + friend.uuid(),
+                friend.lastKnownName()
+            ));
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            properties.store(output, "Celeste private friends");
+            ConfigImageCodec.write(file, output.toByteArray());
+        } catch (IOException exception) {
+            LOGGER.error("Could not save private friends PNG", exception);
+        }
+    }
+
+    private void loadPrivatePng(boolean switchedAccounts) {
+        Path file = privateFile();
+        if (file == null) {
+            return;
+        }
+        if (!Files.isRegularFile(file)) {
+            if (switchedAccounts || hasAnyPrivatePng()) {
+                friends.clear();
+                dirty = false;
+            } else if (!friends.isEmpty()) {
+                dirty = true;
+                savePrivatePng();
+                dirty = false;
+            }
+            return;
+        }
+        try {
+            Properties properties = new Properties();
+            properties.load(new ByteArrayInputStream(ConfigImageCodec.read(file)));
+            friends.clear();
+            for (String key : properties.stringPropertyNames()) {
+                if (!key.startsWith(FRIEND_KEY_PREFIX)) {
+                    continue;
+                }
+                try {
+                    UUID uuid = UUID.fromString(key.substring(FRIEND_KEY_PREFIX.length()));
+                    friends.put(uuid, new Friend(uuid, cleanName(properties.getProperty(key), uuid)));
+                } catch (IllegalArgumentException ignored) {
+                }
+            }
+            dirty = false;
+        } catch (IOException exception) {
+            LOGGER.warn("Could not load private friends PNG", exception);
         }
     }
 

@@ -7,6 +7,9 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.registry.tag.ItemTags;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
@@ -72,6 +75,10 @@ public final class AimAssistFeature implements ModuleFeature {
     public void onRenderFrame(ModuleContext context) {
         MinecraftClient client = context.client();
         if (client.player == null || client.world == null || client.currentScreen != null) {
+            resetAimAssist();
+            return;
+        }
+        if (context.toggle("Only Weapons", false) && !holdingWeapon(client.player)) {
             resetAimAssist();
             return;
         }
@@ -630,6 +637,13 @@ public final class AimAssistFeature implements ModuleFeature {
         return self != null && target != null && target != self && target.isAlive()
             && !target.isRemoved() && !target.isSpectator() && !target.isCreative()
             && target.isAttackable() && !friends.isFriend(target);
+    }
+
+    private static boolean holdingWeapon(ClientPlayerEntity player) {
+        ItemStack stack = player.getMainHandStack();
+        return stack.isIn(ItemTags.SWORDS) || stack.isIn(ItemTags.AXES)
+            || stack.isOf(Items.MACE) || stack.isOf(Items.TRIDENT)
+            || stack.isIn(ItemTags.SPEARS);
     }
 
     private static PlayerEntity findPlayerById(MinecraftClient client, int id) {

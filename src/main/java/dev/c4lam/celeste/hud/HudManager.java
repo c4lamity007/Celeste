@@ -10,8 +10,6 @@ import dev.c4lam.celeste.license.LicenseIdentity;
 import dev.c4lam.celeste.media.MediaPlaybackSnapshot;
 import dev.c4lam.celeste.media.MediaArtwork;
 import dev.c4lam.celeste.media.SystemMediaService;
-import dev.c4lam.celeste.rotation.Rotation;
-import dev.c4lam.celeste.rotation.RotationManager;
 import dev.c4lam.celeste.render.GuiRenderer;
 import dev.c4lam.celeste.render.GuiTextures;
 import dev.c4lam.celeste.render.RenderUtil;
@@ -25,7 +23,6 @@ import net.minecraft.client.gui.screen.ChatScreen;
 import net.minecraft.client.network.AbstractClientPlayerEntity;
 
 import net.minecraft.client.util.InputUtil;
-import net.minecraft.client.option.Perspective;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.effect.StatusEffectInstance;
@@ -104,7 +101,6 @@ public final class HudManager {
           elements.add(new HudElementState(HudElementType.KEYBINDS, 8, 238, false, false));
           elements.add(new HudElementState(HudElementType.COOLDOWNS, 218, 232, false, false));
           elements.add(new HudElementState(HudElementType.SPOTIFY, 218, 278, false, false));
-          elements.add(new HudElementState(HudElementType.SILENT_ROTATION, 8, 8, true, false));
          isSelecting = false;
      }
 
@@ -556,8 +552,10 @@ public final class HudManager {
 
         Color top = withAlpha(blend(BACKGROUND_TOP, BACKGROUND_HOVER_TOP, hover), visibility);
         Color bottom = withAlpha(blend(BACKGROUND_BOTTOM, BACKGROUND_HOVER_BOTTOM, hover), visibility);
-        RenderUtil.BLUR_RECT.draw(matrices, x, y, baseWidth, baseHeight, new Vector4f(9),
-            top, top, bottom, bottom, InterfaceConfig.glassTintMix());
+        if (state.type() != HudElementType.ARRAYLIST) {
+            RenderUtil.BLUR_RECT.draw(matrices, x, y, baseWidth, baseHeight, new Vector4f(9),
+                top, top, bottom, bottom, InterfaceConfig.glassTintMix());
+        }
         if (selection > 0.002f) {
             Color selectionTop = withAlpha(color(205, 205, 211, 30), visibility * selection);
             Color selectionBottom = withAlpha(color(92, 92, 100, 42), visibility * selection);
@@ -576,7 +574,18 @@ public final class HudManager {
              case COORDINATES -> drawCoordinates(matrices, x, y, baseWidth, visibility);
              case TARGET_HUD -> drawTarget(matrices, x, y, baseWidth, visibility, targetPresentation);
              case EFFECTS -> drawEffects(matrices, x, y, baseWidth, visibility);
-             case ARMOR -> drawArmor(matrices, x, y, visibility);
+             case ARMOR -> {
+                 var gui = context.getMatrices();
+                 gui.pushMatrix();
+                 gui.translate(centerX, centerY);
+                 gui.scale(motionScale, motionScale);
+                 gui.translate(-centerX, -centerY);
+                 gui.translate(x, y);
+                 gui.scale(elementScale, elementScale);
+                 gui.translate(-x, -y);
+                 drawArmor(context, matrices, x, y, visibility);
+                 gui.popMatrix();
+             }
              case KEYBINDS -> drawKeybinds(matrices, x, y, baseWidth, visibility);
              case COOLDOWNS -> drawCooldowns(matrices, x, y, baseWidth, visibility);
              case ARRAYLIST -> drawArraylist(matrices, x, y, baseWidth, visibility);
@@ -586,7 +595,6 @@ public final class HudManager {
              case SPOTIFY -> drawMedia(matrices, x, y, baseWidth, visibility,
                  Math.round(x + (mouseX - x) / elementScale),
                  Math.round(y + (mouseY - y) / elementScale), interactive);
-             case SILENT_ROTATION -> drawSilentRotation(matrices, x, y, baseWidth, visibility);
          }
         if (selection > 0.002f) {
             RenderUtil.SELECTION_OUTLINE.draw(matrices, x, y, baseWidth, baseHeight,
@@ -711,19 +719,38 @@ public final class HudManager {
         return effect.getEffectType().value().getName().getString();
     }
 
-    private void drawArmor(MatrixStack matrices, float x, float y, float opacity) {
+    private void drawArmor(DrawContext context, MatrixStack matrices, float x, float y, float opacity) {
         MinecraftClient client = MinecraftClient.getInstance();
         EquipmentSlot[] slots = {EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET};
-        String[] labels = {"H", "C", "L", "B"};
+        float itemSize = 18.0f;
+        GuiRenderer.getInstance().flush();
         for (int index = 0; index < slots.length; index++) {
             float itemX = x + 10 + index * 34;
+            float itemY = y + (34.0f - itemSize) * 0.5f;
             ItemStack stack = client.player == null ? ItemStack.EMPTY : client.player.getEquippedStack(slots[index]);
-            String durability = stack.isEmpty() ? "—" : stack.isDamageable()
-                ? Math.max(0, Math.round((stack.getMaxDamage() - stack.getDamage()) * 100.0f / stack.getMaxDamage())) + "%"
-                : "100%";
-            Fonts.semibold().drawCenteredText(matrices, labels[index], itemX + 8, y + 7, 7.5f,
-                withAlpha(stack.isEmpty() ? MUTED : TEXT, opacity));
-            Fonts.regular().drawCenteredText(matrices, durability, itemX + 8, y + 21, 5.4f, withAlpha(MUTED, opacity));
+            if (stack.isEmpty()) {
+                RenderUtil.RECT.draw(matrices, itemX, itemY, itemSize, itemSize, 4,
+                    color(255, 255, 255, Math.round(18 * opacity)));
+                continue;
+            }
+            float scale = itemSize / 16.0f;
+            context.getMatrices().pushMatrix();
+            context.getMatrices().translate(itemX, itemY);
+            context.getMatrices().scale(scale, scale);
+            context.drawItem(stack, 0, 0);
+            context.getMatrices().popMatrix();
+            if (!stack.isDamageable()) {
+                continue;
+            }
+            int remaining = Math.max(0, stack.getMaxDamage() - stack.getDamage());
+            float ratio = stack.getMaxDamage() <= 0 ? 1.0f : remaining / (float) stack.getMaxDamage();
+            Color value = ratio > 0.45f ? TEXT : ratio > 0.2f ? color(255, 196, 92, 255) : color(255, 92, 108, 255);
+            float centerX = itemX + itemSize * 0.5f;
+            float labelY = itemY + itemSize - 1.0f;
+            Fonts.bold().drawCenteredText(matrices, Integer.toString(remaining), centerX + 0.6f, labelY + 0.6f, 6.2f,
+                color(0, 0, 0, Math.round(170 * opacity)));
+            Fonts.bold().drawCenteredText(matrices, Integer.toString(remaining), centerX, labelY, 6.2f,
+                withAlpha(value, opacity));
         }
     }
 
@@ -761,16 +788,38 @@ public final class HudManager {
     }
 
     private void drawArraylist(MatrixStack matrices, float x, float y, float width, float opacity) {
-        List<String> enabled = GuiCatalog.modules().stream().filter(GuiModule::enabled).limit(4).map(GuiModule::name).toList();
+        List<String> enabled = GuiCatalog.modules().stream()
+            .filter(GuiModule::enabled)
+            .map(GuiModule::name)
+            .sorted(String.CASE_INSENSITIVE_ORDER)
+            .toList();
+        float font = 7.2f;
+        float padX = 7.0f;
+        float rowHeight = 13.0f;
+        float right = x + width;
         if (enabled.isEmpty()) {
-            Fonts.regular().drawCenteredText(matrices, "No enabled modules", x + width / 2.0f, y + 26, 6.6f,
-                withAlpha(MUTED, opacity));
+            String empty = "No modules";
+            float rowWidth = Fonts.semibold().width(empty, font) + padX * 2.0f;
+            float rowX = right - rowWidth;
+            RenderUtil.BLUR_RECT.draw(matrices, rowX, y, rowWidth, rowHeight, 4,
+                withAlpha(BACKGROUND_TOP, opacity), InterfaceConfig.glassTintMix());
+            Fonts.semibold().drawText(matrices, empty, rowX + padX, y + 2.4f, font, withAlpha(MUTED, opacity));
             return;
         }
+        Color top = withAlpha(BACKGROUND_TOP, opacity);
+        Color bottom = withAlpha(BACKGROUND_BOTTOM, opacity);
         for (int index = 0; index < enabled.size(); index++) {
             String name = enabled.get(index);
-            Fonts.semibold().drawCenteredText(matrices, name, x + width / 2.0f, y + 7 + index * 13,
-                6.7f, withAlpha(index == 0 ? ACCENT : TEXT, opacity));
+            float textWidth = Fonts.semibold().width(name, font);
+            float rowWidth = textWidth + padX * 2.0f + 3.0f;
+            float rowX = right - rowWidth;
+            float rowY = y + index * rowHeight;
+            RenderUtil.BLUR_RECT.draw(matrices, rowX, rowY, rowWidth, rowHeight, new Vector4f(4),
+                top, top, bottom, bottom, InterfaceConfig.glassTintMix());
+            RenderUtil.RECT.draw(matrices, right - 1.6f, rowY + 2.2f, 1.6f, rowHeight - 4.4f, 0.8f,
+                withAlpha(ACCENT, opacity));
+            Fonts.semibold().drawText(matrices, name, right - padX - 3.0f - textWidth, rowY + 2.4f, font,
+                withAlpha(TEXT, opacity));
         }
     }
 
@@ -867,20 +916,6 @@ public final class HudManager {
             withAlpha(TEXT, nextOpacity));
         drawMediaIcon(matrices, MEDIA_SHUFFLE_ICON, x + MEDIA_BUTTON_CENTERS[3], y + 66.5f, 11.0f,
             withAlpha(blend(MUTED, ACCENT, renderedMediaShuffle), shuffleOpacity));
-     }
-
-      private void drawSilentRotation(MatrixStack matrices, float x, float y, float width, float visibility) {
-          MinecraftClient client = MinecraftClient.getInstance();
-          // Only show in third-person view
-          Perspective perspective = client.options.getPerspective();
-          // Assume third person perspectives have ordinal >= 1 (0 = first person)
-          if (perspective.ordinal() == 0) {
-              return;
-          }
-         Rotation serverRot = RotationManager.getInstance().serverRotation();
-         String text = String.format(Locale.ROOT, "Silent Rot: %.1f, %.1f", serverRot.yaw(), serverRot.pitch());
-         Fonts.semibold().drawCenteredText(matrices, "Silent Rot", x + width / 2.0f, y + 4, 5.6f, withAlpha(MUTED, visibility));
-         Fonts.regular().drawCenteredText(matrices, text, x + width / 2.0f, y + 14, 6.6f, withAlpha(TEXT, visibility));
      }
 
      private static void drawMediaIcon(MatrixStack matrices, Identifier texture, float centerX, float centerY,

@@ -2,7 +2,7 @@ package dev.c4lam.celeste.gui.model;
 
 import java.util.List;
 
-public sealed interface GuiSetting permits GuiSetting.Toggle, GuiSetting.Slider, GuiSetting.Mode, GuiSetting.Keybind, GuiSetting.ColorPick {
+public sealed interface GuiSetting permits GuiSetting.Toggle, GuiSetting.Slider, GuiSetting.Range, GuiSetting.Mode, GuiSetting.Keybind, GuiSetting.ColorPick {
     String label();
 
     String description();
@@ -91,6 +91,105 @@ public sealed interface GuiSetting permits GuiSetting.Toggle, GuiSetting.Slider,
 
         public double progress() {
             return (value - minimum) / (maximum - minimum);
+        }
+    }
+
+    final class Range implements GuiSetting {
+        private final String label;
+        private final String description;
+        private final double minimum;
+        private final double maximum;
+        private final double step;
+        private double low;
+        private double high;
+
+        public Range(String label, String description, double low, double high,
+                     double minimum, double maximum, double step) {
+            this.label = label;
+            this.description = description;
+            this.minimum = minimum;
+            this.maximum = maximum;
+            this.step = step;
+            this.low = snap(Math.min(low, high));
+            this.high = snap(Math.max(low, high));
+        }
+
+        @Override
+        public String label() {
+            return label;
+        }
+
+        @Override
+        public String description() {
+            return description;
+        }
+
+        public double minimum() {
+            return minimum;
+        }
+
+        public double maximum() {
+            return maximum;
+        }
+
+        public double step() {
+            return step;
+        }
+
+        public double low() {
+            return low;
+        }
+
+        public double high() {
+            return high;
+        }
+
+        public void setLow(double value) {
+            double snapped = snap(value);
+            low = Math.min(snapped, high);
+        }
+
+        public void setHigh(double value) {
+            double snapped = snap(value);
+            high = Math.max(snapped, low);
+        }
+
+        public double lowProgress() {
+            return (low - minimum) / (maximum - minimum);
+        }
+
+        public double highProgress() {
+            return (high - minimum) / (maximum - minimum);
+        }
+
+        public String serialized() {
+            return sliderString(low) + "-" + sliderString(high);
+        }
+
+        public void setSerialized(String value) {
+            if (value == null || value.isBlank()) {
+                return;
+            }
+            int dash = value.indexOf('-');
+            if (dash <= 0) {
+                setLow(Double.parseDouble(value));
+                setHigh(Double.parseDouble(value));
+                return;
+            }
+            setLow(Double.parseDouble(value.substring(0, dash).trim()));
+            setHigh(Double.parseDouble(value.substring(dash + 1).trim()));
+        }
+
+        private double snap(double value) {
+            double clamped = Math.max(minimum, Math.min(maximum, value));
+            return Math.round(clamped / step) * step;
+        }
+
+        private static String sliderString(double value) {
+            if (Math.abs(value - Math.rint(value)) < 0.0001) {
+                return Integer.toString((int) Math.rint(value));
+            }
+            return Double.toString(value);
         }
     }
 

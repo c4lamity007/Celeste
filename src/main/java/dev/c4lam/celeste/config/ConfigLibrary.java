@@ -189,7 +189,7 @@ public final class ConfigLibrary {
     private static List<Card> seedPublic() {
         return List.of(
             stub("public:sword-duel", "sword-duel", "4 Aug 2026",
-                "Sword Aura", "TBOT", "Aim Assist", "W Tap", "Keep Sprint"),
+                "Sword Aura", "Trigger Bot", "Aim Assist", "W Tap", "Keep Sprint"),
             stub("public:crystal-pvp", "crystal-pvp", "11 Aug 2026",
                 "Auto Crystal", "Surround", "Silent Totem", "Auto Trap"),
             stub("public:mace-combo", "mace-combo", "16 Aug 2026",

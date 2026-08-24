@@ -32,15 +32,14 @@ import java.util.Random;
 public final class TBOTFeature implements ModuleFeature {
     private static final int PRIORITY = 100;
     private static final Random RANDOM = new Random();
-    private static final double DEFAULT_SWING_MIN = 72.0D;
+    private static final double DEFAULT_SWING_MIN = 90.0D;
     private static final double DEFAULT_SWING_MAX = 96.0D;
-    private static final double DEFAULT_DELAY_MIN = 1.0D;
-    private static final double DEFAULT_DELAY_MAX = 2.0D;
 
     private final FriendManager friends = FriendManager.getInstance();
     private int tickCounter;
-    private int nextTick;
     private double cooldownThreshold = 0.88D;
+    private int hoverTargetId = -1;
+    private int hoverTicks;
     private EntityHitResult cachedHit;
     private int cachedSlot = -1;
     private float cachedYaw;
@@ -60,7 +59,7 @@ public final class TBOTFeature implements ModuleFeature {
 
     @Override
     public String name() {
-        return "TBOT";
+        return "Trigger Bot";
     }
 
     @Override
@@ -85,12 +84,11 @@ public final class TBOTFeature implements ModuleFeature {
 
         EntityHitResult attackHit = freshVanillaAttackPlayerHit(client);
         PlayerEntity target = attackHit == null ? null : playerFrom(attackHit);
+        updateHover(target);
         boolean noCooldownBreak = context.toggle("Shield Break No Cooldown", true);
-        if (isShielding(target) && noCooldownBreak && startShieldBreak(client, target)) {
+        if (isShielding(target) && noCooldownBreak && hoveredLongEnough(context)
+            && startShieldBreak(client, target)) {
             scheduleAttack(context);
-            return;
-        }
-        if (tickCounter < nextTick) {
             return;
         }
         if (target == null) {
@@ -98,7 +96,7 @@ public final class TBOTFeature implements ModuleFeature {
                 "Swing Delay Max", DEFAULT_SWING_MAX) / 100.0D;
             return;
         }
-        if (isShielding(target) && startShieldBreak(client, target)) {
+        if (isShielding(target) && hoveredLongEnough(context) && startShieldBreak(client, target)) {
             scheduleAttack(context);
         }
     }
@@ -115,13 +113,13 @@ public final class TBOTFeature implements ModuleFeature {
             tickShieldBreak(context);
             return;
         }
-        if (isShielding(client.player) || tickCounter < nextTick) {
+        if (isShielding(client.player)) {
             return;
         }
 
         EntityHitResult attackHit = freshVanillaAttackPlayerHit(client);
         PlayerEntity target = attackHit == null ? null : playerFrom(attackHit);
-        if (target == null || isShielding(target)) {
+        if (target == null || isShielding(target) || !hoveredLongEnough(context)) {
             return;
         }
         if (!canRunTriggerAttack(client.player,
@@ -145,8 +143,9 @@ public final class TBOTFeature implements ModuleFeature {
     @Override
     public void onDisable(ModuleContext context) {
         resetShield(context.client().player, true);
-        nextTick = 0;
         cooldownThreshold = 0.88D;
+        hoverTargetId = -1;
+        hoverTicks = 0;
         cacheReady = false;
         cachedHit = null;
     }
@@ -159,8 +158,26 @@ public final class TBOTFeature implements ModuleFeature {
     private void scheduleAttack(ModuleContext context) {
         cooldownThreshold = sample(context, "Swing Delay Min", DEFAULT_SWING_MIN,
             "Swing Delay Max", DEFAULT_SWING_MAX) / 100.0D;
-        nextTick = tickCounter + Math.max(1, (int) Math.round(
-            sample(context, "Delay Ticks Min", DEFAULT_DELAY_MIN, "Delay Ticks Max", DEFAULT_DELAY_MAX)));
+        hoverTicks = 0;
+    }
+
+    private void updateHover(PlayerEntity target) {
+        if (target == null) {
+            hoverTargetId = -1;
+            hoverTicks = 0;
+            return;
+        }
+        if (target.getId() != hoverTargetId) {
+            hoverTargetId = target.getId();
+            hoverTicks = 1;
+            return;
+        }
+        hoverTicks++;
+    }
+
+    private boolean hoveredLongEnough(ModuleContext context) {
+        int needed = Math.max(0, (int) Math.round(context.slider("Reaction Time", 0.0D)));
+        return needed <= 0 || hoverTicks >= needed;
     }
 
     private static boolean canRunTriggerAttack(ClientPlayerEntity player, boolean prioritizeCrits,

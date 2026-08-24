@@ -8,6 +8,7 @@ import dev.c4lam.celeste.rotation.MoveFixMode;
 import dev.c4lam.celeste.rotation.Rotation;
 import dev.c4lam.celeste.rotation.RotationManager;
 import dev.c4lam.celeste.rotation.RotationTask;
+import dev.c4lam.celeste.module.expansion.inventory.OwnFluidTracker;
 import dev.c4lam.celeste.silent.SilentSlotManager;
 import net.minecraft.block.Blocks;
 import net.minecraft.client.MinecraftClient;
@@ -59,6 +60,7 @@ public final class WebBreakerFeature implements ModuleFeature {
                     waterPos = web;
                     placedAge = actionClient.player.age;
                     pickupRequestedAge = Integer.MIN_VALUE / 2;
+                    OwnFluidTracker.getInstance().mark(web);
                 }
             });
         });

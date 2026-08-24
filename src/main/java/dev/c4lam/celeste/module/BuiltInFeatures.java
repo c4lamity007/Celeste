@@ -30,7 +30,6 @@ import dev.c4lam.celeste.module.impl.visual.expansion.VisualExpansion;
 import dev.c4lam.celeste.module.expansion.inventory.InventoryExpansion;
 import dev.c4lam.celeste.module.expansion.sword.SwordExpansion;
 import dev.c4lam.celeste.module.expansion.sword.SwordAttackCoordinator;
-import dev.c4lam.celeste.module.impl.expansion.SeeRotationsFeature;
 
 /** One explicit registry keeps GUI names and runtime implementations auditable. */
 public final class BuiltInFeatures {
@@ -77,8 +76,7 @@ public final class BuiltInFeatures {
         modules.register(entityEsp);
         modules.register(holeEsp);
         VisualWorldRenderer.initialize(entityEsp, holeEsp);
-        modules.register(new SeeRotationsFeature());
-        
+
         ExpansionFeatures.register(modules);
         VisualExpansion.register(modules);
         InventoryExpansion.register(modules);
