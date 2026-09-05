@@ -1,8 +1,11 @@
 package dev.c4lam.celeste.module.impl.visual.expansion;
 
 import com.mojang.blaze3d.pipeline.RenderPipeline;
+import com.mojang.blaze3d.pipeline.BlendFunction;
 import com.mojang.blaze3d.platform.DepthTestFunction;
 import dev.c4lam.celeste.CelesteClient;
+import dev.c4lam.celeste.auth.AuthBootstrap;
+import dev.c4lam.celeste.module.expansion.inventory.ReBuffNotifierFeature;
 import net.fabricmc.fabric.api.client.rendering.v1.RenderStateDataKey;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
@@ -28,6 +31,8 @@ public final class VisualExpansionRenderer {
         RenderSetup.builder(RenderPipelines.register(
             RenderPipeline.builder(RenderPipelines.POSITION_COLOR_SNIPPET)
                 .withLocation(Identifier.of(CelesteClient.MOD_ID, "pipeline/visual_expansion_quads"))
+                .withBlend(BlendFunction.TRANSLUCENT)
+                .withCull(false)
                 .withDepthTestFunction(DepthTestFunction.NO_DEPTH_TEST)
                 .withDepthWrite(false)
                 .build()
@@ -38,6 +43,8 @@ public final class VisualExpansionRenderer {
         RenderSetup.builder(RenderPipelines.register(
             RenderPipeline.builder(RenderPipelines.RENDERTYPE_LINES_SNIPPET)
                 .withLocation(Identifier.of(CelesteClient.MOD_ID, "pipeline/visual_expansion_lines"))
+                .withBlend(BlendFunction.TRANSLUCENT)
+                .withCull(false)
                 .withDepthTestFunction(DepthTestFunction.NO_DEPTH_TEST)
                 .withDepthWrite(false)
                 .build()
@@ -59,8 +66,13 @@ public final class VisualExpansionRenderer {
     ) {
         if (initialized) return;
         initialized = true;
+        WorldGlowRenderer.initialize();
+        UnifiedChamsRenderer.initialize();
 
         WorldRenderEvents.END_EXTRACTION.register(context -> {
+            if (!AuthBootstrap.authorized()) {
+                return;
+            }
             var worldState = context.worldState();
             if (worldState == null) {
                 return;
@@ -68,23 +80,31 @@ public final class VisualExpansionRenderer {
 
             List<WorldBox> boxes = new ArrayList<>();
             List<WorldLineStrip> lines = new ArrayList<>();
-            trajectories.extract(context, lines, boxes);
-            boxes.addAll(ores.renderBoxes());
-            items.extract(context, boxes);
-            targets.extract(context, boxes);
+            List<WorldGlowRenderer.Quad> glows = new ArrayList<>();
+            trajectories.extract(context, lines, boxes, glows);
+            ores.extract(context, boxes, lines, glows);
+            items.extract(context, boxes, lines, glows);
+            targets.extract(context, boxes, lines, glows);
+            PlayerEchoRenderer.Frame echoes = FakeLagVisualRenderer.extract(context, boxes, lines, glows);
+            FakeGambleFeature.extract(context, boxes, lines);
             worldState.setData(
                 FRAME_KEY,
-                boxes.isEmpty() && lines.isEmpty()
+                boxes.isEmpty() && lines.isEmpty() && glows.isEmpty() && echoes.echoes().isEmpty()
                     ? Frame.EMPTY
-                    : new Frame(List.copyOf(boxes), List.copyOf(lines))
+                    : new Frame(List.copyOf(boxes), List.copyOf(lines), List.copyOf(glows), echoes)
             );
         });
         // AFTER_ENTITIES runs inside the prepared draw pass; BEFORE_DEBUG_RENDER
         // can expose an unprepared or stale WorldRenderContext in Fabric 16.2.x.
         WorldRenderEvents.AFTER_ENTITIES.register(VisualExpansionRenderer::draw);
         HudElementRegistry.addLast(Identifier.of(CelesteClient.MOD_ID, "arrow_esp"), (context, tickCounter) -> {
+            if (!AuthBootstrap.authorized()) {
+                return;
+            }
             MinecraftClient client = MinecraftClient.getInstance();
-            arrows.render(client, context.getScaledWindowWidth(), context.getScaledWindowHeight());
+            arrows.render(client, context.getScaledWindowWidth(), context.getScaledWindowHeight(), tickCounter.getTickProgress(false));
+            ReBuffNotifierFeature.renderHud(client, context.getScaledWindowWidth(), context.getScaledWindowHeight());
+            FakeGambleFeature.renderHud(client, context.getScaledWindowWidth(), context.getScaledWindowHeight());
         });
     }
 
@@ -94,6 +114,9 @@ public final class VisualExpansionRenderer {
     }
 
     private static void draw(WorldRenderContext context) {
+        if (!AuthBootstrap.authorized()) {
+            return;
+        }
         var worldState = context.worldState();
         MatrixStack matrices = context.matrices();
         var consumers = context.consumers();
@@ -122,6 +145,8 @@ public final class VisualExpansionRenderer {
         for (WorldLineStrip strip : frame.lineStrips()) {
             drawLineStrip(matrices, lines, strip, camera);
         }
+        WorldGlowRenderer.draw(context, frame.glows());
+        UnifiedChamsRenderer.draw(context, frame.echoes(), true);
     }
 
     private static void drawLineStrip(MatrixStack matrices, VertexConsumer consumer, WorldLineStrip strip, Vec3d camera) {
@@ -208,7 +233,8 @@ public final class VisualExpansionRenderer {
     record WorldLineStrip(List<Vec3d> points, int color, float width) {
     }
 
-    private record Frame(List<WorldBox> boxes, List<WorldLineStrip> lineStrips) {
-        private static final Frame EMPTY = new Frame(List.of(), List.of());
+    private record Frame(List<WorldBox> boxes, List<WorldLineStrip> lineStrips,
+                         List<WorldGlowRenderer.Quad> glows, PlayerEchoRenderer.Frame echoes) {
+        private static final Frame EMPTY = new Frame(List.of(), List.of(), List.of(), PlayerEchoRenderer.Frame.EMPTY);
     }
 }

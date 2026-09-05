@@ -1,0 +1,22 @@
+Celeste energy ribbon VFX asset
+
+File: assets/celeste/textures/visual/energy_ribbon.png
+Created for this project with the imagegen skill and OpenAI image-generation tool.
+Mode: new generation; no reference image or third-party source image used.
+Source generated image: exec-d76d7827-5219-45f6-a3ef-e984b56f4eaf.png
+Original RGBA PNG preserved without pixel edits. Color and animation are applied
+at render time by the world_ribbon and world_echo fragment shaders.
+
+Generation prompt:
+Use case: stylized-concept. Asset type: production game VFX ribbon texture, not
+concept art or a mockup. Create a square grayscale emissive energy-filament
+texture for tinting and UV animation in a Minecraft custom shader. Several
+flowing, silky plasma filaments sweep horizontally across the center in a
+continuous coherent band, with a bright fine white core, wispy silver secondary
+strands, subtle turbulent detail, and a very soft glow. The band occupies the
+middle 45 percent of image height. Top and bottom quarters completely transparent.
+Fade gently left/right edges to completely transparent, no hard rectangle.
+Genuine transparent background smooth alpha, white/silver only no colored
+background. Orthographic flat texture, no perspective/scene/model/letters/
+symbols/logo/watermark/frame. Rich clean smooth detail attractive stretched thin
+world ribbons. Avoid opaque smoky slabs/thick blobs/stars/circles/checkerboard.

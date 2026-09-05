@@ -1,0 +1,8 @@
+{
+  "protocol": "cst-launcher-1",
+  "channel_id": "a39fbbf8e5c344edb39ee82d",
+  "channel_version": "1.0.0",
+  "compatible_digests": [
+    "aafa32dafbc230d52d5cbfd7c2f9a2ceabbb433bf9bc984046c18db6df433b39"
+  ]
+}

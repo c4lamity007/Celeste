@@ -49,7 +49,7 @@ final class Targeting {
             || client.interactionManager == null || client.interactionManager.isBreakingBlock()
             || target == client.player || target.getEntityWorld() != client.world
             || target.isRemoved() || !target.isAlive() || target.isSpectator()
-            || target.isCreative() || friends.isFriend(target)) {
+            || friends.isFriend(target)) {
             return false;
         }
         return target.getBoundingBox().squaredMagnitude(client.player.getEyePos()) <= range * range
@@ -67,7 +67,7 @@ final class Targeting {
             return false;
         }
         if (target instanceof PlayerEntity player
-            && (player.isSpectator() || player.isCreative() || friends.isFriend(player))) {
+            && (player.isSpectator() || friends.isFriend(player))) {
             return false;
         }
         return target.getBoundingBox().squaredMagnitude(client.player.getEyePos()) <= range * range

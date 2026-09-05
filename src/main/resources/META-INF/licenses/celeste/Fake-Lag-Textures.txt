@@ -1,0 +1,13 @@
+Fake Lag glow textures
+
+Source: Kenney Particle Pack 1.1
+https://kenney.nl/assets/particle-pack
+License: CC0; full supplied notice is Kenney-Particle-Pack-CC0.txt.
+
+The following original transparent PNGs are bundled without pixel changes:
+  PNG (Transparent)/circle_03.png -> assets/celeste/textures/visual/fake_lag/halo.png
+  PNG (Transparent)/circle_05.png -> assets/celeste/textures/visual/fake_lag/soft.png
+  PNG (Transparent)/trace_01.png  -> assets/celeste/textures/visual/fake_lag/streak.png
+
+Tint, rotation, scale and alpha are applied at render time. The game does not
+download these images or create gameplay particles/entities for the effect.

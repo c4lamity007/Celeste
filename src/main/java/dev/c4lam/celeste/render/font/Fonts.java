@@ -15,7 +15,7 @@ public final class Fonts {
             synchronized (Fonts.class) {
                 value = regular;
                 if (value == null) {
-                    regular = value = load("sf_pro/sf_regular");
+                    regular = value = load("celeste:fonts/sf_pro/sf_regular.json");
                 }
             }
         }
@@ -28,7 +28,7 @@ public final class Fonts {
             synchronized (Fonts.class) {
                 value = semibold;
                 if (value == null) {
-                    semibold = value = load("sf_pro/sf_semibold");
+                    semibold = value = load("celeste:fonts/sf_pro/sf_semibold.json");
                 }
             }
         }
@@ -41,7 +41,7 @@ public final class Fonts {
             synchronized (Fonts.class) {
                 value = bold;
                 if (value == null) {
-                    bold = value = load("sf_pro/sf_bold");
+                    bold = value = load("celeste:fonts/sf_pro/sf_bold.json");
                 }
             }
         }

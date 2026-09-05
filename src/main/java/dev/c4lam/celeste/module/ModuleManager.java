@@ -108,6 +108,9 @@ public final class ModuleManager implements AutoCloseable {
     }
 
     private void startTick(MinecraftClient client) {
+        if (!initialized) {
+            return;
+        }
         GameplayFoundation.beginTick(client);
         handleKeybinds(client);
         if (lastWorld != client.world) {
@@ -153,6 +156,9 @@ public final class ModuleManager implements AutoCloseable {
     }
 
     private void endTick(MinecraftClient client) {
+        if (!initialized) {
+            return;
+        }
         tick(client, false);
         GameplayFoundation.afterTick(client);
         if (++persistenceTicks >= 20) {
@@ -356,6 +362,8 @@ public final class ModuleManager implements AutoCloseable {
                 if (rgb != null) {
                     pick.setRgb(rgb);
                 }
+            } else if (setting instanceof GuiSetting.ItemPick pick) {
+                pick.setItemId(value);
             }
         } catch (NumberFormatException ignored) {
         }
@@ -368,6 +376,7 @@ public final class ModuleManager implements AutoCloseable {
         if (setting instanceof GuiSetting.Mode mode) return mode.value();
         if (setting instanceof GuiSetting.Keybind bind) return Integer.toString(bind.keyCode());
         if (setting instanceof GuiSetting.ColorPick pick) return pick.serialized();
+        if (setting instanceof GuiSetting.ItemPick pick) return pick.itemId();
         return "";
     }
 

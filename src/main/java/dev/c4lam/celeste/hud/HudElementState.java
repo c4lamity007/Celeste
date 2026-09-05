@@ -17,7 +17,10 @@ public final class HudElementState {
     private float drag;
     private float selection;
     private boolean selected;
-    private float scale = 1.0f;
+    private float scaleX = 1.0f;
+    private float scaleY = 1.0f;
+    private float contentWidth = -1.0f;
+    private float contentHeight = -1.0f;
     private long lastVisualUpdate;
 
     HudElementState(HudElementType type, float x, float y, boolean enabled, boolean selected) {
@@ -51,12 +54,25 @@ public final class HudElementState {
         return displayY;
     }
 
+    public float intrinsicWidth() {
+        return contentWidth > 0.0f ? contentWidth : type.width();
+    }
+
+    public float intrinsicHeight() {
+        return contentHeight > 0.0f ? contentHeight : type.height();
+    }
+
     public float width() {
-        return type.width() * scale;
+        return intrinsicWidth() * scaleX;
     }
 
     public float height() {
-        return type.height() * scale;
+        return intrinsicHeight() * scaleY;
+    }
+
+    public void setContentSize(float width, float height) {
+        contentWidth = width > 0.0f && Float.isFinite(width) ? width : -1.0f;
+        contentHeight = height > 0.0f && Float.isFinite(height) ? height : -1.0f;
     }
 
     public boolean enabled() {
@@ -76,11 +92,38 @@ public final class HudElementState {
     }
 
     public float scale() {
-        return scale;
+        return scaleX;
+    }
+
+    public float scaleX() {
+        return scaleX;
+    }
+
+    public float scaleY() {
+        return scaleY;
     }
 
     public void setScale(float scale) {
-        this.scale = Float.isFinite(scale)
+        float safe = clampScale(scale);
+        this.scaleX = safe;
+        this.scaleY = safe;
+    }
+
+    public void setScaleX(float scale) {
+        this.scaleX = clampScale(scale);
+    }
+
+    public void setScaleY(float scale) {
+        this.scaleY = clampScale(scale);
+    }
+
+    public void scaleBy(float factor) {
+        setScaleX(scaleX * factor);
+        setScaleY(scaleY * factor);
+    }
+
+    private static float clampScale(float scale) {
+        return Float.isFinite(scale)
             ? Math.max(MIN_SCALE, Math.min(MAX_SCALE, scale))
             : 1.0f;
     }

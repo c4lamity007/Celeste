@@ -2,7 +2,7 @@ package dev.c4lam.celeste.gui.model;
 
 import java.util.List;
 
-public sealed interface GuiSetting permits GuiSetting.Toggle, GuiSetting.Slider, GuiSetting.Range, GuiSetting.Mode, GuiSetting.Keybind, GuiSetting.ColorPick {
+public sealed interface GuiSetting permits GuiSetting.Toggle, GuiSetting.Slider, GuiSetting.Range, GuiSetting.Mode, GuiSetting.Keybind, GuiSetting.ColorPick, GuiSetting.ItemPick {
     String label();
 
     String description();
@@ -361,6 +361,68 @@ public sealed interface GuiSetting permits GuiSetting.Toggle, GuiSetting.Slider,
 
         private static int clamp(int channel) {
             return Math.max(0, Math.min(255, channel));
+        }
+    }
+
+    final class ItemPick implements GuiSetting {
+        private static final List<String> CYCLE = List.of(
+            "minecraft:dirt", "minecraft:oak_log", "minecraft:oak_planks", "minecraft:iron_ore",
+            "minecraft:iron_block", "minecraft:diamond_ore", "minecraft:netherite_sword",
+            "minecraft:trident", "minecraft:mace", "minecraft:cobblestone", "minecraft:stone",
+            "minecraft:grass_block", "minecraft:sand", "minecraft:gravel", "minecraft:glass",
+            "minecraft:obsidian", "minecraft:crying_obsidian", "minecraft:ender_chest",
+            "minecraft:chest", "minecraft:tnt", "minecraft:gold_block", "minecraft:diamond_block",
+            "minecraft:netherite_block", "minecraft:ancient_debris", "minecraft:white_wool",
+            "minecraft:oak_leaves", "minecraft:deepslate", "minecraft:netherrack", "minecraft:end_stone"
+        );
+
+        private final String label;
+        private final String description;
+        private String itemId;
+
+        public ItemPick(String label, String description, String itemId) {
+            this.label = label;
+            this.description = description;
+            this.itemId = normalize(itemId);
+        }
+
+        @Override
+        public String label() {
+            return label;
+        }
+
+        @Override
+        public String description() {
+            return description;
+        }
+
+        public String itemId() {
+            return itemId;
+        }
+
+        public void setItemId(String itemId) {
+            this.itemId = normalize(itemId);
+        }
+
+        public void next() {
+            int index = CYCLE.indexOf(itemId);
+            itemId = CYCLE.get((index + 1 + CYCLE.size()) % CYCLE.size());
+        }
+
+        public void previous() {
+            int index = CYCLE.indexOf(itemId);
+            if (index < 0) {
+                index = 0;
+            }
+            itemId = CYCLE.get((index - 1 + CYCLE.size()) % CYCLE.size());
+        }
+
+        private static String normalize(String itemId) {
+            if (itemId == null || itemId.isBlank()) {
+                return CYCLE.getFirst();
+            }
+            String trimmed = itemId.trim().toLowerCase();
+            return trimmed.indexOf(':') < 0 ? "minecraft:" + trimmed : trimmed;
         }
     }
 }

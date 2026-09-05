@@ -22,6 +22,7 @@ final class AutoExtinguishFeature implements ModuleFeature {
     private ClientWorld intentWorld;
     private int intentSlot = -1;
     private boolean pickupIntent;
+    private BlockPos claimedFluid;
 
     @Override
     public String name() {
@@ -56,7 +57,13 @@ final class AutoExtinguishFeature implements ModuleFeature {
         } else if (client.player.age > pickupDueAge + 20) {
             pickupSlot = -1;
             pickupDueAge = Integer.MAX_VALUE;
+            if (!client.player.isOnFire()) {
+                releaseClaim();
+            }
             GameplayFoundation.releaseOwner(this);
+        } else if (claimedFluid != null && !client.player.isOnFire()
+            && (pickupSlot < 0 || !context.toggle("Pick up", true))) {
+            releaseClaim();
         }
     }
 
@@ -86,9 +93,13 @@ final class AutoExtinguishFeature implements ModuleFeature {
                 if (pickingUp) {
                     pickupSlot = -1;
                     pickupDueAge = Integer.MAX_VALUE;
-                } else if (context.toggle("Pick up", false)) {
-                    pickupSlot = slot;
-                    pickupDueAge = client.player.age + 3;
+                    releaseClaim();
+                } else {
+                    claimAround(client);
+                    if (context.toggle("Pick up", true)) {
+                        pickupSlot = slot;
+                        pickupDueAge = client.player.age + 3;
+                    }
                 }
             }
         });
@@ -109,8 +120,28 @@ final class AutoExtinguishFeature implements ModuleFeature {
     @Override
     public void onWorldChanged(ModuleContext context) { reset(); }
 
+    private void claimAround(MinecraftClient client) {
+        if (client.player == null) {
+            return;
+        }
+        BlockPos base = client.player.getBlockPos().toImmutable();
+        if (claimedFluid != null && !claimedFluid.equals(base)) {
+            OwnFluidTracker.getInstance().release(claimedFluid);
+        }
+        claimedFluid = base;
+        OwnFluidTracker.getInstance().claim(claimedFluid);
+    }
+
+    private void releaseClaim() {
+        if (claimedFluid != null) {
+            OwnFluidTracker.getInstance().release(claimedFluid);
+            claimedFluid = null;
+        }
+    }
+
     private void reset() {
         clearIntent();
+        releaseClaim();
         pickupDueAge = Integer.MAX_VALUE;
         pickupSlot = -1;
         lastActionAge = Integer.MIN_VALUE / 2;

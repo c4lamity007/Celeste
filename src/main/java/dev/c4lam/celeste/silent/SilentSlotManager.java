@@ -206,6 +206,23 @@ public final class SilentSlotManager {
         return snapshotSlot;
     }
 
+    /**
+     * Hotbar slot Grim/vanilla treat as the start-of-tick held stack. Silent
+     * leases keep the visible spear/sword here while the server slot is the
+     * action weapon, so the next attack still inherits that start-stack reach.
+     */
+    public int startStackSlot() {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (client.player == null) {
+            return -1;
+        }
+        int visible = client.player.getInventory().getSelectedSlot();
+        if (owner != null && snapshotSlot >= 0 && snapshotSlot <= 8) {
+            return snapshotSlot;
+        }
+        return visible;
+    }
+
     /** True when vanilla has not synchronized a user-visible slot mutation yet. */
     public boolean hasVisibleSelectionChanged(MinecraftClient client) {
         requireClientThread(client);

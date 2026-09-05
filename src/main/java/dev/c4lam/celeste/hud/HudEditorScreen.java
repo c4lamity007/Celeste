@@ -1,6 +1,7 @@
 package dev.c4lam.celeste.hud;
 
 import dev.c4lam.celeste.config.InterfaceConfig;
+import dev.c4lam.celeste.gui.GuiCursors;
 import dev.c4lam.celeste.render.GuiRenderer;
 import dev.c4lam.celeste.render.RenderUtil;
 import dev.c4lam.celeste.render.font.Fonts;
@@ -16,16 +17,19 @@ import org.lwjgl.glfw.GLFW;
 import java.awt.Color;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /** Borderless, in-world editor for Celeste HUD widgets. */
 public final class HudEditorScreen extends Screen {
     private static final Color TEXT = color(250, 244, 250, 255);
     private static final Color MUTED = color(177, 162, 178, 255);
     private static final Color ACCENT = color(255, 43, 143, 255);
-    private static final Color MENU_TOP = color(29, 18, 30, 236);
-    private static final Color MENU_BOTTOM = color(10, 8, 14, 244);
-    private static final Color MENU_HOVER = color(62, 36, 58, 165);
+    private static final Color MENU_TOP = color(30, 30, 35, 236);
+    private static final Color MENU_BOTTOM = color(22, 22, 27, 244);
+    private static final Color MENU_HOVER = color(70, 63, 73, 165);
     private static final float SNAP_DISTANCE = 5.0f;
+    private static final float HANDLE_SIZE = 10.0f;
+    private static final float EDGE_HIT = 10.0f;
 
     private final Screen parent;
     private final HudManager manager = HudManager.getInstance();
@@ -34,6 +38,14 @@ public final class HudEditorScreen extends Screen {
     private HudElementState dragging;
     private float dragOffsetX;
     private float dragOffsetY;
+    private HudElementState resizing;
+    private ResizeHandle resizeHandle;
+    private float resizeStartX;
+    private float resizeStartY;
+    private float resizeStartW;
+    private float resizeStartH;
+    private float resizeStartMouseX;
+    private float resizeStartMouseY;
     private boolean boxSelecting;
     private float boxSelectStartX;
     private float boxSelectStartY;
@@ -62,6 +74,7 @@ public final class HudEditorScreen extends Screen {
             state.setSelected(false);
         }
         manager.beginEditorSession();
+        GuiCursors.hideNative(client);
         screenProgress = 0.0f;
         menuProgress = 0.0f;
         guideProgress = 0.0f;
@@ -86,9 +99,11 @@ public final class HudEditorScreen extends Screen {
         matrices.loadIdentity();
         GuiRenderer.getInstance().clearScissors();
 
-        manager.renderEditor(context, mouseX, mouseY, dragging);
+        manager.renderEditor(context, mouseX, mouseY, dragging != null ? dragging : resizing);
+        drawResizeHandles(matrices, mouseX, mouseY);
         drawGuides(matrices);
         drawHelp(matrices);
+        drawSelectionInfo(matrices);
         if (boxSelecting) {
             drawBoxSelection(matrices, mouseX, mouseY);
         }
@@ -102,21 +117,70 @@ public final class HudEditorScreen extends Screen {
             menuHits.clear();
             targetPlacementHits.clear();
         }
+        boolean grab = resizing != null || dragging != null
+            || (!boxSelecting && (handleAt(mouseX, mouseY) != null || manager.hit(mouseX, mouseY) != null
+                || overMenu(mouseX, mouseY)));
+        GuiCursors.hideNative(client);
+        GuiCursors.draw(matrices, mouseX, mouseY, grab);
     }
 
     private void drawHelp(MatrixStack matrices) {
         String title = "Celeste HUD Editor";
-        String hint = "Drag widgets  •  Shift-click for multi-select  •  Scroll to resize selection  •  Right-click to configure  •  Esc to return";
-        float width = Math.max(226, Fonts.regular().getWidth(hint, 7.0f) + 22);
-        float x = (this.width - width) / 2.0f;
+        float fontSize = 6.7F;
+        float available = Math.max(24F, this.width - 40F);
+        List<String> rows = new ArrayList<>();
+        String row = "";
+        for (String hint : new String[]{"Drag to move", "Edges to resize", "Shift-click to select",
+            "Scroll to scale", "Right-click to configure", "Esc to return"}) {
+            String candidate = row.isEmpty() ? hint : row + "  •  " + hint;
+            if (!row.isEmpty() && Fonts.regular().getWidth(candidate, fontSize) > available) {
+                rows.add(row);
+                row = hint;
+            } else {
+                row = candidate;
+            }
+        }
+        if (!row.isEmpty()) rows.add(row);
+        float contentWidth = Fonts.semibold().getWidth(title, 8.4F);
+        for (String line : rows) contentWidth = Math.max(contentWidth, Fonts.regular().getWidth(line, fontSize));
+        float panelWidth = Math.min(this.width - 12F, contentWidth + 24F);
+        float panelHeight = 26F + rows.size() * 10F;
+        float x = (this.width - panelWidth) / 2.0f;
         float progress = easeOutCubic(screenProgress);
         float y = 9 - (1.0f - progress) * 8.0f;
-        Color top = color(27, 18, 29, Math.round(211 * progress));
-        Color bottom = color(9, 7, 13, Math.round(226 * progress));
-        RenderUtil.BLUR_RECT.draw(matrices, x, y, width, 36, new Vector4f(10),
+        Color top = color(29, 29, 34, Math.round(211 * progress));
+        Color bottom = color(19, 19, 24, Math.round(226 * progress));
+        RenderUtil.BLUR_RECT.draw(matrices, x, y, panelWidth, panelHeight, new Vector4f(10),
             top, top, bottom, bottom, InterfaceConfig.glassTintMix());
         Fonts.semibold().drawCenteredText(matrices, title, this.width / 2.0f, y + 7, 8.4f, withAlpha(TEXT, progress));
-        Fonts.regular().drawCenteredText(matrices, hint, this.width / 2.0f, y + 22, 6.7f, withAlpha(MUTED, progress));
+        for (int i = 0; i < rows.size(); i++) {
+            Fonts.regular().drawCenteredText(matrices, rows.get(i), this.width / 2.0F,
+                y + 22 + i * 10, fontSize, withAlpha(MUTED, progress));
+        }
+    }
+
+    private void drawSelectionInfo(MatrixStack matrices) {
+        if (menuOpen || boxSelecting) return;
+        int selected = 0;
+        HudElementState only = null;
+        for (HudElementState state : manager.elements()) {
+            if (state.enabled() && state.selected()) {
+                selected++;
+                only = state;
+            }
+        }
+        if (selected == 0) return;
+        String detail = selected > 1 ? selected + " selected  •  Scroll to scale together"
+            : String.format(Locale.ROOT, "%s  •  %d × %d", only.type().label(),
+                Math.round(only.width()), Math.round(only.height()));
+        float textWidth = Fonts.regular().getWidth(detail, 6.7F);
+        float cardWidth = textWidth + 22F;
+        if (cardWidth > width - 12F) return;
+        float x = (width - cardWidth) * .5F;
+        float y = Math.max(0F, height - 29F);
+        float alpha = easeOutCubic(screenProgress);
+        RenderUtil.RECT.draw(matrices, x, y, cardWidth, 20F, 7F, color(24, 24, 29, Math.round(220 * alpha)));
+        Fonts.regular().drawCenteredText(matrices, detail, width * .5F, y + 6.5F, 6.7F, withAlpha(TEXT, alpha));
     }
 
     private void drawBoxSelection(MatrixStack matrices, int mouseX, int mouseY) {
@@ -267,6 +331,8 @@ public final class HudEditorScreen extends Screen {
             menuOpen = true;
             targetPlacementMenu = clicked != null && clicked.type() == HudElementType.TARGET_HUD;
             dragging = null;
+            resizing = null;
+            resizeHandle = null;
             boxSelecting = false;
             return true;
         }
@@ -308,11 +374,27 @@ public final class HudEditorScreen extends Screen {
             return true;
         }
 
+        HandleHit edge = handleAt(click.x(), click.y());
+        if (edge != null) {
+            if (!additiveSelection) {
+                for (HudElementState state : manager.elements()) {
+                    state.setSelected(state == edge.state());
+                }
+            } else {
+                edge.state().setSelected(true);
+            }
+            beginResize(edge.state(), edge.handle(), (float) click.x(), (float) click.y());
+            dragging = null;
+            boxSelecting = false;
+            return true;
+        }
+
         HudElementState hit = manager.hit(click.x(), click.y());
         if (hit != null) {
             if (additiveSelection) {
                 hit.setSelected(!hit.selected());
                 dragging = null;
+                resizing = null;
                 boxSelecting = false;
                 return true;
             }
@@ -322,6 +404,7 @@ public final class HudEditorScreen extends Screen {
             dragging = hit;
             dragOffsetX = (float) click.x() - hit.displayX();
             dragOffsetY = (float) click.y() - hit.displayY();
+            resizing = null;
             boxSelecting = false;
             return true;
         } else {
@@ -331,6 +414,7 @@ public final class HudEditorScreen extends Screen {
             boxSelecting = true;
             boxSelectStartX = (float) click.x();
             boxSelectStartY = (float) click.y();
+            resizing = null;
             return true;
         }
     }
@@ -341,6 +425,11 @@ public final class HudEditorScreen extends Screen {
             return false;
         }
         
+        if (resizing != null && resizeHandle != null) {
+            applyResize((float) click.x(), (float) click.y());
+            boxSelecting = false;
+            return true;
+        }
         if (dragging != null) {
             Vector2f snapped = snap(
                 (float) click.x() - dragOffsetX,
@@ -362,6 +451,12 @@ public final class HudEditorScreen extends Screen {
 
     @Override
     public boolean mouseReleased(Click click) {
+        if (resizing != null) {
+            manager.clampToViewport(width, height);
+            manager.saveLayout();
+            resizing = null;
+            resizeHandle = null;
+        }
         if (dragging != null) {
             manager.saveLayout();
             dragging = null;
@@ -408,7 +503,7 @@ public final class HudEditorScreen extends Screen {
             // aspect, glyph size, and internal spacing in lockstep.
             float scaleFactor = (float) Math.pow(1.1D, verticalAmount);
             for (HudElementState state : selectedElements) {
-                state.setScale(state.scale() * scaleFactor);
+                state.scaleBy(scaleFactor);
             }
             manager.clampToViewport(width, height);
             manager.saveLayout();
@@ -475,9 +570,220 @@ public final class HudEditorScreen extends Screen {
         manager.saveLayout();
     }
 
+    private void beginResize(HudElementState state, ResizeHandle handle, float mouseX, float mouseY) {
+        state.moveImmediately(state.x(), state.y());
+        resizing = state;
+        resizeHandle = handle;
+        resizeStartX = state.x();
+        resizeStartY = state.y();
+        resizeStartW = state.width();
+        resizeStartH = state.height();
+        resizeStartMouseX = mouseX;
+        resizeStartMouseY = mouseY;
+    }
+
+    private void applyResize(float mouseX, float mouseY) {
+        if (resizing == null || resizeHandle == null) {
+            return;
+        }
+        float dx = mouseX - resizeStartMouseX;
+        float dy = mouseY - resizeStartMouseY;
+        float left = resizeStartX;
+        float top = resizeStartY;
+        float right = resizeStartX + resizeStartW;
+        float bottom = resizeStartY + resizeStartH;
+        if (resizeHandle.east()) {
+            right += dx;
+        }
+        if (resizeHandle.west()) {
+            left += dx;
+        }
+        if (resizeHandle.south()) {
+            bottom += dy;
+        }
+        if (resizeHandle.north()) {
+            top += dy;
+        }
+
+        float minW = resizing.intrinsicWidth() * HudElementState.MIN_SCALE;
+        float minH = resizing.intrinsicHeight() * HudElementState.MIN_SCALE;
+        if (resizeHandle.corner() && resizeStartW > 0.5f && resizeStartH > 0.5f) {
+            float newW = Math.max(minW, right - left);
+            float newH = Math.max(minH, bottom - top);
+            float factor = Math.abs(dx) * resizeStartH > Math.abs(dy) * resizeStartW
+                ? newW / resizeStartW
+                : newH / resizeStartH;
+            factor = Math.max(minW / resizeStartW, Math.max(minH / resizeStartH, factor));
+            newW = resizeStartW * factor;
+            newH = resizeStartH * factor;
+            if (resizeHandle.east()) {
+                right = left + newW;
+            } else if (resizeHandle.west()) {
+                left = right - newW;
+            }
+            if (resizeHandle.south()) {
+                bottom = top + newH;
+            } else if (resizeHandle.north()) {
+                top = bottom - newH;
+            }
+        }
+
+        if (right - left < minW) {
+            if (resizeHandle.west()) {
+                left = right - minW;
+            } else {
+                right = left + minW;
+            }
+        }
+        if (bottom - top < minH) {
+            if (resizeHandle.north()) {
+                top = bottom - minH;
+            } else {
+                bottom = top + minH;
+            }
+        }
+
+        float scaleX = (right - left) / Math.max(1.0f, resizing.intrinsicWidth());
+        float scaleY = (bottom - top) / Math.max(1.0f, resizing.intrinsicHeight());
+        resizing.setScaleX(scaleX);
+        resizing.setScaleY(scaleY);
+        float width = resizing.width();
+        float height = resizing.height();
+        float x = resizeHandle.west() ? right - width : left;
+        float y = resizeHandle.north() ? bottom - height : top;
+        resizing.moveImmediately(
+            Math.max(0.0f, Math.min(this.width - width, x)),
+            Math.max(0.0f, Math.min(this.height - height, y))
+        );
+    }
+
+    private void drawResizeHandles(MatrixStack matrices, int mouseX, int mouseY) {
+        if (menuOpen || boxSelecting) {
+            return;
+        }
+        HandleHit hover = handleAt(mouseX, mouseY);
+        for (HudElementState state : manager.elements()) {
+            if (!state.enabled()) {
+                continue;
+            }
+            boolean show = state.selected() || state == resizing
+                || nearBorder(state, mouseX, mouseY);
+            if (!show) {
+                continue;
+            }
+            float x = state.displayX();
+            float y = state.displayY();
+            float w = state.width();
+            float h = state.height();
+            drawCornerHandle(matrices, x, y, hover, state, ResizeHandle.NW);
+            drawCornerHandle(matrices, x + w, y, hover, state, ResizeHandle.NE);
+            drawCornerHandle(matrices, x, y + h, hover, state, ResizeHandle.SW);
+            drawCornerHandle(matrices, x + w, y + h, hover, state, ResizeHandle.SE);
+        }
+    }
+
+    private void drawCornerHandle(MatrixStack matrices, float centerX, float centerY,
+                                  HandleHit hover, HudElementState state, ResizeHandle handle) {
+        boolean hot = (hover != null && hover.state() == state && hover.handle() == handle)
+            || (resizing == state && resizeHandle == handle);
+        float s = HANDLE_SIZE;
+        float x = centerX - s * 0.5f;
+        float y = centerY - s * 0.5f;
+        Color glassTop = color(29, 18, 30, hot ? 236 : 210);
+        Color glassBottom = color(10, 8, 14, hot ? 244 : 222);
+        RenderUtil.BLUR_RECT.draw(matrices, x, y, s, s, new Vector4f(s * 0.5f),
+            glassTop, glassTop, glassBottom, glassBottom, InterfaceConfig.glassTintMix());
+        float inner = s - 3.4f;
+        RenderUtil.RECT.draw(matrices, centerX - inner * 0.5f, centerY - inner * 0.5f,
+            inner, inner, inner * 0.5f, withAlpha(blend(MUTED, TEXT, hot ? 1.0f : 0.42f), hot ? 0.95f : 0.82f));
+    }
+
+    private HandleHit handleAt(double mouseX, double mouseY) {
+        for (int index = manager.elements().size() - 1; index >= 0; index--) {
+            HudElementState state = manager.elements().get(index);
+            if (!state.enabled()) {
+                continue;
+            }
+            ResizeHandle handle = handleOn(state, mouseX, mouseY);
+            if (handle != null) {
+                return new HandleHit(state, handle);
+            }
+        }
+        return null;
+    }
+
+    private static ResizeHandle handleOn(HudElementState state, double mouseX, double mouseY) {
+        float x = state.displayX();
+        float y = state.displayY();
+        float w = state.width();
+        float h = state.height();
+        float pad = EDGE_HIT;
+        if (mouseX < x - pad || mouseX > x + w + pad || mouseY < y - pad || mouseY > y + h + pad) {
+            return null;
+        }
+        boolean nearLeft = Math.abs(mouseX - x) <= pad;
+        boolean nearRight = Math.abs(mouseX - (x + w)) <= pad;
+        boolean nearTop = Math.abs(mouseY - y) <= pad;
+        boolean nearBottom = Math.abs(mouseY - (y + h)) <= pad;
+        if (nearLeft && nearRight) {
+            nearLeft = mouseX < x + w * 0.5f;
+            nearRight = !nearLeft;
+        }
+        if (nearTop && nearBottom) {
+            nearTop = mouseY < y + h * 0.5f;
+            nearBottom = !nearTop;
+        }
+        if (nearLeft && nearTop) {
+            return ResizeHandle.NW;
+        }
+        if (nearRight && nearTop) {
+            return ResizeHandle.NE;
+        }
+        if (nearLeft && nearBottom) {
+            return ResizeHandle.SW;
+        }
+        if (nearRight && nearBottom) {
+            return ResizeHandle.SE;
+        }
+        return null;
+    }
+
+    private static boolean nearBorder(HudElementState state, double mouseX, double mouseY) {
+        float x = state.displayX();
+        float y = state.displayY();
+        float w = state.width();
+        float h = state.height();
+        float pad = EDGE_HIT;
+        if (mouseX < x - pad || mouseX > x + w + pad || mouseY < y - pad || mouseY > y + h + pad) {
+            return false;
+        }
+        return Math.abs(mouseX - x) <= pad
+            || Math.abs(mouseX - (x + w)) <= pad
+            || Math.abs(mouseY - y) <= pad
+            || Math.abs(mouseY - (y + h)) <= pad;
+    }
+
+    private boolean overMenu(double mouseX, double mouseY) {
+        if (!menuOpen) {
+            return false;
+        }
+        for (MenuHit hit : menuHits) {
+            if (hit.contains(mouseX, mouseY)) {
+                return true;
+            }
+        }
+        for (TargetPlacementHit hit : targetPlacementHits) {
+            if (hit.contains(mouseX, mouseY)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     @Override
     public void close() {
         manager.saveLayout();
+        GuiCursors.restoreNative(client);
         if (client != null) {
             client.setScreen(parent);
         }
@@ -495,6 +801,7 @@ public final class HudEditorScreen extends Screen {
     public void removed() {
         manager.saveLayout();
         manager.releaseBlurCapture();
+        GuiCursors.restoreNative(client);
         super.removed();
     }
 
@@ -554,5 +861,51 @@ public final class HudEditorScreen extends Screen {
     }
 
     private record SnapResult(float position, Float guide) {
+    }
+
+    private record HandleHit(HudElementState state, ResizeHandle handle) {
+    }
+
+    private enum ResizeHandle {
+        N(false, true, false, false),
+        S(false, false, false, true),
+        E(false, false, true, false),
+        W(true, false, false, false),
+        NE(false, true, true, false),
+        NW(true, true, false, false),
+        SE(false, false, true, true),
+        SW(true, false, false, true);
+
+        private final boolean west;
+        private final boolean north;
+        private final boolean east;
+        private final boolean south;
+
+        ResizeHandle(boolean west, boolean north, boolean east, boolean south) {
+            this.west = west;
+            this.north = north;
+            this.east = east;
+            this.south = south;
+        }
+
+        boolean west() {
+            return west;
+        }
+
+        boolean north() {
+            return north;
+        }
+
+        boolean east() {
+            return east;
+        }
+
+        boolean south() {
+            return south;
+        }
+
+        boolean corner() {
+            return (west || east) && (north || south);
+        }
     }
 }

@@ -17,11 +17,13 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-/**
- * Local config browser state. Public cards are stubs so a later cloud host
- * can replace {@link #listPublic()} without changing the GUI.
- */
+/** Local config browser state backed by the licensed VPS public library. */
 public final class ConfigLibrary {
     public enum Tab {
         MY("My Configs"),
@@ -56,12 +58,20 @@ public final class ConfigLibrary {
     private static final ConfigLibrary INSTANCE = new ConfigLibrary();
     private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.ENGLISH);
     private static final ZoneId DISPLAY_ZONE = ZoneId.of("America/Los_Angeles");
+    private static final ExecutorService CLOUD_WORKER = Executors.newSingleThreadExecutor(task -> {
+        Thread thread = new Thread(task, "celeste-cloud-configs");
+        thread.setDaemon(true);
+        return thread;
+    });
 
     private final Path libraryFile = FabricLoader.getInstance().getConfigDir()
         .resolve("celeste").resolve("library.json");
     private final Set<String> favourites = new LinkedHashSet<>();
     private final Set<String> hiddenPublic = new LinkedHashSet<>();
-    private final List<Card> publicStubs = seedPublic();
+    private final CloudConfigClient cloud = new CloudConfigClient();
+    private final AtomicBoolean cloudBusy = new AtomicBoolean();
+    private List<Card> publicCards = List.of();
+    private String publicError = "";
     private boolean initialized;
 
     private ConfigLibrary() {
@@ -77,6 +87,7 @@ public final class ConfigLibrary {
         }
         load();
         initialized = true;
+        refreshPublicAsync();
     }
 
     public synchronized boolean isFavourite(String id) {
@@ -139,13 +150,48 @@ public final class ConfigLibrary {
             .toList();
     }
 
-    public synchronized String downloadPublic(String id) {
-        initialize();
-        Card card = listPublic().stream().filter(entry -> entry.id().equals(id)).findFirst().orElse(null);
-        if (card == null) {
-            throw new IllegalArgumentException("Public config is gone");
-        }
-        return ConfigProfileManager.getInstance().importSnapshot(card.name(), card.snapshot());
+    public boolean cloudBusy() {
+        return cloudBusy.get();
+    }
+
+    public synchronized String publicError() {
+        return publicError;
+    }
+
+    public CompletableFuture<String> refreshPublicAsync() {
+        return cloudTask(() -> {
+            refreshPublicNow();
+            return "Cloud configs refreshed";
+        });
+    }
+
+    public CompletableFuture<String> publishPublicAsync(String rawName) {
+        String name = ConfigProfileManager.sanitize(rawName);
+        return cloudTask(() -> {
+            ConfigProfileManager profiles = ConfigProfileManager.getInstance();
+            if (name.equals(profiles.active())) {
+                profiles.saveActive();
+            }
+            String published = cloud.publish(name, profiles.exportImage(name), profiles.enabledModules(name));
+            refreshPublicNow();
+            return "Published " + published;
+        });
+    }
+
+    public CompletableFuture<String> downloadPublicAsync(String id) {
+        return cloudTask(() -> {
+            Card card;
+            synchronized (this) {
+                card = publicCards.stream().filter(entry -> entry.id().equals(id)).findFirst().orElse(null);
+            }
+            if (card == null) {
+                throw new IllegalArgumentException("Public config is gone");
+            }
+            byte[] image = cloud.download(id);
+            String imported = ConfigProfileManager.getInstance().importCloudImage(card.name(), image);
+            refreshPublicNow();
+            return "Downloaded " + imported;
+        });
     }
 
     public synchronized List<String> enabledModules(Card card) {
@@ -173,42 +219,70 @@ public final class ConfigLibrary {
         return cards;
     }
 
-    /**
-     * Local placeholders only. Swap this method for a cloud fetch later.
-     */
     private List<Card> listPublic() {
         List<Card> cards = new ArrayList<>();
-        for (Card stub : publicStubs) {
-            if (!hiddenPublic.contains(stub.id())) {
-                cards.add(stub);
+        for (Card card : publicCards) {
+            if (!hiddenPublic.contains(card.id())) {
+                cards.add(card);
             }
         }
         return cards;
     }
 
-    private static List<Card> seedPublic() {
-        return List.of(
-            stub("public:sword-duel", "sword-duel", "4 Aug 2026",
-                "Sword Aura", "Trigger Bot", "Aim Assist", "W Tap", "Keep Sprint"),
-            stub("public:crystal-pvp", "crystal-pvp", "11 Aug 2026",
-                "Auto Crystal", "Surround", "Silent Totem", "Auto Trap"),
-            stub("public:mace-combo", "mace-combo", "16 Aug 2026",
-                "Mace Aura", "Wind Charge", "Mace Swap", "Auto Firework"),
-            stub("public:visual-pack", "visual-pack", "19 Aug 2026",
-                "Entity ESP", "Hole ESP", "Fullbright", "Array List", "Watermark")
-        );
-    }
-
-    private static Card stub(String id, String name, String date, String... modules) {
-        Properties snapshot = new Properties();
-        for (String module : modules) {
-            snapshot.setProperty("module." + key(module) + ".enabled", "true");
+    private CompletableFuture<String> cloudTask(CloudOperation operation) {
+        if (!cloudBusy.compareAndSet(false, true)) {
+            return CompletableFuture.completedFuture("Cloud sync is already running");
         }
-        return new Card(id, name, date, Tab.PUBLIC, List.of(modules), snapshot);
+        return CompletableFuture.supplyAsync(() -> {
+            try {
+                String result = operation.run();
+                synchronized (this) {
+                    publicError = "";
+                }
+                return result;
+            } catch (Exception exception) {
+                synchronized (this) {
+                    publicError = friendly(exception);
+                }
+                throw new CompletionException(exception);
+            } finally {
+                cloudBusy.set(false);
+            }
+        }, CLOUD_WORKER);
     }
 
-    private static String key(String value) {
-        return value.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", "_").replaceAll("^_|_$", "");
+    @FunctionalInterface
+    private interface CloudOperation {
+        String run() throws Exception;
+    }
+
+    private void refreshPublicNow() {
+        try {
+            List<Card> next = cloud.list().stream()
+                .map(remote -> new Card(
+                    remote.id(),
+                    remote.name(),
+                    format(remote.updatedAt() * 1_000L),
+                    Tab.PUBLIC,
+                    remote.modules(),
+                    new Properties()
+                ))
+                .toList();
+            synchronized (this) {
+                publicCards = List.copyOf(next);
+            }
+        } catch (Exception exception) {
+            throw new IllegalStateException(friendly(exception), exception);
+        }
+    }
+
+    private static String friendly(Throwable throwable) {
+        Throwable cause = throwable;
+        while (cause.getCause() != null && cause != cause.getCause()) {
+            cause = cause.getCause();
+        }
+        String message = cause.getMessage();
+        return message == null || message.isBlank() ? "Cloud config request failed" : message;
     }
 
     private static String format(long millis) {

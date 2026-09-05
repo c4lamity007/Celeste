@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "inputJar": "../../build/libs/celeste-client-1.0.0.jar",
+  "outputJar": "../../build/obfuscated/celeste-client-1.0.0-obfuscated.jar",
+  "dependencyJars": [],
+  "keepPatterns": [
+    "dev.redstones.mediaplayerinfo.**"
+  ],
+  "renameClasses": true,
+  "renamePrivateMembers": true,
+  "encryptStrings": true,
+  "stripDebugInfo": true,
+  "includeHighCostStringMode": false,
+  "compositeStringModeOnly": false,
+  "doubleStringProtection": false,
+  "tripleStringProtection": false,
+  "quadStringProtection": true,
+  "fragmentStringVault": true,
+  "autoDetectFrameworkClasses": true,
+  "protectGuiVisualStrings": true,
+  "obfuscateGuiVisualClasses": true,
+  "crazyObfuscation": true,
+  "transformKeptApplicationClasses": true,
+  "protectNonPublicStaticStrings": true,
+  "nativeTranspile": false,
+  "nativeVirtualization": false,
+  "priorityNativePatterns": [
+    "dev.c4lam.celeste.auth.**"
+  ],
+  "autoDetectAuthenticationClasses": true,
+  "targetedNativeVirtualization": true,
+  "runtimeStringConcealment": true,
+  "relocateMetadataClasses": true,
+  "flowObfuscateStrings": true,
+  "hardenStringHelpers": true,
+  "relocateAssets": false,
+  "virtualizeExistingNativeLibraries": false
+}

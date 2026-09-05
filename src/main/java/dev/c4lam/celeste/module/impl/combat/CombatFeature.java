@@ -20,7 +20,6 @@ import java.util.function.Predicate;
 
 /** Shared lifecycle and validation for client-thread combat features. */
 abstract class CombatFeature implements ModuleFeature {
-    private static final double HARD_AURA_HIT_RANGE = 3.0D;
     private static final double RANGE_EPSILON = 1.0E-7D;
     protected final FriendManager friends = FriendManager.getInstance();
 
@@ -104,10 +103,10 @@ abstract class CombatFeature implements ModuleFeature {
 
     /**
      * Aura presentation may track farther targets, but real entity attacks are
-     * hard-capped to the closest point on the target hitbox being within three
-     * blocks. Beyond that cap this schedules only one ordinary hand-swing
-     * animation when the previous swing has finished; it never calls
-     * attackEntity.
+     * capped to the start-of-tick held stack's vanilla hit range (spear reach
+     * when a spear is held). Beyond that cap this schedules only one ordinary
+     * hand-swing animation when the previous swing has finished; it never
+     * calls attackEntity.
      */
     protected final boolean submitCappedAuraAttack(
         int priority,
@@ -137,9 +136,10 @@ abstract class CombatFeature implements ModuleFeature {
         if (client.player == null || target == null) {
             return false;
         }
+        double hitCap = VanillaCombatReach.heldHitRange(client);
         double hitboxDistanceSquared = target.getBoundingBox().squaredMagnitude(client.player.getEyePos());
-        if (hitboxDistanceSquared <= HARD_AURA_HIT_RANGE * HARD_AURA_HIT_RANGE + RANGE_EPSILON) {
-            return submitAttack(priority, target, Math.min(presentationRange, HARD_AURA_HIT_RANGE),
+        if (hitboxDistanceSquared <= hitCap * hitCap + RANGE_EPSILON) {
+            return submitAttack(priority, target, hitCap,
                 cooldown, requireCritical, weapon, extraValidation, afterAttack);
         }
         if (!Targeting.validLivingTarget(client, target, friends, presentationRange, true)
@@ -154,7 +154,8 @@ abstract class CombatFeature implements ModuleFeature {
         return ActionScheduler.getInstance().submit(this, priority, actionClient -> {
             if (!Targeting.validLivingTarget(actionClient, target, friends, presentationRange, true)
                 || target.getBoundingBox().squaredMagnitude(actionClient.player.getEyePos())
-                    <= HARD_AURA_HIT_RANGE * HARD_AURA_HIT_RANGE + RANGE_EPSILON
+                    <= VanillaCombatReach.heldHitRange(actionClient) * VanillaCombatReach.heldHitRange(actionClient)
+                        + RANGE_EPSILON
                 || !Targeting.attackReady(actionClient, cooldown)
                 || (requireCritical && !Targeting.inCriticalWindow(actionClient.player))
                 || CombatLoadout.attackSlot(actionClient, target, weapon) < 0

@@ -1,6 +1,6 @@
 package dev.c4lam.celeste.module.impl.combat;
 
-import dev.c4lam.celeste.mixin.ClientPlayerInteractionManagerAccessor;
+import dev.c4lam.celeste.silent.SilentSlotManager;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.AttackRangeComponent;
@@ -37,13 +37,10 @@ public final class VanillaCombatReach {
             return false;
         }
 
-        // Grim snapshots the previously server-held stack when vanilla's
-        // selected-slot synchronizer emits a change immediately before the
-        // attack. CPIM's cache is that exact pre-sync server slot; the visible
-        // inventory index can already have changed via mouse wheel.
-        int startSlot = client.interactionManager instanceof ClientPlayerInteractionManagerAccessor accessor
-            ? accessor.celeste$getLastSelectedSlot()
-            : client.player.getInventory().getSelectedSlot();
+        int startSlot = SilentSlotManager.getInstance().startStackSlot();
+        if (startSlot < 0 || startSlot > 8) {
+            startSlot = client.player.getInventory().getSelectedSlot();
+        }
         if (startSlot < 0 || startSlot > 8) {
             return false;
         }
@@ -55,13 +52,16 @@ public final class VanillaCombatReach {
         double maximum;
         double margin = 0.0D;
         if (startRange == null) {
-            // Vanilla deliberately retains ordinary entity-interaction reach
-            // when the stack at the beginning of the tick had no component.
+            // Vanilla retains ordinary entity-interaction reach when the
+            // start-of-tick stack had no attack-range component.
             maximum = client.player.getEntityInteractionRange();
         } else {
+            // Start-of-tick ATTACK_RANGE (spear) is the only extra: same
+            // look-ray as sword, longer max. Do not min() against the action
+            // weapon or the mace/axe would cancel that bonus.
             maximum = startRange.getEffectiveMaxRange(client.player);
             margin = startRange.hitboxMargin();
-            if (actionRange != null) {
+            if (actionRange != null && actionSlot == startSlot) {
                 maximum = Math.min(maximum, actionRange.getEffectiveMaxRange(client.player));
                 margin = Math.min(margin, actionRange.hitboxMargin());
             }
@@ -75,13 +75,28 @@ public final class VanillaCombatReach {
             return true;
         }
         Vec3d end = eyes.add(RotationManager.getInstance().serverRotation().direction().multiply(maximum));
-        Vec3d intercept;
-        if (effectiveBox.contains(eyes)) {
-            intercept = eyes;
-        } else {
-            intercept = effectiveBox.raycast(eyes, end).orElse(null);
-        }
+        Vec3d intercept = effectiveBox.contains(eyes) ? eyes : effectiveBox.raycast(eyes, end).orElse(null);
         return intercept != null && unobstructed(client, eyes, intercept);
+    }
+
+    /** Vanilla hit distance of the start-of-tick held stack, including spear reach. */
+    public static double heldHitRange(MinecraftClient client) {
+        if (client == null || client.player == null) {
+            return 3.0D;
+        }
+        int startSlot = SilentSlotManager.getInstance().startStackSlot();
+        if (startSlot < 0 || startSlot > 8) {
+            startSlot = client.player.getInventory().getSelectedSlot();
+        }
+        if (startSlot < 0 || startSlot > 8) {
+            return client.player.getEntityInteractionRange();
+        }
+        ItemStack startStack = client.player.getInventory().getStack(startSlot);
+        AttackRangeComponent range = startStack.get(DataComponentTypes.ATTACK_RANGE);
+        if (range == null) {
+            return client.player.getEntityInteractionRange();
+        }
+        return range.getEffectiveMaxRange(client.player) + range.hitboxMargin();
     }
 
     private static boolean unobstructed(MinecraftClient client, Vec3d origin, Vec3d destination) {

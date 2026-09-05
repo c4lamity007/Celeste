@@ -2,6 +2,7 @@ package dev.c4lam.celeste.module.impl.combat;
 
 import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.module.ModuleFeature;
+import dev.c4lam.celeste.module.expansion.inventory.SilentInventoryScreen;
 import net.minecraft.item.Items;
 import net.minecraft.item.MaceItem;
 
@@ -19,7 +20,8 @@ public final class SmashGuideFeature implements ModuleFeature {
     @Override
     public void onStartTick(ModuleContext context) {
         if (context.client().player == null
-            || context.client().currentScreen != null
+            || (context.client().currentScreen != null
+                && !(context.client().currentScreen instanceof SilentInventoryScreen))
             || context.client().player.isGliding()
             || !MaceItem.shouldDealAdditionalDamage(context.client().player)
             || CombatLoadout.findItem(context.client(), Items.MACE) < 0) {

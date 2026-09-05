@@ -17,13 +17,16 @@ import dev.c4lam.celeste.render.font.Fonts;
 import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
-import net.minecraft.client.gui.screen.option.OptionsScreen;
 import net.minecraft.client.input.CharInput;
 import net.minecraft.client.input.KeyInput;
 import net.minecraft.client.network.AbstractClientPlayerEntity;
 import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.client.util.math.MatrixStack;
+import net.minecraft.item.Item;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
+import net.minecraft.registry.Registries;
 import net.minecraft.text.Text;
 import net.minecraft.util.Identifier;
 import org.joml.Vector4f;
@@ -53,6 +56,7 @@ public final class CelesteScreen extends Screen {
     private static final Identifier STAR_FILL_ICON = Identifier.of("celeste", "textures/gui/icons/star-fill.png");
     private static final Identifier TRASH_ICON = Identifier.of("celeste", "textures/gui/icons/trash.png");
     private static final Identifier CLOUD_ICON = Identifier.of("celeste", "textures/gui/icons/cloud-config.png");
+    private static final Identifier PENCIL_ICON = Identifier.of("celeste", "textures/gui/icons/pencil.png");
     private static final Color STAR_YELLOW = color(255, 210, 86, 255);
     private static final float STAR_SMOOTH_TIME_SECONDS = 0.18f;
     private static final Color TRASH_RED = color(232, 74, 82, 255);
@@ -85,7 +89,7 @@ public final class CelesteScreen extends Screen {
     private static final Color CARD_OPEN = color(48, 29, 46, 218);
     private static final Color CONTROL = color(19, 13, 22, 205);
     private static final Object SEARCH_HOVER_KEY = new Object();
-    private static final Object SETTINGS_BUTTON_HOVER_KEY = new Object();
+    private static final Object MENU_KEY_HOVER_KEY = new Object();
 
     private CelestePage selectedPage = CelestePage.SWORD;
     private GuiModule expandedModule;
@@ -110,6 +114,8 @@ public final class CelesteScreen extends Screen {
     private String configStatus = "";
     private long configStatusUntil;
     private FieldHit configFieldHit;
+    private FieldHit menuKeyHit;
+    private boolean listeningMenuKey;
     private String friendInput = "";
     private boolean friendFieldFocused;
     private String friendStatus = "";
@@ -153,6 +159,7 @@ public final class CelesteScreen extends Screen {
     private float contentWidth;
     private float contentHeight;
     private float uiScale = 1.0f;
+    private boolean pointerHot;
 
     public CelesteScreen() {
         super(Text.literal("Celeste Client"));
@@ -166,6 +173,7 @@ public final class CelesteScreen extends Screen {
         interfaceScaleVelocity = 0.0f;
         lastScaleUpdateAt = openedAt;
         layout();
+        GuiCursors.hideNative(client);
     }
 
     @Override
@@ -191,6 +199,7 @@ public final class CelesteScreen extends Screen {
         int virtualMouseX = Math.round(mouseX / uiScale);
         int virtualMouseY = Math.round(mouseY / uiScale);
 
+        pointerHot = false;
         navHits.clear();
         moduleHits.clear();
         settingHits.clear();
@@ -202,6 +211,7 @@ public final class CelesteScreen extends Screen {
         configTabHits.clear();
         configIconHits.clear();
         configFieldHit = null;
+        menuKeyHit = null;
         friendFieldHit = null;
         pendingTooltip = "";
 
@@ -269,6 +279,18 @@ public final class CelesteScreen extends Screen {
         if (draggingConfig != null) {
             updateDraggedConfig(virtualMouseX);
         }
+
+        boolean grab = pointerHot
+            || draggingSlider != null
+            || draggingRange != null
+            || draggingConfig != null
+            || colorPicker.isDragging()
+            || overInteractive(virtualMouseX, virtualMouseY);
+        GuiCursors.hideNative(client);
+        matrices.push();
+        matrices.loadIdentity();
+        GuiCursors.draw(matrices, mouseX, mouseY, grab);
+        matrices.pop();
     }
 
     private void drawSidebar(MatrixStack matrices, int mouseX, int mouseY, float y, float animation) {
@@ -576,6 +598,13 @@ public final class CelesteScreen extends Screen {
                     withAlpha(TEXT, Math.round(255 * animation)));
             } else if (setting instanceof GuiSetting.Mode mode) {
                 String value = mode.value();
+                float valueWidth = Math.max(46, Fonts.semibold().getWidth(value, 7.2f) + 17);
+                float valueX = x + width - valueWidth - 9;
+                RenderUtil.RECT.draw(matrices, valueX, y + 8, valueWidth, 18, 5, withAlpha(CONTROL, Math.round(205 * animation)));
+                Fonts.semibold().drawCenteredText(matrices, value, valueX + valueWidth / 2,
+                    centeredTextY(y + 8, 18, 7.2f), 7.2f, withAlpha(TEXT, Math.round(255 * animation)));
+            } else if (setting instanceof GuiSetting.ItemPick itemPick) {
+                String value = itemPickName(itemPick);
                 float valueWidth = Math.max(46, Fonts.semibold().getWidth(value, 7.2f) + 17);
                 float valueX = x + width - valueWidth - 9;
                 RenderUtil.RECT.draw(matrices, valueX, y + 8, valueWidth, 18, 5, withAlpha(CONTROL, Math.round(205 * animation)));
@@ -934,7 +963,12 @@ public final class CelesteScreen extends Screen {
             float fieldEntrance = pageEntrance(card++);
             float fieldY = cursor + (1.0f - fieldEntrance) * 6.0f;
             float fieldOpacity = animation * fieldEntrance;
-            float fieldWidth = width - 176;
+            ConfigAction[] actions = {
+                new ConfigAction("Create", "Create", "Create a blank config"),
+                new ConfigAction("Save", "Save", "Save the current setup"),
+                new ConfigAction("Import", "Import", "Import a PNG path")
+            };
+            float fieldWidth = width - (actions.length * 42 + 8);
             boolean fieldHovered = hovered(mouseX, mouseY, x, fieldY, fieldWidth, 28);
             drawRailCard(matrices, x, fieldY, fieldWidth, 28, 8,
                 fieldHovered || configFieldFocused ? 1.0f : 0.0f, fieldOpacity);
@@ -945,12 +979,6 @@ public final class CelesteScreen extends Screen {
                 withAlpha(configInput.isEmpty() && !configFieldFocused ? DIM : TEXT, Math.round(255 * fieldOpacity)));
             configFieldHit = new FieldHit(x, fieldY, fieldWidth, 28);
 
-            ConfigAction[] actions = {
-                new ConfigAction("Create", "Create", "Create a blank config"),
-                new ConfigAction("Save", "Save", "Save the current setup"),
-                new ConfigAction("Import", "Import", "Import a PNG path"),
-                new ConfigAction("Set Folder", "Folder", "Set the configs folder")
-            };
             float buttonX = x + fieldWidth + 8;
             for (ConfigAction action : actions) {
                 boolean hovered = hovered(mouseX, mouseY, buttonX, fieldY, 38, 28);
@@ -983,7 +1011,11 @@ public final class CelesteScreen extends Screen {
                 ? "No configs yet. Name one, then Save."
                 : configTab == ConfigLibrary.Tab.FAVOURITE
                     ? "Star a config to keep it here."
-                    : "No public configs.";
+                    : library.cloudBusy()
+                        ? "Loading cloud configs..."
+                        : library.publicError().isEmpty()
+                            ? "No public configs yet. Publish one from My Configs."
+                            : "Cloud unavailable: " + trim(library.publicError(), 46);
             Fonts.regular().drawText(matrices, empty, x, cursor + (1.0f - entrance) * 4.0f, 7.2f,
                 withAlpha(MUTED, Math.round(255 * animation * entrance)));
             cursor += 28;
@@ -1036,7 +1068,16 @@ public final class CelesteScreen extends Screen {
                     setPendingTooltip(mouseX, mouseY, "Modules in this config");
                 }
                 iconX += 24;
-                if (entry.origin() != ConfigLibrary.Tab.MY) {
+                if (entry.origin() == ConfigLibrary.Tab.MY) {
+                    boolean publishHovered = hovered(mouseX, mouseY, iconX, iconY, icon, icon);
+                    drawTintedIcon(matrices, PENCIL_ICON, iconX, iconY, icon,
+                        blend(MUTED, ACCENT, namedHover("publish-" + entry.id(), publishHovered)), opacity);
+                    configIconHits.add(new IconHit("publish", entry.id(), iconX, iconY, icon, icon));
+                    if (publishHovered) {
+                        setPendingTooltip(mouseX, mouseY, "Publish or update this cloud config");
+                    }
+                    iconX += 24;
+                } else {
                     boolean cloudHovered = hovered(mouseX, mouseY, iconX, iconY, icon, icon);
                     drawTintedIcon(matrices, CLOUD_ICON, iconX, iconY, icon,
                         blend(MUTED, CLOUD_TAN, namedHover("cloud-" + entry.id(), cloudHovered)), opacity);
@@ -1261,15 +1302,34 @@ public final class CelesteScreen extends Screen {
             );
         }
 
-        float buttonX = settingsButtonX();
-        float buttonEntrance = pageEntrance(options.length + 1);
-        float buttonY = settingsButtonY();
-        boolean buttonHovered = hovered(mouseX, mouseY, buttonX, buttonY, 157, 29);
-        float buttonHover = hoverAnimation(SETTINGS_BUTTON_HOVER_KEY, buttonHovered);
-        drawRailCard(matrices, buttonX, buttonY, 157, 29, 8, buttonHover, animation * buttonEntrance);
-        Fonts.semibold().drawCenteredText(matrices, "Open Minecraft options", buttonX + 78.5f,
-            centeredTextY(buttonY, 29, 8.3f), 8.3f,
-            withAlpha(TEXT, Math.round(255 * animation * buttonEntrance)));
+        drawMenuKeyCard(matrices, contentX + cardWidth + gap, contentY + 5 + cardHeight + gap,
+            cardWidth, cardHeight, mouseX, mouseY, animation * pageEntrance(options.length + 1));
+    }
+
+    private void drawMenuKeyCard(
+        MatrixStack matrices,
+        float x,
+        float y,
+        float width,
+        float height,
+        int mouseX,
+        int mouseY,
+        float animation
+    ) {
+        boolean hovered = hovered(mouseX, mouseY, x, y, width, height);
+        float hover = hoverAnimation(MENU_KEY_HOVER_KEY, hovered);
+        drawPanelCard(matrices, x, y, width, height, 11, hover, animation);
+        Fonts.semibold().drawText(matrices, "Menu key", x + 14, y + 13, 9.5f,
+            withAlpha(TEXT, Math.round(255 * animation)));
+        String value = listeningMenuKey ? "Press a key" : keyName(InterfaceConfig.menuKey());
+        float valueWidth = Math.max(55, Fonts.semibold().getWidth(value, 7.5f) + 14);
+        drawRailCard(matrices, x + width - valueWidth - 12, y + 9, valueWidth, 19, 6, hover, animation);
+        Fonts.semibold().drawCenteredText(matrices, value, x + width - valueWidth / 2 - 12,
+            centeredTextY(y + 9, 19, 7.5f), 7.5f,
+            withAlpha(listeningMenuKey ? ACCENT : TEXT, Math.round(255 * animation)));
+        Fonts.regular().drawText(matrices, "Click, then press a key. Delete resets to Right Shift.",
+            x + 14, y + 35, 6.7f, withAlpha(MUTED, Math.round(255 * animation)));
+        menuKeyHit = new FieldHit(x, y, width, height);
     }
 
     private void drawConfigCard(
@@ -1435,6 +1495,12 @@ public final class CelesteScreen extends Screen {
                         configTab = hit.tab();
                         inspectConfigId = "";
                         contentScroll = targetScroll = 0;
+                        if (configTab == ConfigLibrary.Tab.PUBLIC) {
+                            runCloudConfigAction(
+                                ConfigLibrary.getInstance().refreshPublicAsync(),
+                                "Refreshing cloud configs..."
+                            );
+                        }
                     }
                     return true;
                 }
@@ -1480,8 +1546,9 @@ public final class CelesteScreen extends Screen {
             return true;
         }
 
-        if (insideContent && selectedPage == CelestePage.SETTINGS && hovered(mouseX, mouseY, settingsButtonX(), settingsButtonY(), 157, 29)) {
-            client.setScreen(new OptionsScreen(this, client.options));
+        if (insideContent && selectedPage == CelestePage.SETTINGS
+            && menuKeyHit != null && menuKeyHit.contains(mouseX, mouseY)) {
+            listeningMenuKey = true;
             return true;
         }
 
@@ -1496,6 +1563,15 @@ public final class CelesteScreen extends Screen {
                     mode.previous();
                 } else {
                     mode.next();
+                }
+            } else if (hit.setting() instanceof GuiSetting.ItemPick itemPick) {
+                ItemStack held = client.player == null ? ItemStack.EMPTY : client.player.getMainHandStack();
+                if (!held.isEmpty()) {
+                    itemPick.setItemId(Registries.ITEM.getId(held.getItem()).toString());
+                } else if (click.button() == GLFW.GLFW_MOUSE_BUTTON_RIGHT) {
+                    itemPick.previous();
+                } else {
+                    itemPick.next();
                 }
             } else if (hit.setting() instanceof GuiSetting.Slider slider) {
                 draggingSlider = slider;
@@ -1582,6 +1658,21 @@ public final class CelesteScreen extends Screen {
                 ? GLFW.GLFW_KEY_UNKNOWN
                 : input.key());
             listeningKeybind = null;
+            return true;
+        }
+        if (listeningMenuKey) {
+            if (input.isEscape()) {
+                listeningMenuKey = false;
+                return true;
+            }
+            InterfaceConfig.setMenuKey(input.key() == GLFW.GLFW_KEY_DELETE || input.key() == GLFW.GLFW_KEY_BACKSPACE
+                ? InterfaceConfig.DEFAULT_MENU_KEY
+                : input.key());
+            listeningMenuKey = false;
+            return true;
+        }
+        if (input.key() == InterfaceConfig.menuKey()) {
+            client.setScreen(null);
             return true;
         }
         if (friendFieldFocused) {
@@ -1706,6 +1797,7 @@ public final class CelesteScreen extends Screen {
         draggingRange = null;
         draggingConfig = null;
         listeningKeybind = null;
+        GuiCursors.restoreNative(client);
         super.removed();
     }
 
@@ -1915,15 +2007,6 @@ public final class CelesteScreen extends Screen {
         return y + (height - fontSize) * 0.5f - 0.2f;
     }
 
-    private float settingsButtonY() {
-        return contentY + 5 + 2 * (82 + 10) + 5
-            + (1.0f - pageEntrance(FrostedOption.values().length + 1)) * 7.0f;
-    }
-
-    private float settingsButtonX() {
-        return contentX + (contentWidth - 157) / 2;
-    }
-
     private float openAnimation() {
         float elapsed = (System.nanoTime() - openedAt) / 260_000_000.0f;
         float t = clamp(elapsed, 0, 1);
@@ -1932,6 +2015,18 @@ public final class CelesteScreen extends Screen {
 
     private static boolean pulse() {
         return (System.currentTimeMillis() / 500) % 2 == 0;
+    }
+
+    private static String itemPickName(GuiSetting.ItemPick pick) {
+        Identifier id = Identifier.tryParse(pick.itemId());
+        if (id == null) {
+            return pick.itemId();
+        }
+        Item item = Registries.ITEM.get(id);
+        if (item == Items.AIR) {
+            return pick.itemId();
+        }
+        return item.getName().getString();
     }
 
     private static String keyName(int keyCode) {
@@ -1952,8 +2047,72 @@ public final class CelesteScreen extends Screen {
         return value.length() <= maximum ? value : value.substring(0, Math.max(0, maximum - 1)) + "...";
     }
 
-    private static boolean hovered(double mouseX, double mouseY, float x, float y, float width, float height) {
+    private boolean hovered(double mouseX, double mouseY, float x, float y, float width, float height) {
+        boolean inside = inside(mouseX, mouseY, x, y, width, height);
+        if (inside) {
+            pointerHot = true;
+        }
+        return inside;
+    }
+
+    private static boolean inside(double mouseX, double mouseY, float x, float y, float width, float height) {
         return mouseX >= x && mouseX <= x + width && mouseY >= y && mouseY <= y + height;
+    }
+
+    private boolean overInteractive(double mouseX, double mouseY) {
+        for (NavHit hit : navHits) {
+            if (hit.contains(mouseX, mouseY)) {
+                return true;
+            }
+        }
+        for (ModuleHit hit : moduleHits) {
+            if (hit.contains(mouseX, mouseY)) {
+                return true;
+            }
+        }
+        for (SettingHit hit : settingHits) {
+            if (hit.contains(mouseX, mouseY)) {
+                return true;
+            }
+        }
+        for (ConfigHit hit : configHits) {
+            if (hit.contains(mouseX, mouseY)) {
+                return true;
+            }
+        }
+        for (FriendHit hit : friendHits) {
+            if (hit.contains(mouseX, mouseY)) {
+                return true;
+            }
+        }
+        for (SuggestionHit hit : suggestionHits) {
+            if (hit.contains(mouseX, mouseY)) {
+                return true;
+            }
+        }
+        for (ProfileHit hit : profileHits) {
+            if (hit.contains(mouseX, mouseY)) {
+                return true;
+            }
+        }
+        for (ActionHit hit : actionHits) {
+            if (hit.contains(mouseX, mouseY)) {
+                return true;
+            }
+        }
+        for (TabHit hit : configTabHits) {
+            if (hit.contains(mouseX, mouseY)) {
+                return true;
+            }
+        }
+        for (IconHit hit : configIconHits) {
+            if (hit.contains(mouseX, mouseY)) {
+                return true;
+            }
+        }
+        return configFieldHit != null && configFieldHit.contains(mouseX, mouseY)
+            || friendFieldHit != null && friendFieldHit.contains(mouseX, mouseY)
+            || menuKeyHit != null && menuKeyHit.contains(mouseX, mouseY);
     }
 
     private static float clamp(float value, float minimum, float maximum) {
@@ -2119,36 +2278,36 @@ public final class CelesteScreen extends Screen {
 
     private record NavHit(CelestePage page, float x, float y, float width, float height) {
         boolean contains(double mouseX, double mouseY) {
-            return hovered(mouseX, mouseY, x, y, width, height);
+            return inside(mouseX, mouseY, x, y, width, height);
         }
     }
 
     private record ModuleHit(GuiModule module, float x, float y, float width, float height) {
         boolean contains(double mouseX, double mouseY) {
-            return hovered(mouseX, mouseY, x, y, width, height);
+            return inside(mouseX, mouseY, x, y, width, height);
         }
     }
 
     private record SettingHit(GuiSetting setting, float x, float y, float width, float height) {
         boolean contains(double mouseX, double mouseY) {
-            return hovered(mouseX, mouseY, x, y, width, height);
+            return inside(mouseX, mouseY, x, y, width, height);
         }
     }
 
     private record ConfigHit(FrostedOption option, float x, float y, float width, float height) {
         boolean contains(double mouseX, double mouseY) {
-            return hovered(mouseX, mouseY, x, y, width, height);
+            return inside(mouseX, mouseY, x, y, width, height);
         }
     }
 
     private record FriendHit(FriendManager.Friend friend, float x, float y, float width, float height,
                              float deleteX, float deleteY, float deleteWidth, float deleteHeight) {
         boolean contains(double mouseX, double mouseY) {
-            return hovered(mouseX, mouseY, x, y, width, height);
+            return inside(mouseX, mouseY, x, y, width, height);
         }
 
         boolean containsDelete(double mouseX, double mouseY) {
-            return deleteWidth > 0 && hovered(mouseX, mouseY, deleteX, deleteY, deleteWidth, deleteHeight);
+            return deleteWidth > 0 && inside(mouseX, mouseY, deleteX, deleteY, deleteWidth, deleteHeight);
         }
     }
 
@@ -2157,42 +2316,42 @@ public final class CelesteScreen extends Screen {
 
     private record SuggestionHit(PlayerSuggestion suggestion, float x, float y, float width, float height) {
         boolean contains(double mouseX, double mouseY) {
-            return hovered(mouseX, mouseY, x, y, width, height);
+            return inside(mouseX, mouseY, x, y, width, height);
         }
     }
 
     private record FieldHit(float x, float y, float width, float height) {
         boolean contains(double mouseX, double mouseY) {
-            return hovered(mouseX, mouseY, x, y, width, height);
+            return inside(mouseX, mouseY, x, y, width, height);
         }
     }
 
     private record ActionHit(String action, String tooltip, boolean helpOnly, float x, float y, float width, float height) {
         boolean contains(double mouseX, double mouseY) {
-            return hovered(mouseX, mouseY, x, y, width, height);
+            return inside(mouseX, mouseY, x, y, width, height);
         }
     }
 
     private record ProfileHit(String name, float x, float y, float width, float height,
                               float deleteX, float deleteY, float deleteWidth, float deleteHeight) {
         boolean contains(double mouseX, double mouseY) {
-            return hovered(mouseX, mouseY, x, y, width, height);
+            return inside(mouseX, mouseY, x, y, width, height);
         }
 
         boolean containsDelete(double mouseX, double mouseY) {
-            return deleteWidth > 0 && hovered(mouseX, mouseY, deleteX, deleteY, deleteWidth, deleteHeight);
+            return deleteWidth > 0 && inside(mouseX, mouseY, deleteX, deleteY, deleteWidth, deleteHeight);
         }
     }
 
     private record TabHit(ConfigLibrary.Tab tab, float x, float y, float width, float height) {
         boolean contains(double mouseX, double mouseY) {
-            return hovered(mouseX, mouseY, x, y, width, height);
+            return inside(mouseX, mouseY, x, y, width, height);
         }
     }
 
     private record IconHit(String action, String id, float x, float y, float width, float height) {
         boolean contains(double mouseX, double mouseY) {
-            return hovered(mouseX, mouseY, x, y, width, height);
+            return inside(mouseX, mouseY, x, y, width, height);
         }
     }
 
@@ -2206,9 +2365,14 @@ public final class CelesteScreen extends Screen {
                     setConfigStatus(library.isFavourite(id) ? "Favourited" : "Unfavourited");
                 }
                 case "gear" -> inspectConfigId = id.equals(inspectConfigId) ? "" : id;
+                case "publish" -> {
+                    if (card != null && card.origin() == ConfigLibrary.Tab.MY) {
+                        runCloudConfigAction(library.publishPublicAsync(card.name()), "Publishing " + card.name() + "...");
+                    }
+                }
                 case "download" -> {
                     if (card != null && card.origin() != ConfigLibrary.Tab.MY) {
-                        setConfigStatus("Copied " + library.downloadPublic(id));
+                        runCloudConfigAction(library.downloadPublicAsync(id), "Downloading " + card.name() + "...");
                     }
                 }
                 case "trash" -> {
@@ -2256,10 +2420,6 @@ public final class CelesteScreen extends Screen {
                     configs.importFromPath(configInput);
                     setConfigStatus("Imported " + configs.active());
                 }
-                case "Set Folder" -> {
-                    configs.setCloudDirectory(configInput);
-                    setConfigStatus("Cloud folder updated");
-                }
                 default -> {
                 }
             }
@@ -2296,5 +2456,25 @@ public final class CelesteScreen extends Screen {
     private void setConfigStatus(String message) {
         configStatus = message == null ? "" : message;
         configStatusUntil = System.nanoTime() + 4_000_000_000L;
+    }
+
+    private void runCloudConfigAction(java.util.concurrent.CompletableFuture<String> action, String pending) {
+        setConfigStatus(pending);
+        action.whenComplete((message, error) -> {
+            if (client == null) {
+                return;
+            }
+            client.execute(() -> {
+                if (error == null) {
+                    setConfigStatus(message);
+                    return;
+                }
+                Throwable cause = error;
+                while (cause.getCause() != null && cause != cause.getCause()) {
+                    cause = cause.getCause();
+                }
+                setConfigStatus(cause.getMessage() == null ? "Cloud config action failed" : cause.getMessage());
+            });
+        });
     }
 }

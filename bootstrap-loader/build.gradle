@@ -1,0 +1,82 @@
+plugins {
+    id 'fabric-loom' version "${loom_version}"
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+    archivesName = 'celeste-bootstrap'
+}
+
+configurations {
+    embeddedMixinExtras
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        url = 'https://maven.fabricmc.net/'
+    }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+    // Merge MixinExtras into this jar so the public mod identity and the
+    // runtime classes remain a single Fabric mod rather than duplicate IDs.
+    embeddedMixinExtras "io.github.llamalad7:mixinextras-fabric:0.5.4"
+    implementation include("com.github.oshi:oshi-core:7.6.0")
+    implementation include("com.github.oshi:oshi-common:7.6.0")
+    implementation include("net.java.dev.jna:jna:5.19.0")
+    implementation include("net.java.dev.jna:jna-platform:5.19.0")
+}
+
+sourceSets {
+    main {
+        java {
+            srcDir '../src/main/java'
+            srcDir 'src/main/java'
+            include 'dev/c4lam/celeste/auth/AuthConfig.java'
+            include 'dev/c4lam/celeste/auth/AuthServiceClient.java'
+            include 'dev/c4lam/celeste/auth/CredentialStore.java'
+            include 'dev/c4lam/celeste/auth/Crypto.java'
+            include 'dev/c4lam/celeste/auth/GameIdentity.java'
+            include 'dev/c4lam/celeste/auth/HardwareFingerprint.java'
+            include 'dev/c4lam/celeste/auth/InstallCredential.java'
+            include 'dev/c4lam/celeste/auth/LaunchTicketStore.java'
+            include 'dev/c4lam/celeste/auth/GatewayBridge.java'
+            include 'dev/c4lam/celeste/auth/GatewayClient.java'
+            include 'dev/c4lam/celeste/auth/GatewayPreLaunch.java'
+            include 'dev/c4lam/celeste/auth/GatewayRuntime.java'
+        }
+    }
+}
+
+processResources {
+    inputs.property 'version', project.version
+    filesMatching('fabric.mod.json') {
+        expand version: inputs.properties.version
+    }
+}
+
+jar {
+    from {
+        configurations.embeddedMixinExtras.collect { dependency ->
+            dependency.isDirectory() ? dependency : zipTree(dependency)
+        }
+    } {
+        // The outer metadata owns the single exposed `mixinextras` identity.
+        // Keep the library classes, mixin config, and service resources.
+        exclude 'fabric.mod.json'
+        exclude 'META-INF/jars/**'
+        exclude 'META-INF/MANIFEST.MF'
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 21
+    options.encoding = 'UTF-8'
+}

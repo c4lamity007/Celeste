@@ -25,6 +25,12 @@ dependencies {
     mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+
+    // Hardware/monitor identity and Windows DPAPI credential protection.
+    implementation include("com.github.oshi:oshi-core:7.6.0")
+    implementation include("com.github.oshi:oshi-common:7.6.0")
+    implementation include("net.java.dev.jna:jna:5.19.0")
+    implementation include("net.java.dev.jna:jna-platform:5.19.0")
 }
 
 processResources {

@@ -4,7 +4,6 @@ import dev.c4lam.celeste.rotation.MoveFix;
 import dev.c4lam.celeste.rotation.MoveFixMode;
 import dev.c4lam.celeste.rotation.RotationManager;
 import dev.c4lam.celeste.module.expansion.inventory.SilentInventoryScreen;
-import dev.c4lam.celeste.module.impl.movement.BoatFlightFeature;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.input.Input;
 import net.minecraft.client.input.KeyboardInput;
@@ -24,15 +23,6 @@ public abstract class KeyboardInputMoveFixMixin extends Input {
         // opening the blank InventoryScreen must neutralize every keyboard
         // input pass just like a normal inventory does.
         if (SilentInventoryScreen.blocksMovement(client)) {
-            movementVector = Vec2f.ZERO;
-            playerInput = PlayerInput.DEFAULT;
-            return;
-        }
-        if (client.player != null && client.player.input == (Object) this) {
-            BoatFlightFeature.captureGuidedMovement(client.player);
-        }
-        if (client.player != null && client.player.input == (Object) this
-            && BoatFlightFeature.shouldZeroVanillaInput(client.player)) {
             movementVector = Vec2f.ZERO;
             playerInput = PlayerInput.DEFAULT;
             return;

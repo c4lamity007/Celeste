@@ -60,7 +60,7 @@ public final class SystemMediaService implements AutoCloseable {
             try {
                 bridge = new WindowsMediaPlayerInfo();
                 executor.scheduleWithFixedDelay(this::pollSafely, 0L, 350L, TimeUnit.MILLISECONDS);
-            } catch (RuntimeException exception) {
+            } catch (RuntimeException | LinkageError exception) {
                 snapshot.set(MediaPlaybackSnapshot.empty("Could not load native Windows media support"));
             }
         }
@@ -100,9 +100,10 @@ public final class SystemMediaService implements AutoCloseable {
     private void pollSafely() {
         try {
             exchange(Command.STATE);
-        } catch (RuntimeException ignored) {
+        } catch (RuntimeException | LinkageError ignored) {
             // A media app can close while Windows enumerates sessions. The next
-            // native poll supplies a fresh session object.
+            // native poll supplies a fresh session object. Linkage failures are
+            // also contained so one bad poll cannot cancel the scheduled worker.
         }
     }
 
@@ -132,7 +133,7 @@ public final class SystemMediaService implements AutoCloseable {
             MediaPlaybackSnapshot current = snapshotFor(session);
             snapshot.set(current);
             return current;
-        } catch (RuntimeException exception) {
+        } catch (RuntimeException | LinkageError exception) {
             activeSession.set(null);
             MediaPlaybackSnapshot failed = MediaPlaybackSnapshot.empty("Could not read Windows media");
             snapshot.set(failed);

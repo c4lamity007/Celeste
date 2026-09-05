@@ -2,6 +2,9 @@ package dev.c4lam.celeste.module.impl.combat;
 
 import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.module.expansion.sword.SwordAttackCoordinator;
+import dev.c4lam.celeste.rotation.Rotation;
+import dev.c4lam.celeste.rotation.RotationManager;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
@@ -21,7 +24,7 @@ public final class MaceAuraFeature extends CombatFeature {
     @Override
     public void onStartTick(ModuleContext context) {
         String mode = context.mode("Mode", "Mace only");
-        double range = "Weapon only".equals(mode) ? WEAPON_REACH : context.slider("Range", 3.0D);
+        double range = targetingRange(context, mode);
         double fov = context.slider("FOV", 60.0D);
         if (!holdingValidItem(context, mode)) {
             target = null;
@@ -38,9 +41,9 @@ public final class MaceAuraFeature extends CombatFeature {
             releaseIntent();
             return;
         }
-        // Stun Slam is owned by Mace Swap, but Auto Mace is the module that
-        // discovers this shielded target.  Hand it off before Aura can submit
-        // its ordinary mace hit, so the axe opener always wins this situation.
+        // Same silent-aim path as Auto Mace: hand the shielded target to Mace Swap
+        // this tick so it can own the look, then axe+mace. Do not require the
+        // camera to already be on them.
         if (target.isBlocking()
             && CombatLoadout.enabled("Mace Swap")
             && CombatLoadout.maceSwapAutoStunSlam()) {
@@ -69,7 +72,7 @@ public final class MaceAuraFeature extends CombatFeature {
         if (!CombatLoadout.maceCooldownElapsed()) {
             return;
         }
-        double range = "Weapon only".equals(mode) ? WEAPON_REACH : context.slider("Range", 3.0D);
+        double range = targetingRange(context, mode);
         submitCappedAuraAttack(
             PRIORITY,
             selected,
@@ -78,7 +81,7 @@ public final class MaceAuraFeature extends CombatFeature {
             false,
             weaponForMode(mode),
             client -> client.player != null
-                && Targeting.inFov(client.player, selected, context.slider("FOV", 60.0D))
+                && inSilentFov(client, selected, context.slider("FOV", 60.0D))
                 && (!fallCheck || Targeting.inMaceSmashWindow(client.player)),
             CombatLoadout::markMaceAction
         );
@@ -97,11 +100,25 @@ public final class MaceAuraFeature extends CombatFeature {
         };
     }
 
+    private double targetingRange(ModuleContext context, String mode) {
+        double configured = "Weapon only".equals(mode) ? WEAPON_REACH : context.slider("Range", 3.0D);
+        return Math.max(configured, VanillaCombatReach.heldHitRange(context.client()));
+    }
+
+    private static boolean inSilentFov(MinecraftClient client, PlayerEntity target, double halfFovDegrees) {
+        if (client.player == null || target == null) {
+            return false;
+        }
+        return RotationManager.getInstance().serverRotation()
+            .angularDistanceTo(Rotation.lookingAt(client.player, Targeting.aimPoint(target))) <= halfFovDegrees;
+    }
+
     private boolean isWeapon(ItemStack stack) {
         return stack.isOf(Items.MACE)
             || stack.isIn(ItemTags.SWORDS)
             || stack.isIn(ItemTags.AXES)
-            || stack.get(net.minecraft.component.DataComponentTypes.PIERCING_WEAPON) != null;
+            || stack.get(net.minecraft.component.DataComponentTypes.PIERCING_WEAPON) != null
+            || stack.get(net.minecraft.component.DataComponentTypes.ATTACK_RANGE) != null;
     }
 
     private CombatLoadout.Weapon weaponForMode(String mode) {

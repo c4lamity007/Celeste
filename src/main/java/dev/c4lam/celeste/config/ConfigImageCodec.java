@@ -2,6 +2,7 @@ package dev.c4lam.celeste.config;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -64,6 +65,21 @@ public final class ConfigImageCodec {
         if (image == null) {
             throw new IOException("Not a readable PNG: " + png);
         }
+        return read(image);
+    }
+
+    public static byte[] read(byte[] png) throws IOException {
+        if (png == null || png.length == 0) {
+            throw new IOException("Cloud config image is empty");
+        }
+        BufferedImage image = ImageIO.read(new ByteArrayInputStream(png));
+        if (image == null) {
+            throw new IOException("Cloud config is not a readable PNG");
+        }
+        return read(image);
+    }
+
+    private static byte[] read(BufferedImage image) throws IOException {
         int width = image.getWidth();
         int height = image.getHeight();
         byte[] packed = new byte[width * height * 3];

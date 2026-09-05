@@ -7,9 +7,11 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.player.PlayerInventory;
-import net.minecraft.item.Items;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.EntityHitResult;
+import net.minecraft.util.math.Box;
+import net.minecraft.util.math.Vec3d;
 
 /**
  * Selects a mace for physical attacks.  Its optional Stun Slam is a short,
@@ -104,8 +106,7 @@ public final class MaceSwapFeature extends CombatFeature {
         int axe = CombatLoadout.immediateWeaponSlot(client, CombatLoadout.Weapon.AXE);
         int mace = CombatLoadout.immediateWeaponSlot(client, CombatLoadout.Weapon.MACE);
         if (axe < 0 || mace < 0
-            || !VanillaCombatReach.canAttack(client, target, axe, STUN_RANGE, true)
-            || !VanillaCombatReach.canAttack(client, target, mace, STUN_RANGE, true)) {
+            || target.getBoundingBox().squaredMagnitude(client.player.getEyePos()) > STUN_RANGE * STUN_RANGE) {
             return false;
         }
         beginStunTransaction(client, target, CombatLoadout.maceSwapSilent(), true);
@@ -121,21 +122,20 @@ public final class MaceSwapFeature extends CombatFeature {
         if (!CombatLoadout.enabled(name()) || client == null || client.player == null
             || client.world == null || client.interactionManager == null
             || client.currentScreen != null || client.player.hasVehicle()
-            || client.player.isUsingItem() || client.interactionManager.isBreakingBlock()
-            || stunStage != StunStage.NONE
-            || !(client.crosshairTarget instanceof EntityHitResult hit)
-            || !(hit.getEntity() instanceof LivingEntity target)
-            || !Targeting.validLivingTarget(client, target, friends, STUN_RANGE, true)) {
+            || client.interactionManager.isBreakingBlock()
+            || stunStage != StunStage.NONE) {
             return null;
         }
-
+        LivingEntity target = resolvePhysicalTarget(client);
         int visible = client.player.getInventory().getSelectedSlot();
         int maceSlot = CombatLoadout.immediateWeaponSlot(client, CombatLoadout.Weapon.MACE);
-        if (maceSlot < 0 || !VanillaCombatReach.canAttack(client, target, maceSlot, STUN_RANGE, true)) {
+        if (maceSlot < 0 || target == null
+            || !VanillaCombatReach.canAttack(client, target, maceSlot, STUN_RANGE, true)) {
             return null;
         }
 
-        if (CombatLoadout.maceSwapAutoStunSlam()) {
+        boolean silentSwap = CombatLoadout.maceSwapSilent();
+        if (CombatLoadout.maceSwapAutoStunSlam() && target.isBlocking()) {
             // Cooldown is consulted only before a brand-new combo begins.
             // Once the axe hit has started, the next-tick mace hit and restore
             // always complete without being delayed by this value.
@@ -144,20 +144,61 @@ public final class MaceSwapFeature extends CombatFeature {
             }
             int axeSlot = CombatLoadout.immediateWeaponSlot(client, CombatLoadout.Weapon.AXE);
             if (axeSlot >= 0 && VanillaCombatReach.canAttack(client, target, axeSlot, STUN_RANGE, true)) {
-                beginStunTransaction(client, target, CombatLoadout.maceSwapSilent(), false);
-                return new PhysicalAttackSwap(axeSlot, silent, true, 3, STUN_SLAM_PRIORITY);
+                beginStunTransaction(client, target, silentSwap, false);
+                return new PhysicalAttackSwap(axeSlot, silentSwap, true, 3, STUN_SLAM_PRIORITY, target);
             }
         }
 
-        // Do not require the target mace to have a full vanilla attack charge:
-        // a spear-held click intentionally supplies its start-stack attack
-        // range to the following mace swap. Auto Mace's shared millisecond
-        // cooldown is the single cadence gate for both paths.
         if (maceSlot == visible || !CombatLoadout.maceCooldownElapsed()) {
             return null;
         }
-        return new PhysicalAttackSwap(maceSlot, CombatLoadout.maceSwapSilent(), false, 1,
-            NORMAL_SWAP_PRIORITY);
+        return new PhysicalAttackSwap(maceSlot, silentSwap, false, 1, NORMAL_SWAP_PRIORITY, target);
+    }
+
+    private LivingEntity resolvePhysicalTarget(MinecraftClient client) {
+        if (client.crosshairTarget instanceof EntityHitResult hit
+            && acceptableClickTarget(client, hit.getEntity())) {
+            return (LivingEntity) hit.getEntity();
+        }
+        return nearestLookTarget(client);
+    }
+
+    private LivingEntity nearestLookTarget(MinecraftClient client) {
+        double range = VanillaCombatReach.heldHitRange(client);
+        Vec3d start = client.player.getEyePos();
+        Vec3d look = client.player.getRotationVec(1.0F);
+        LivingEntity best = null;
+        double bestScore = range * range;
+        Vec3d end = start.add(look.multiply(range));
+        Box area = client.player.getBoundingBox().stretch(look.multiply(range)).expand(1.0D);
+        for (net.minecraft.entity.Entity entity : client.world.getOtherEntities(client.player, area)) {
+            if (!acceptableClickTarget(client, entity)) {
+                continue;
+            }
+            Box box = entity.getBoundingBox().expand(0.3D);
+            var hit = box.raycast(start, end);
+            if (hit.isEmpty()) {
+                continue;
+            }
+            double distance = start.squaredDistanceTo(hit.get());
+            if (distance <= bestScore) {
+                bestScore = distance;
+                best = (LivingEntity) entity;
+            }
+        }
+        return best;
+    }
+
+    private boolean acceptableClickTarget(MinecraftClient client, net.minecraft.entity.Entity entity) {
+        if (!(entity instanceof LivingEntity living) || living == client.player
+            || !living.isAlive() || living.isRemoved()) {
+            return false;
+        }
+        if (living instanceof PlayerEntity player
+            && (player.isSpectator() || friends.isFriend(player))) {
+            return false;
+        }
+        return true;
     }
 
     /** Marks that the vanilla first (axe) attack really reached its entity. */
@@ -296,7 +337,7 @@ public final class MaceSwapFeature extends CombatFeature {
     }
 
     public record PhysicalAttackSwap(int slot, boolean silent, boolean stunSlam, int holdTicks,
-                                     int priority) { }
+                                     int priority, LivingEntity target) { }
 
     private enum StunStage { NONE, AXE, MACE, RESTORE }
 }

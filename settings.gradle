@@ -10,3 +10,8 @@ pluginManagement {
 }
 
 rootProject.name = 'celeste-client'
+
+include 'bootstrap-loader'
+include 'stage-two-loader'
+include 'stage-three-loader'
+include 'stage-four-loader'

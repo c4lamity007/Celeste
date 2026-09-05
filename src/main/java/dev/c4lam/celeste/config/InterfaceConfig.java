@@ -2,6 +2,7 @@ package dev.c4lam.celeste.config;
 
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
+import org.lwjgl.glfw.GLFW;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -34,11 +35,13 @@ public final class InterfaceConfig {
     public static final float DEFAULT_OFFSET = 12.0f;
     public static final float MIN_OFFSET = 5.0f;
     public static final float MAX_OFFSET = 25.0f;
+    public static final int DEFAULT_MENU_KEY = GLFW.GLFW_KEY_RIGHT_SHIFT;
 
     private static volatile float scale = DEFAULT_SCALE;
     private static volatile float glassy = DEFAULT_GLASSY;
     private static volatile int passes = DEFAULT_PASSES;
     private static volatile float offset = DEFAULT_OFFSET;
+    private static volatile int menuKey = DEFAULT_MENU_KEY;
     private static boolean initialized;
     private static boolean dirty;
     private static int saveTicks;
@@ -108,11 +111,24 @@ public final class InterfaceConfig {
         }
     }
 
+    public static int menuKey() {
+        return menuKey;
+    }
+
+    public static synchronized void setMenuKey(int keyCode) {
+        int next = keyCode <= GLFW.GLFW_KEY_UNKNOWN ? DEFAULT_MENU_KEY : keyCode;
+        if (menuKey != next) {
+            menuKey = next;
+            dirty = true;
+        }
+    }
+
     public static synchronized void reset() {
         scale = DEFAULT_SCALE;
         glassy = DEFAULT_GLASSY;
         passes = DEFAULT_PASSES;
         offset = DEFAULT_OFFSET;
+        menuKey = DEFAULT_MENU_KEY;
         dirty = true;
     }
 
@@ -122,6 +138,7 @@ public final class InterfaceConfig {
         values.setProperty("interface.glassy", Float.toString(glassy));
         values.setProperty("interface.passes", Integer.toString(passes));
         values.setProperty("interface.offset", Float.toString(offset));
+        values.setProperty("interface.menuKey", Integer.toString(menuKey));
         return values;
     }
 
@@ -136,6 +153,7 @@ public final class InterfaceConfig {
             DEFAULT_PASSES, MIN_PASSES, MAX_PASSES, 1.0f));
         offset = clamp(values.getProperty("interface.offset", values.getProperty("offset")),
             DEFAULT_OFFSET, MIN_OFFSET, MAX_OFFSET, 1.0f);
+        menuKey = loadMenuKey(values.getProperty("interface.menuKey", values.getProperty("menuKey")));
         dirty = true;
         save();
     }
@@ -163,6 +181,7 @@ public final class InterfaceConfig {
                 MIN_PASSES, MAX_PASSES, 1.0f));
             offset = clamp(values.getProperty("offset"), DEFAULT_OFFSET,
                 MIN_OFFSET, MAX_OFFSET, 1.0f);
+            menuKey = loadMenuKey(values.getProperty("menuKey"));
         } catch (IOException | NumberFormatException exception) {
             LOGGER.warn("Could not load interface settings from {}", CONFIG_PATH, exception);
         }
@@ -178,6 +197,7 @@ public final class InterfaceConfig {
         values.setProperty("glassy", Float.toString(glassy));
         values.setProperty("passes", Integer.toString(passes));
         values.setProperty("offset", Float.toString(offset));
+        values.setProperty("menuKey", Integer.toString(menuKey));
         try {
             Files.createDirectories(CONFIG_PATH.getParent());
             Path temporary = CONFIG_PATH.resolveSibling(CONFIG_PATH.getFileName() + ".tmp");
@@ -212,6 +232,14 @@ public final class InterfaceConfig {
             stored *= DEFAULT_SCALE / 2.0f;
         }
         return snap(stored, MIN_SCALE, MAX_SCALE, 0.01f);
+    }
+
+    private static int loadMenuKey(String raw) {
+        if (raw == null) {
+            return DEFAULT_MENU_KEY;
+        }
+        int parsed = Integer.parseInt(raw);
+        return parsed <= GLFW.GLFW_KEY_UNKNOWN ? DEFAULT_MENU_KEY : parsed;
     }
 
     private static float snap(double value, float minimum, float maximum, float step) {

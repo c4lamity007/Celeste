@@ -13,8 +13,8 @@ import dev.c4lam.celeste.media.SystemMediaService;
 import dev.c4lam.celeste.render.GuiRenderer;
 import dev.c4lam.celeste.render.GuiTextures;
 import dev.c4lam.celeste.render.RenderUtil;
+import dev.c4lam.celeste.render.font.Font;
 import dev.c4lam.celeste.render.font.Fonts;
-import java.util.Locale;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
@@ -42,8 +42,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Properties;
 
 /** Owns HUD widget state and supplies both editor previews and the live overlay. */
@@ -68,6 +71,11 @@ public final class HudManager {
     private static final Color BACKGROUND_BOTTOM = color(14, 10, 17, 249);
     private static final Color BACKGROUND_HOVER_TOP = color(46, 27, 44, 246);
     private static final Color BACKGROUND_HOVER_BOTTOM = color(22, 15, 24, 250);
+    private static final float ARRAYLIST_FONT = 7.2f;
+    private static final float ARRAYLIST_PAD_X = 7.0f;
+    private static final float ARRAYLIST_ROW_HEIGHT = 13.0f;
+    private static final float ARRAYLIST_CORNER = 4.0f;
+    private static final float ARRAYLIST_ROW_OVERLAP = 1.0f;
 
     private final List<HudElementState> elements = new ArrayList<>();
     private final HudTargetTracker targetTracker = HudTargetTracker.getInstance();
@@ -78,6 +86,11 @@ public final class HudManager {
     private float renderedMediaArtworkOpacity;
     private float renderedMediaPlaying;
     private float renderedMediaShuffle;
+    private float renderedMediaMetadataOpacity = 1.0f;
+    private String renderedArtworkKey = "";
+    private float frameSeconds = 1.0f / 60.0f;
+    private final Map<String, Float> moduleEntrance = new HashMap<>();
+    private List<String> frameModuleNames = List.of();
     private long lastPresentationUpdate;
     private boolean initialized;
     private TargetPlacement targetPlacement = TargetPlacement.HUD;
@@ -214,7 +227,9 @@ public final class HudManager {
             values.setProperty(prefix + "enabled", Boolean.toString(state.enabled()));
             values.setProperty(prefix + "x", Float.toString(state.x()));
             values.setProperty(prefix + "y", Float.toString(state.y()));
-            values.setProperty(prefix + "scale", Float.toString(state.scale()));
+            values.setProperty(prefix + "scale", Float.toString(state.scaleX()));
+            values.setProperty(prefix + "scale_x", Float.toString(state.scaleX()));
+            values.setProperty(prefix + "scale_y", Float.toString(state.scaleY()));
         }
         values.setProperty("hud.target_hud.placement", targetPlacement.name());
         return values;
@@ -238,7 +253,9 @@ public final class HudManager {
                     stored.setProperty(prefix + "enabled", Boolean.toString(state.enabled()));
                     stored.setProperty(prefix + "x", Float.toString(state.x()));
                     stored.setProperty(prefix + "y", Float.toString(state.y()));
-                    stored.setProperty(prefix + "scale", Float.toString(state.scale()));
+                    stored.setProperty(prefix + "scale", Float.toString(state.scaleX()));
+                    stored.setProperty(prefix + "scale_x", Float.toString(state.scaleX()));
+                    stored.setProperty(prefix + "scale_y", Float.toString(state.scaleY()));
                 }
                 stored.setProperty("target_hud.placement", targetPlacement.name());
                 stored.store(output, "Celeste HUD layout");
@@ -270,12 +287,15 @@ public final class HudManager {
             state.setEnabled(Boolean.parseBoolean(values.getProperty(prefix + "enabled", Boolean.toString(state.enabled()))));
             float x = parseFloat(values.getProperty(prefix + "x"), state.x());
             float y = parseFloat(values.getProperty(prefix + "y"), state.y());
-            state.setScale(parseFloat(values.getProperty(prefix + "scale"), 1.0f));
+            float uniform = parseFloat(values.getProperty(prefix + "scale"), 1.0f);
+            state.setScaleX(parseFloat(values.getProperty(prefix + "scale_x"), uniform));
+            state.setScaleY(parseFloat(values.getProperty(prefix + "scale_y"), uniform));
             state.moveImmediately(x, y);
         }
     }
 
     public HudElementState hit(double mouseX, double mouseY) {
+        syncDynamicSizes();
         for (int index = elements.size() - 1; index >= 0; index--) {
             HudElementState state = elements.get(index);
             if (state.enabled() && state.contains(mouseX, mouseY)) {
@@ -291,8 +311,8 @@ public final class HudManager {
         if (!media.enabled() || !media.contains(mouseX, mouseY)) {
             return false;
         }
-        float localX = ((float) mouseX - media.displayX()) / media.scale();
-        float localY = ((float) mouseY - media.displayY()) / media.scale();
+        float localX = ((float) mouseX - media.displayX()) / media.scaleX();
+        float localY = ((float) mouseY - media.displayY()) / media.scaleY();
         if (localY < 57.0f || localY > 77.0f) {
             return false;
         }
@@ -331,16 +351,18 @@ public final class HudManager {
 
     /** Keeps persisted absolute positions reachable after GUI-scale or window-size changes. */
     public boolean clampToViewport(int viewportWidth, int viewportHeight) {
+        syncDynamicSizes();
         boolean changed = false;
         for (HudElementState state : elements) {
-            float fittingScale = Math.min(
-                viewportWidth / Math.max(1.0f, state.type().width()),
-                viewportHeight / Math.max(1.0f, state.type().height())
-            );
-            float safeScale = Math.max(HudElementState.MIN_SCALE,
-                Math.min(state.scale(), fittingScale));
-            if (safeScale != state.scale()) {
-                state.setScale(safeScale);
+            float fittingScaleX = viewportWidth / Math.max(1.0f, state.intrinsicWidth());
+            float fittingScaleY = viewportHeight / Math.max(1.0f, state.intrinsicHeight());
+            // Match the state's minimum: asking for a smaller scale is ignored
+            // and would otherwise mark the layout dirty on every tiny-window frame.
+            float safeScaleX = Math.max(HudElementState.MIN_SCALE, Math.min(state.scaleX(), fittingScaleX));
+            float safeScaleY = Math.max(HudElementState.MIN_SCALE, Math.min(state.scaleY(), fittingScaleY));
+            if (safeScaleX != state.scaleX() || safeScaleY != state.scaleY()) {
+                state.setScaleX(safeScaleX);
+                state.setScaleY(safeScaleY);
                 changed = true;
             }
             float maximumX = Math.max(0.0f, viewportWidth - state.width());
@@ -361,6 +383,11 @@ public final class HudManager {
 
     private void render(DrawContext context, int mouseX, int mouseY, boolean editor, HudElementState dragging,
                         boolean chatMediaMode) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        if (!editor && (client.options.hudHidden || client.world == null || client.player == null)) {
+            return;
+        }
+        frameSeconds = presentationSeconds();
         if (clampToViewport(context.getScaledWindowWidth(), context.getScaledWindowHeight())) {
             // A GUI-scale/window change may otherwise leave the persisted copy
             // offscreen again on the next launch. This branch runs only when a
@@ -483,11 +510,12 @@ public final class HudManager {
 
         float x = projected.x();
         float y = projected.y() + (1.0F - presentation.visibility()) * 3.0F;
-        float elementScale = state.scale();
+        float scaleX = state.scaleX();
+        float scaleY = state.scaleY();
         float width = state.width();
         float height = state.height();
-        float baseWidth = state.type().width();
-        float baseHeight = state.type().height();
+        float baseWidth = state.intrinsicWidth();
+        float baseHeight = state.intrinsicHeight();
         float motionScale = (0.965F + state.visibility() * 0.035F)
             * (0.96F + presentation.visibility() * 0.04F);
         float centerX = x + width * 0.5F;
@@ -498,7 +526,7 @@ public final class HudManager {
         matrices.scale(motionScale, motionScale, 1.0F);
         matrices.translate(-centerX, -centerY, 0.0F);
         matrices.translate(x, y, 0.0F);
-        matrices.scale(elementScale, elementScale, 1.0F);
+        matrices.scale(scaleX, scaleY, 1.0F);
         matrices.translate(-x, -y, 0.0F);
         RenderUtil.BLUR_RECT.draw(matrices, x, y, baseWidth, baseHeight, new Vector4f(9),
             withAlpha(BACKGROUND_TOP, visibility), withAlpha(BACKGROUND_TOP, visibility),
@@ -528,11 +556,12 @@ public final class HudManager {
         float x = state.displayX();
         float y = state.displayY() + (1.0f - state.visibility()) * 4.0f
             + (state.type() == HudElementType.TARGET_HUD ? (1.0f - targetVisibility) * 3.0f : 0.0f);
-        float elementScale = state.scale();
+        float scaleX = state.scaleX();
+        float scaleY = state.scaleY();
         float width = state.width();
         float height = state.height();
-        float baseWidth = state.type().width();
-        float baseHeight = state.type().height();
+        float baseWidth = state.intrinsicWidth();
+        float baseHeight = state.intrinsicHeight();
         float hover = state.hoverProgress();
         float drag = state.dragProgress();
         float selection = editor ? state.selectionProgress() : 0.0f;
@@ -547,7 +576,7 @@ public final class HudManager {
         matrices.scale(motionScale, motionScale, 1.0f);
         matrices.translate(-centerX, -centerY, 0.0f);
         matrices.translate(x, y, 0.0f);
-        matrices.scale(elementScale, elementScale, 1.0f);
+        matrices.scale(scaleX, scaleY, 1.0f);
         matrices.translate(-x, -y, 0.0f);
 
         Color top = withAlpha(blend(BACKGROUND_TOP, BACKGROUND_HOVER_TOP, hover), visibility);
@@ -563,7 +592,7 @@ public final class HudManager {
                 selectionTop, selectionTop, selectionBottom, selectionBottom,
                 InterfaceConfig.glassTintMix());
         }
-        if (editor && (hover > 0.015f || dragging)) {
+        if (editor && state.type() != HudElementType.ARRAYLIST && (hover > 0.015f || dragging)) {
             float indicatorWidth = 18.0f + 10.0f * drag;
             RenderUtil.RECT.draw(matrices, centerX - indicatorWidth / 2.0f, y + 2.5f,
                 indicatorWidth, 1.5f, 0.75f, withAlpha(ACCENT, visibility * Math.max(hover, drag) * 0.78f));
@@ -581,7 +610,7 @@ public final class HudManager {
                  gui.scale(motionScale, motionScale);
                  gui.translate(-centerX, -centerY);
                  gui.translate(x, y);
-                 gui.scale(elementScale, elementScale);
+                 gui.scale(scaleX, scaleY);
                  gui.translate(-x, -y);
                  drawArmor(context, matrices, x, y, visibility);
                  gui.popMatrix();
@@ -593,8 +622,8 @@ public final class HudManager {
                  ServerTickRateTracker.getInstance().formatted(MinecraftClient.getInstance().world), visibility);
              case FPS -> drawMetric(matrices, x, y, baseWidth, "FPS", String.valueOf(MinecraftClient.getInstance().getCurrentFps()), visibility);
              case SPOTIFY -> drawMedia(matrices, x, y, baseWidth, visibility,
-                 Math.round(x + (mouseX - x) / elementScale),
-                 Math.round(y + (mouseY - y) / elementScale), interactive);
+                 Math.round(x + (mouseX - x) / scaleX),
+                 Math.round(y + (mouseY - y) / scaleY), interactive);
          }
         if (selection > 0.002f) {
             RenderUtil.SELECTION_OUTLINE.draw(matrices, x, y, baseWidth, baseHeight,
@@ -604,17 +633,39 @@ public final class HudManager {
     }
 
     private void drawWatermark(MatrixStack matrices, float x, float y, float width, float opacity) {
-        Fonts.semibold().drawCenteredText(matrices, "Celeste Client", x + width / 2.0f, y + 5, 8.0f, withAlpha(TEXT, opacity));
+        String brand = "Celeste";
+        String suffix = " Client";
+        float brandWidth = Fonts.semibold().width(brand, 8.0f);
+        float fullWidth = brandWidth + Fonts.semibold().width(suffix, 8.0f);
+        float textX = x + (width - fullWidth) * 0.5f;
+        Fonts.semibold().draw(matrices, brand, textX, y + 5, 8.0f,
+            withAlpha(blend(TEXT, ACCENT, 0.20f), opacity));
+        Fonts.semibold().draw(matrices, suffix, textX + brandWidth, y + 5, 8.0f,
+            withAlpha(TEXT, opacity * 0.87f));
         Fonts.regular().drawCenteredText(matrices, "UID " + LicenseIdentity.uid(),
             x + width / 2.0f, y + 18, 5.6f, withAlpha(MUTED, opacity));
     }
 
     private void drawCoordinates(MatrixStack matrices, float x, float y, float width, float opacity) {
         MinecraftClient client = MinecraftClient.getInstance();
-        String value = client.player == null ? "0, 0, 0" : String.format(Locale.ROOT, "%d, %d, %d",
-            (int) Math.floor(client.player.getX()), (int) Math.floor(client.player.getY()), (int) Math.floor(client.player.getZ()));
+        String[] axes = {"X ", "Y ", "Z "};
+        String[] values = client.player == null ? new String[] {"0", "0", "0"}
+            : new String[] {Integer.toString((int) Math.floor(client.player.getX())),
+                Integer.toString((int) Math.floor(client.player.getY())),
+                Integer.toString((int) Math.floor(client.player.getZ()))};
+        float size = 7.2f;
+        String full = axes[0] + values[0] + "   " + axes[1] + values[1] + "   " + axes[2] + values[2];
+        float measured = Fonts.semibold().width(full, size);
+        size *= Math.min(1.0f, (width - 14.0f) / Math.max(1.0f, measured));
+        float cursor = x + (width - Fonts.semibold().width(full, size)) * 0.5f;
         Fonts.regular().drawCenteredText(matrices, "XYZ", x + width / 2.0f, y + 4, 5.6f, withAlpha(MUTED, opacity));
-        Fonts.semibold().drawCenteredText(matrices, value, x + width / 2.0f, y + 15, 7.6f, withAlpha(TEXT, opacity));
+        for (int axis = 0; axis < axes.length; axis++) {
+            Fonts.semibold().draw(matrices, axes[axis], cursor, y + 15, size,
+                withAlpha(blend(MUTED, ACCENT, axis == 1 ? 0.12f : 0.34f), opacity));
+            cursor += Fonts.semibold().width(axes[axis], size);
+            Fonts.semibold().draw(matrices, values[axis], cursor, y + 15, size, withAlpha(TEXT, opacity));
+            cursor += Fonts.semibold().width(values[axis] + "   ", size);
+        }
     }
 
     private void drawTarget(MatrixStack matrices, float x, float y, float width, float opacity,
@@ -666,6 +717,12 @@ public final class HudManager {
             ? "Live combat preview"
             : String.format(Locale.ROOT, "%.1fm away", presentation.distance());
         Fonts.regular().draw(matrices, detail, textX, y + 20.0f, 5.6f, contentMuted);
+        if (presentation.absorption() > 0.05f) {
+            String absorptionText = "+" + formatHealth(presentation.absorption());
+            float absorptionTextWidth = Fonts.semibold().width(absorptionText, 5.6f);
+            Fonts.semibold().draw(matrices, absorptionText, right - absorptionTextWidth, y + 20.0f, 5.6f,
+                withAlpha(color(255, 218, 110, 255), opacity * content));
+        }
 
         float trackY = y + 32.0f;
         float trackWidth = Math.max(1.0f, right - textX);
@@ -673,30 +730,49 @@ public final class HudManager {
             color(61, 48, 62, Math.round(205 * opacity * content)));
         float healthRatio = Math.max(0.0f, Math.min(1.0f, presentation.health() / presentation.maxHealth()));
         float healthWidth = trackWidth * healthRatio;
-        Color healthColor = blend(ACCENT, Color.WHITE, presentation.hurtPulse() * 0.22f);
+        Color baseHealth = blend(color(255, 111, 111, 255), ACCENT, Math.min(1.0f, healthRatio * 2.3f));
+        Color healthColor = blend(baseHealth, Color.WHITE, presentation.hurtPulse() * 0.22f);
         if (healthWidth > 0.01f) {
             RenderUtil.RECT.draw(matrices, textX, trackY, healthWidth, 3.0f, 1.5f,
                 withAlpha(healthColor, opacity * content));
         }
-        float absorptionRatio = Math.max(0.0f,
-            Math.min(1.0f - healthRatio, presentation.absorption() / presentation.maxHealth()));
+        float absorptionRatio = Math.max(0.0f, Math.min(1.0f, presentation.absorption() / presentation.maxHealth()));
         float absorptionWidth = trackWidth * absorptionRatio;
         if (absorptionWidth > 0.01f) {
-            RenderUtil.RECT.draw(matrices, textX + healthWidth, trackY, absorptionWidth, 3.0f, 1.5f,
-                color(255, 220, 81, Math.round(255 * opacity * content)));
+            RenderUtil.RECT.draw(matrices, right - absorptionWidth, trackY + 4.4f, absorptionWidth, 1.5f, 0.75f,
+                color(255, 220, 110, Math.round(230 * opacity * content)));
         }
     }
 
     private static String trimToWidth(String value, float maximumWidth, float size) {
-        String text = value == null ? "" : value;
-        if (Fonts.semibold().width(text, size) <= maximumWidth) {
+        return trimToWidth(value, maximumWidth, size, Fonts.semibold());
+    }
+
+    private static String trimToWidth(String value, float maximumWidth, float size, Font font) {
+        // Widget rows are single-line, even when external media or entity names are not.
+        String text = value == null ? "" : value.replace('\r', ' ').replace('\n', ' ')
+            .replace('\t', ' ').replace('\u2028', ' ').replace('\u2029', ' ');
+        if (font.width(text, size) <= maximumWidth) {
             return text;
         }
         String suffix = "...";
-        while (!text.isEmpty() && Fonts.semibold().width(text + suffix, size) > maximumWidth) {
-            text = text.substring(0, text.length() - 1);
+        if (font.width(suffix, size) > maximumWidth) {
+            return "";
         }
-        return text + suffix;
+        // Avoid quadratic re-measurement for a long media title, and never split
+        // a supplementary Unicode character at the truncation boundary.
+        int low = 0;
+        int high = text.codePointCount(0, text.length());
+        while (low < high) {
+            int middle = (low + high + 1) >>> 1;
+            int end = text.offsetByCodePoints(0, middle);
+            if (font.width(text.substring(0, end) + suffix, size) <= maximumWidth) {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+        return text.substring(0, text.offsetByCodePoints(0, low)) + suffix;
     }
 
     private static String formatHealth(float value) {
@@ -708,11 +784,28 @@ public final class HudManager {
     private void drawEffects(MatrixStack matrices, float x, float y, float width, float opacity) {
         MinecraftClient client = MinecraftClient.getInstance();
         Fonts.semibold().drawCenteredText(matrices, "Effects", x + width / 2.0f, y + 6, 7.4f, withAlpha(TEXT, opacity));
-        String value = "No active effects";
-        if (client.player != null && !client.player.getStatusEffects().isEmpty()) {
-            value = client.player.getStatusEffects().stream().limit(2).map(this::effectName).reduce((a, b) -> a + ", " + b).orElse(value);
+        List<StatusEffectInstance> active = client.player == null ? List.of()
+            : client.player.getStatusEffects().stream()
+                .sorted(Comparator.comparingInt(effect -> effect.getDuration() < 0 ? Integer.MAX_VALUE : effect.getDuration()))
+                .limit(2).toList();
+        if (active.isEmpty()) {
+            Fonts.regular().drawCenteredText(matrices, "No active effects", x + width / 2.0f, y + 24, 6.2f,
+                withAlpha(MUTED, opacity * 0.84f));
+            return;
         }
-        Fonts.regular().drawCenteredText(matrices, trim(value, 29), x + width / 2.0f, y + 24, 6.2f, withAlpha(MUTED, opacity));
+        for (int index = 0; index < active.size(); index++) {
+            StatusEffectInstance effect = active.get(index);
+            int remaining = (int) ((Math.max(0L, effect.getDuration()) + 19L) / 20L);
+            String duration = effect.getDuration() < 0 ? "--:--" : remaining / 60 + ":" + String.format(Locale.ROOT, "%02d", remaining % 60);
+            float durationWidth = Fonts.regular().width(duration, 5.6f);
+            String name = effectName(effect) + (effect.getAmplifier() > 0 ? " " + (effect.getAmplifier() + 1) : "");
+            float rowY = y + 21 + index * 11;
+            Color timerColor = remaining <= 10 && effect.getDuration() >= 0 ? color(255, 190, 113, 255) : MUTED;
+            Fonts.regular().draw(matrices, trimToWidth(name, width - 24 - durationWidth, 6.0f, Fonts.regular()),
+                x + 9, rowY, 6.0f, withAlpha(TEXT, opacity * 0.91f));
+            Fonts.regular().draw(matrices, duration, x + width - 9 - durationWidth, rowY + .3f,
+                5.6f, withAlpha(timerColor, opacity));
+        }
     }
 
     private String effectName(StatusEffectInstance effect) {
@@ -743,8 +836,16 @@ public final class HudManager {
                 continue;
             }
             int remaining = Math.max(0, stack.getMaxDamage() - stack.getDamage());
-            float ratio = stack.getMaxDamage() <= 0 ? 1.0f : remaining / (float) stack.getMaxDamage();
+            float ratio = stack.getMaxDamage() <= 0 ? 1.0f
+                : Math.max(0.0f, Math.min(1.0f, remaining / (float) stack.getMaxDamage()));
             Color value = ratio > 0.45f ? TEXT : ratio > 0.2f ? color(255, 196, 92, 255) : color(255, 92, 108, 255);
+            Color durability = blend(color(255, 105, 119, 255), color(179, 226, 211, 255), Math.min(1.0f, ratio * 1.5f));
+            RenderUtil.RECT.draw(matrices, itemX, y + 31.0f, itemSize, 1.2f, .6f,
+                withAlpha(Color.WHITE, opacity * .10f));
+            if (ratio > 0.001f) {
+                RenderUtil.RECT.draw(matrices, itemX, y + 31.0f, itemSize * ratio, 1.2f, .6f,
+                    withAlpha(durability, opacity * .88f));
+            }
             float centerX = itemX + itemSize * 0.5f;
             float labelY = itemY + itemSize - 1.0f;
             Fonts.bold().drawCenteredText(matrices, Integer.toString(remaining), centerX + 0.6f, labelY + 0.6f, 6.2f,
@@ -756,12 +857,13 @@ public final class HudManager {
 
     private void drawKeybinds(MatrixStack matrices, float x, float y, float width, float opacity) {
         Fonts.semibold().drawCenteredText(matrices, "Keybinds", x + width / 2.0f, y + 6, 7.4f, withAlpha(TEXT, opacity));
-        List<String> bound = GuiCatalog.modules().stream()
+        List<HudBind> bound = GuiCatalog.modules().stream()
             .flatMap(module -> module.settings().stream()
                 .filter(GuiSetting.Keybind.class::isInstance)
                 .map(GuiSetting.Keybind.class::cast)
                 .filter(keybind -> keybind.keyCode() != GLFW.GLFW_KEY_UNKNOWN)
-                .map(keybind -> module.name() + "  [" + keyName(keybind.keyCode()) + "]"))
+                .map(keybind -> new HudBind(module.name(), keyName(keybind.keyCode()), module.enabled())))
+            .sorted(Comparator.comparing(HudBind::active).reversed())
             .limit(2)
             .toList();
         if (bound.isEmpty()) {
@@ -770,68 +872,168 @@ public final class HudManager {
             return;
         }
         for (int index = 0; index < bound.size(); index++) {
-            Fonts.regular().drawCenteredText(matrices, trim(bound.get(index), 27), x + width / 2.0f,
-                y + 21 + index * 11, 6.0f, withAlpha(MUTED, opacity));
+            HudBind bind = bound.get(index);
+            String key = trimToWidth(bind.key(), 31.0f, 5.5f);
+            float chipWidth = Fonts.semibold().width(key, 5.5f) + 7.0f;
+            float rowY = y + 21 + index * 11;
+            float chipX = x + width - 9 - chipWidth;
+            RenderUtil.RECT.draw(matrices, chipX, rowY - 0.5f, chipWidth, 9.0f, 2.5f,
+                withAlpha(bind.active() ? ACCENT : Color.WHITE, opacity * (bind.active() ? .13f : .055f)));
+            Fonts.semibold().drawCenteredText(matrices, key, chipX + chipWidth * .5f, rowY + .3f, 5.5f,
+                withAlpha(bind.active() ? blend(TEXT, ACCENT, .28f) : MUTED, opacity));
+            Fonts.regular().draw(matrices, trimToWidth(bind.module(), width - chipWidth - 25, 6.0f, Fonts.regular()),
+                x + 9, rowY, 6.0f, withAlpha(bind.active() ? TEXT : MUTED, opacity));
         }
     }
 
     private void drawCooldowns(MatrixStack matrices, float x, float y, float width, float opacity) {
         MinecraftClient client = MinecraftClient.getInstance();
-        int attack = client.player == null ? 100 : Math.round(client.player.getAttackCooldownProgress(0) * 100);
-        Fonts.semibold().drawCenteredText(matrices, "Attack cooldown  " + attack + "%", x + width / 2.0f,
-            y + 7, 6.8f, withAlpha(TEXT, opacity));
+        float partialTick = client.gameRenderer.getCamera().getLastTickProgress();
+        float attack = client.player == null ? 1.0f
+            : Math.max(0.0f, Math.min(1.0f, client.player.getAttackCooldownProgress(partialTick)));
+        boolean ready = attack >= .999f;
+        String value = ready ? "Ready" : Math.round(attack * 100.0f) + "%";
+        Color progressColor = blend(ACCENT, color(183, 228, 214, 255), Math.max(0, (attack - .85f) / .15f));
+        Fonts.semibold().draw(matrices, "Attack cooldown", x + 12, y + 7, 6.2f, withAlpha(TEXT, opacity));
+        Fonts.semibold().draw(matrices, value, x + width - 12 - Fonts.semibold().width(value, 5.8f),
+            y + 7.5f, 5.8f, withAlpha(ready ? progressColor : MUTED, opacity));
         float trackWidth = width - 24;
         RenderUtil.RECT.draw(matrices, x + 12, y + 23, trackWidth, 3, 1.5f,
             color(62, 47, 62, Math.round(230 * opacity)));
-        RenderUtil.RECT.draw(matrices, x + 12, y + 23, trackWidth * attack / 100.0f, 3, 1.5f,
-            withAlpha(ACCENT, opacity));
+        if (attack > .001f) {
+            RenderUtil.RECT.draw(matrices, x + 12, y + 23, trackWidth * attack, 3, 1.5f,
+                withAlpha(progressColor, opacity));
+            float cap = Math.min(3.0f, trackWidth * attack);
+            RenderUtil.RECT.draw(matrices, x + 12 + trackWidth * attack - cap, y + 23,
+                cap, 3, 1.5f, withAlpha(Color.WHITE, opacity * .35f));
+        }
+    }
+
+    private List<String> enabledModuleNames() {
+        return GuiCatalog.modules().stream()
+            .filter(GuiModule::enabled)
+            .map(GuiModule::name)
+            .sorted(Comparator.comparingDouble((String name) -> Fonts.semibold().width(name, ARRAYLIST_FONT))
+                .reversed()
+                .thenComparing(String.CASE_INSENSITIVE_ORDER))
+            .toList();
+    }
+
+    private float arraylistContentWidth(List<String> names) {
+        float max = Fonts.semibold().width("No modules", ARRAYLIST_FONT);
+        for (String name : names) {
+            max = Math.max(max, Fonts.semibold().width(name, ARRAYLIST_FONT));
+        }
+        return Math.max(36.0f, max + ARRAYLIST_PAD_X * 2.0f);
+    }
+
+    private void syncDynamicSizes() {
+        frameModuleNames = enabledModuleNames();
+        HudElementState arraylist = state(HudElementType.ARRAYLIST);
+        float oldWidth = arraylist.width();
+        float right = arraylist.x() + oldWidth;
+        arraylist.setContentSize(arraylistContentWidth(frameModuleNames),
+            Math.max(1, frameModuleNames.size()) * ARRAYLIST_ROW_HEIGHT);
+        float newWidth = arraylist.width();
+        if (Math.abs(newWidth - oldWidth) > 0.25f) {
+            arraylist.moveImmediately(right - newWidth, arraylist.y());
+        }
+    }
+
+    private static float arraylistRowWidth(String name) {
+        return Fonts.semibold().width(name, ARRAYLIST_FONT) + ARRAYLIST_PAD_X * 2.0f;
+    }
+
+    private static Vector4f arraylistRowRadius(int index, int count, float rowWidth, float previousWidth,
+                                               float nextWidth) {
+        boolean first = index == 0;
+        boolean last = index == count - 1;
+        float slack = 1.25f;
+        boolean previousDiffers = !first && Math.abs(previousWidth - rowWidth) > slack;
+        boolean nextDiffers = !last && Math.abs(nextWidth - rowWidth) > slack;
+        float topLeft = first || previousDiffers ? ARRAYLIST_CORNER : 0.0f;
+        float topRight = first ? ARRAYLIST_CORNER : 0.0f;
+        float bottomLeft = last || nextDiffers ? ARRAYLIST_CORNER : 0.0f;
+        float bottomRight = last ? ARRAYLIST_CORNER : 0.0f;
+        return new Vector4f(topLeft, topRight, bottomLeft, bottomRight);
     }
 
     private void drawArraylist(MatrixStack matrices, float x, float y, float width, float opacity) {
-        List<String> enabled = GuiCatalog.modules().stream()
-            .filter(GuiModule::enabled)
-            .map(GuiModule::name)
-            .sorted(String.CASE_INSENSITIVE_ORDER)
-            .toList();
-        float font = 7.2f;
-        float padX = 7.0f;
-        float rowHeight = 13.0f;
+        List<String> enabled = frameModuleNames;
+        moduleEntrance.keySet().retainAll(enabled);
         float right = x + width;
         if (enabled.isEmpty()) {
             String empty = "No modules";
-            float rowWidth = Fonts.semibold().width(empty, font) + padX * 2.0f;
+            float rowWidth = arraylistRowWidth(empty);
             float rowX = right - rowWidth;
-            RenderUtil.BLUR_RECT.draw(matrices, rowX, y, rowWidth, rowHeight, 4,
+            RenderUtil.BLUR_RECT.draw(matrices, rowX, y, rowWidth, ARRAYLIST_ROW_HEIGHT, ARRAYLIST_CORNER,
                 withAlpha(BACKGROUND_TOP, opacity), InterfaceConfig.glassTintMix());
-            Fonts.semibold().drawText(matrices, empty, rowX + padX, y + 2.4f, font, withAlpha(MUTED, opacity));
+            Fonts.semibold().drawText(matrices, empty, rowX + ARRAYLIST_PAD_X, y + 2.4f, ARRAYLIST_FONT,
+                withAlpha(MUTED, opacity));
             return;
         }
         Color top = withAlpha(BACKGROUND_TOP, opacity);
         Color bottom = withAlpha(BACKGROUND_BOTTOM, opacity);
-        for (int index = 0; index < enabled.size(); index++) {
+        int count = enabled.size();
+        for (int index = 0; index < count; index++) {
             String name = enabled.get(index);
-            float textWidth = Fonts.semibold().width(name, font);
-            float rowWidth = textWidth + padX * 2.0f + 3.0f;
+            float entrance = damp(moduleEntrance.getOrDefault(name, 0.0f), 1.0f, 16.0f, frameSeconds);
+            moduleEntrance.put(name, entrance);
+            float rowWidth = arraylistRowWidth(name);
+            float previousWidth = index > 0 ? arraylistRowWidth(enabled.get(index - 1)) : rowWidth;
+            float nextWidth = index + 1 < count ? arraylistRowWidth(enabled.get(index + 1)) : rowWidth;
             float rowX = right - rowWidth;
-            float rowY = y + index * rowHeight;
-            RenderUtil.BLUR_RECT.draw(matrices, rowX, rowY, rowWidth, rowHeight, new Vector4f(4),
+            float rowY = y + index * ARRAYLIST_ROW_HEIGHT;
+            float rowHeight = ARRAYLIST_ROW_HEIGHT + (index + 1 < count ? ARRAYLIST_ROW_OVERLAP : 0.0f);
+            RenderUtil.BLUR_RECT.draw(matrices, rowX, rowY, rowWidth, rowHeight,
+                arraylistRowRadius(index, count, rowWidth, previousWidth, nextWidth),
                 top, top, bottom, bottom, InterfaceConfig.glassTintMix());
-            RenderUtil.RECT.draw(matrices, right - 1.6f, rowY + 2.2f, 1.6f, rowHeight - 4.4f, 0.8f,
-                withAlpha(ACCENT, opacity));
-            Fonts.semibold().drawText(matrices, name, right - padX - 3.0f - textWidth, rowY + 2.4f, font,
-                withAlpha(TEXT, opacity));
+            Color rowText = blend(TEXT, ACCENT, .07f + .11f * (1.0f - entrance));
+            Fonts.semibold().drawText(matrices, name, rowX + ARRAYLIST_PAD_X + (1.0f - entrance) * 2.0f,
+                rowY + 2.4f, ARRAYLIST_FONT, withAlpha(rowText, opacity * entrance));
         }
     }
 
     private void drawMetric(MatrixStack matrices, float x, float y, float width, String label, String value, float opacity) {
-        Fonts.semibold().drawCenteredText(matrices, label + "  " + value, x + width / 2.0f, y + 8,
-            7.2f, withAlpha(TEXT, opacity));
+        Color metricColor = TEXT;
+        try {
+            float numeric = Float.parseFloat(value);
+            if ("TPS".equals(label)) {
+                metricColor = numeric >= 19.0f ? color(187, 229, 215, 255)
+                    : numeric >= 16.0f ? color(255, 204, 132, 255) : color(255, 123, 143, 255);
+            } else if (numeric < 60.0f) {
+                metricColor = numeric >= 30.0f ? color(255, 218, 166, 255) : color(255, 144, 159, 255);
+            }
+        } catch (NumberFormatException ignored) {
+            metricColor = MUTED;
+        }
+        String fittedValue = trimToWidth(value, width - 26.0f, 8.0f);
+        float labelWidth = Fonts.regular().width(label, 5.8f);
+        float valueWidth = Fonts.semibold().width(fittedValue, 8.0f);
+        float start = x + (width - labelWidth - valueWidth - 5.0f) * .5f;
+        Fonts.regular().draw(matrices, label, start, y + 9.1f, 5.8f, withAlpha(MUTED, opacity));
+        Fonts.semibold().draw(matrices, fittedValue, start + labelWidth + 5.0f, y + 7.4f,
+            8.0f, withAlpha(metricColor, opacity));
     }
 
     private void drawMedia(MatrixStack matrices, float x, float y, float width, float opacity,
                            int mouseX, int mouseY, boolean interactive) {
         MediaPlaybackSnapshot snapshot = SystemMediaService.getInstance().snapshot();
-        float seconds = presentationSeconds();
+        float seconds = frameSeconds;
+        String timelineKey = snapshot.sourceId() + '\u0000' + snapshot.title() + '\u0000'
+            + snapshot.artist() + '\u0000' + snapshot.durationMs();
+        float targetProgress = snapshot.durationMs() <= 0 ? 0
+            : Math.min(1, snapshot.estimatedProgressMs() / (float) snapshot.durationMs());
+        if (!timelineKey.equals(renderedMediaTimelineKey)) {
+            renderedMediaTimelineKey = timelineKey;
+            renderedMediaProgress = targetProgress;
+            renderedMediaMetadataOpacity = 0.0f;
+        } else {
+            // Large seeks should not crawl through the old track position.
+            renderedMediaProgress = Math.abs(targetProgress - renderedMediaProgress) > .08f
+                ? targetProgress : damp(renderedMediaProgress, targetProgress, 12.0f, seconds);
+        }
+        renderedMediaMetadataOpacity = damp(renderedMediaMetadataOpacity, 1.0f, 13.0f, seconds);
         renderedMediaPlaying = damp(renderedMediaPlaying, snapshot.playing() ? 1.0f : 0.0f, 18.0f, seconds);
         renderedMediaShuffle = damp(renderedMediaShuffle, snapshot.shuffle() ? 1.0f : 0.0f, 18.0f, seconds);
         String title = snapshot.available() ? snapshot.title() : "Media";
@@ -841,6 +1043,10 @@ public final class HudManager {
         }
 
         Identifier artwork = MediaArtwork.getInstance().texture(snapshot);
+        if (!snapshot.artworkKey().equals(renderedArtworkKey)) {
+            renderedArtworkKey = snapshot.artworkKey();
+            renderedMediaArtworkOpacity = 0.0f;
+        }
         renderedMediaArtworkOpacity = artwork == null
             ? 0.0f
             : damp(renderedMediaArtworkOpacity, 1.0f, 11.0f, seconds);
@@ -858,21 +1064,18 @@ public final class HudManager {
                 0, 0, 1, 1, GuiTextures.view(artwork), GuiTextures.linear(), true);
         }
         float metadataCenter = x + 49 + (width - 56) / 2.0f;
-        Fonts.semibold().drawCenteredText(matrices, trim(title, 22), metadataCenter, y + 10, 8.0f,
-            withAlpha(TEXT, opacity));
+        float metadataOpacity = opacity * renderedMediaMetadataOpacity;
+        Fonts.semibold().drawCenteredText(matrices, trimToWidth(title, width - 62.0f, 8.0f), metadataCenter, y + 10, 8.0f,
+            withAlpha(TEXT, metadataOpacity));
         String subtitle = artist.isBlank() ? snapshot.source() : artist;
-        Fonts.regular().drawCenteredText(matrices, trim(subtitle, 29), metadataCenter, y + 25, 6.1f,
-            withAlpha(MUTED, opacity));
-
-        float targetProgress = snapshot.durationMs() <= 0 ? 0
-            : Math.min(1, snapshot.estimatedProgressMs() / (float) snapshot.durationMs());
-        String timelineKey = snapshot.sourceId() + '\u0000' + snapshot.title() + '\u0000'
-            + snapshot.artist() + '\u0000' + snapshot.durationMs();
-        if (!timelineKey.equals(renderedMediaTimelineKey)) {
-            renderedMediaTimelineKey = timelineKey;
-            renderedMediaProgress = targetProgress;
-        } else {
-            renderedMediaProgress = damp(renderedMediaProgress, targetProgress, 12.0f, seconds);
+        Fonts.regular().drawCenteredText(matrices, trimToWidth(subtitle, width - 62.0f, 6.1f, Fonts.regular()), metadataCenter, y + 25, 6.1f,
+            withAlpha(MUTED, metadataOpacity));
+        if (snapshot.available() && snapshot.durationMs() > 0) {
+            Fonts.regular().draw(matrices, mediaTime(snapshot.estimatedProgressMs()), x + 51, y + 39.5f,
+                4.6f, withAlpha(MUTED, opacity * .84f));
+            String duration = mediaTime(snapshot.durationMs());
+            Fonts.regular().draw(matrices, duration, x + width - 10 - Fonts.regular().width(duration, 4.6f),
+                y + 39.5f, 4.6f, withAlpha(MUTED, opacity * .84f));
         }
         float trackWidth = width - 22;
         RenderUtil.RECT.draw(matrices, x + 11, y + 51, trackWidth, 3, 1.5f,
@@ -928,6 +1131,13 @@ public final class HudManager {
         return enabled ? 0.82f + 0.18f * hover : 0.32f;
     }
 
+    private static String mediaTime(long milliseconds) {
+        long seconds = Math.max(0L, milliseconds / 1_000L);
+        return seconds >= 3_600L
+            ? String.format(Locale.ROOT, "%d:%02d:%02d", seconds / 3_600L, seconds / 60L % 60L, seconds % 60L)
+            : String.format(Locale.ROOT, "%d:%02d", seconds / 60L, seconds % 60L);
+    }
+
     private static String trim(String value, int maximum) {
         if (value == null || value.length() <= maximum) {
             return value == null ? "" : value;
@@ -978,7 +1188,8 @@ public final class HudManager {
 
     private static float parseFloat(String value, float fallback) {
         try {
-            return value == null ? fallback : Float.parseFloat(value);
+            float parsed = value == null ? fallback : Float.parseFloat(value);
+            return Float.isFinite(parsed) ? parsed : fallback;
         } catch (NumberFormatException exception) {
             return fallback;
         }
@@ -1015,5 +1226,8 @@ public final class HudManager {
     }
 
     private record ProjectedTarget(float x, float y) {
+    }
+
+    private record HudBind(String module, String key, boolean active) {
     }
 }

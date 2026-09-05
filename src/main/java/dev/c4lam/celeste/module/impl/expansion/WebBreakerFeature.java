@@ -57,10 +57,7 @@ public final class WebBreakerFeature implements ModuleFeature {
                     () -> actionClient.interactionManager.interactItem(actionClient.player, Hand.MAIN_HAND));
                 if (result instanceof ActionResult.Success success) {
                     if (success.swingSource() == ActionResult.SwingSource.CLIENT) actionClient.player.swingHand(Hand.MAIN_HAND);
-                    waterPos = web;
-                    placedAge = actionClient.player.age;
-                    pickupRequestedAge = Integer.MIN_VALUE / 2;
-                    OwnFluidTracker.getInstance().mark(web);
+                    setWater(web, actionClient.player.age);
                 }
             });
         });
@@ -72,11 +69,11 @@ public final class WebBreakerFeature implements ModuleFeature {
         int placementAge = client.player.age - placedAge;
         if (!client.world.getBlockState(waterPos).isOf(Blocks.WATER)) {
             if (pickupRequestedAge > Integer.MIN_VALUE / 4
-                || placementAge > CONFIRM_TIMEOUT_TICKS) waterPos = null;
+                || placementAge > CONFIRM_TIMEOUT_TICKS) clearWater();
             return;
         }
         if (placementAge > 30) {
-            waterPos = null;
+            clearWater();
             return;
         }
         if (!context.toggle("Pick up", true) || placementAge < 3) return;
@@ -106,8 +103,23 @@ public final class WebBreakerFeature implements ModuleFeature {
             .priority(priority).lifetimeTicks(1).smoothing(180, 180).moveFix(MoveFixMode.STRICT).build());
     }
 
-    private void reset() {
+    private void setWater(BlockPos pos, int age) {
+        clearWater();
+        waterPos = pos.toImmutable();
+        placedAge = age;
+        pickupRequestedAge = Integer.MIN_VALUE / 2;
+        OwnFluidTracker.getInstance().claim(waterPos);
+    }
+
+    private void clearWater() {
+        if (waterPos != null) {
+            OwnFluidTracker.getInstance().release(waterPos);
+        }
         waterPos = null;
+    }
+
+    private void reset() {
+        clearWater();
         pickupRequestedAge = Integer.MIN_VALUE / 2;
         GameplayFoundation.releaseOwner(this);
     }

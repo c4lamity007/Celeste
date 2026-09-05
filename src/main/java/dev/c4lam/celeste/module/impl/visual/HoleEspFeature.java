@@ -2,47 +2,61 @@ package dev.c4lam.celeste.module.impl.visual;
 
 import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.module.ModuleFeature;
+import dev.c4lam.celeste.module.impl.visual.expansion.WorldGlowRenderer;
+import net.fabricmc.fabric.api.client.rendering.v1.world.WorldExtractionContext;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
+import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.world.ClientWorld;
+import net.minecraft.util.Util;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.MathHelper;
+import net.minecraft.util.math.Vec3d;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Client-thread, incremental scanner for 1x1 two-air-high combat holes. */
+/** Bounded, nearest-first scanner for blast-resistant 1x1 and 1x2 combat holes. */
 public final class HoleEspFeature implements ModuleFeature {
     private static final Direction[] HORIZONTAL = {
         Direction.NORTH, Direction.SOUTH, Direction.WEST, Direction.EAST
     };
     private static final int MAX_CHECKS_PER_TICK = 192;
-    private static final int MAX_CURSOR_STEPS_PER_TICK = 512;
     private static final int MAX_HOLES = 256;
+    private static final int MAX_TEXTURED_HOLES = 8; // Three quads each, independent of scan density.
     private static final int OBSIDIAN_COLOR = 0xD760FF;
     private static final int BEDROCK_COLOR = 0x68E4FF;
 
     private final BlockPos.Mutable scratch = new BlockPos.Mutable();
-    private final Map<Long, HoleType> working = new HashMap<>();
+    private final Map<Long, HolePosition> known = new HashMap<>();
     private volatile List<HolePosition> published = List.of();
-    private volatile List<VisualWorldRenderer.WorldBox> renderBoxes = List.of();
+    private volatile ClientWorld scannedWorld;
+    private List<BlockPos> scanOffsets = List.of();
+    private int offsetsRange = -1;
 
     private volatile boolean enabled;
     private boolean cycleActive;
     private boolean showObsidian = true;
     private boolean showBedrock = true;
+    private VisualWorldRenderer.Shape style = VisualWorldRenderer.Shape.FOOTPRINT;
+    private float opacity = 0.8F;
+    private float fillOpacity = 0.14F;
+    private float lineWidth = 1.5F;
+    private double height = 0.6D;
+    private boolean glow = true;
+    private int obsidianColor = OBSIDIAN_COLOR;
+    private int bedrockColor = BEDROCK_COLOR;
     private int range = 8;
     private int anchorX;
     private int anchorY;
     private int anchorZ;
-    private int cursorX;
-    private int cursorY;
-    private int cursorZ;
+    private int cursor;
 
     @Override
     public String name() {
@@ -53,14 +67,14 @@ public final class HoleEspFeature implements ModuleFeature {
     public void onEnable(ModuleContext context) {
         enabled = true;
         updateSettings(context);
-        resetScan();
+        resetAll();
     }
 
     @Override
     public void onStartTick(ModuleContext context) {
         ClientWorld world = context.client().world;
         ClientPlayerEntity player = context.client().player;
-        if (world == null || player == null) {
+        if (world == null || player == null || !player.isAlive()) {
             resetAll();
             return;
         }
@@ -69,14 +83,22 @@ public final class HoleEspFeature implements ModuleFeature {
         updateSettings(context);
         BlockPos center = player.getBlockPos();
         double teleportThreshold = Math.max(8.0D, range * 2.0D);
+        double movedSquared = squaredDistance(anchorX, anchorY, anchorZ, center.getX(), center.getY(), center.getZ());
+        if (scannedWorld != world || movedSquared > teleportThreshold * teleportThreshold) {
+            resetAll();
+        }
+        scannedWorld = world;
         if (!cycleActive
             || oldRange != range
-            || squaredDistance(anchorX, anchorY, anchorZ, center.getX(), center.getY(), center.getZ())
-                > teleportThreshold * teleportThreshold) {
+            || movedSquared > 16.0D) {
             beginCycle(center);
         }
+        revalidate(world, player);
         scan(world);
-        rebuildRenderBoxes(player);
+        // Publish discoveries this tick, not after the entire scan volume finishes.
+        published = known.values().stream().sorted(Comparator.comparingDouble(hole -> squaredDistance(
+            player.getX(), player.getY(), player.getZ(),
+            hole.x() + hole.sizeX() * 0.5D, hole.y() + 0.5D, hole.z() + hole.sizeZ() * 0.5D))).toList();
     }
 
     @Override
@@ -90,155 +112,248 @@ public final class HoleEspFeature implements ModuleFeature {
         resetAll();
     }
 
-    List<VisualWorldRenderer.WorldBox> renderBoxes() {
-        return enabled ? renderBoxes : List.of();
-    }
-
     private void updateSettings(ModuleContext context) {
         range = MathHelper.clamp((int) Math.round(context.slider("Range", 8.0D)), 4, 16);
         showObsidian = context.toggle("Obsidian", true);
         showBedrock = context.toggle("Bedrock", true);
+        style = switch (context.mode("Style", "Footprint")) {
+            case "Box" -> VisualWorldRenderer.Shape.BOX;
+            case "Beacon" -> VisualWorldRenderer.Shape.BEACON;
+            default -> VisualWorldRenderer.Shape.FOOTPRINT;
+        };
+        opacity = (float) MathHelper.clamp(context.slider("Opacity", 0.8D), 0.1D, 1.0D);
+        fillOpacity = (float) MathHelper.clamp(context.slider("Fill opacity", 0.14D), 0.0D, 0.4D);
+        height = MathHelper.clamp(context.slider("Height", 0.6D), 0.15D, 1.5D);
+        lineWidth = (float) MathHelper.clamp(context.slider("Line width", 1.5D), 0.75D, 3.0D);
+        glow = context.toggle("Glow", true);
+        obsidianColor = context.colorPick("Obsidian color", OBSIDIAN_COLOR) & 0xFFFFFF;
+        bedrockColor = context.colorPick("Bedrock color", BEDROCK_COLOR) & 0xFFFFFF;
     }
 
     private void beginCycle(BlockPos center) {
+        if (offsetsRange != range) {
+            List<BlockPos> offsets = new ArrayList<>();
+            int rangeSquared = range * range;
+            for (int y = -range; y <= range; y++) {
+                for (int z = -range; z <= range; z++) {
+                    for (int x = -range; x <= range; x++) {
+                        if (x * x + y * y + z * z <= rangeSquared) {
+                            offsets.add(new BlockPos(x, y, z));
+                        }
+                    }
+                }
+            }
+            offsets.sort(Comparator.comparingInt(offset ->
+                offset.getX() * offset.getX() + offset.getY() * offset.getY() + offset.getZ() * offset.getZ()));
+            scanOffsets = List.copyOf(offsets);
+            offsetsRange = range;
+        }
         anchorX = center.getX();
         anchorY = center.getY();
         anchorZ = center.getZ();
-        cursorX = -range;
-        cursorY = -range;
-        cursorZ = -range;
-        working.clear();
+        cursor = 0;
         cycleActive = true;
     }
 
     private void scan(ClientWorld world) {
-        int checked = 0;
-        int steps = 0;
-        int rangeSquared = range * range;
-        while (cycleActive && checked < MAX_CHECKS_PER_TICK && steps < MAX_CURSOR_STEPS_PER_TICK) {
-            if (cursorY > range) {
-                finishCycle();
-                return;
-            }
-
-            int dx = cursorX;
-            int dy = cursorY;
-            int dz = cursorZ;
-            advanceCursor();
-            steps++;
-            if (dx * dx + dy * dy + dz * dz > rangeSquared) {
-                continue;
-            }
-
-            checked++;
-            int x = anchorX + dx;
-            int y = anchorY + dy;
-            int z = anchorZ + dz;
-            HoleType type = classify(world, x, y, z);
-            if (type != null && working.size() < MAX_HOLES) {
-                working.put(BlockPos.asLong(x, y, z), type);
+        int end = Math.min(cursor + MAX_CHECKS_PER_TICK, scanOffsets.size());
+        while (cursor < end) {
+            BlockPos offset = scanOffsets.get(cursor++);
+            int x = anchorX + offset.getX();
+            int y = anchorY + offset.getY();
+            int z = anchorZ + offset.getZ();
+            HolePosition hole = classify(world, x, y, z);
+            long key = BlockPos.asLong(x, y, z);
+            if (hole != null && (known.size() < MAX_HOLES || known.containsKey(key))) {
+                known.put(key, hole);
             }
         }
+        cycleActive = cursor < scanOffsets.size();
     }
 
-    private HoleType classify(ClientWorld world, int x, int y, int z) {
-        scratch.set(x, y, z);
-        if (!world.getBlockState(scratch).isAir()) {
+    private HolePosition classify(ClientWorld world, int x, int y, int z) {
+        if (!isOpenColumn(world, x, y, z)) {
             return null;
         }
-        scratch.set(x, y + 1, z);
-        if (!world.getBlockState(scratch).isAir()) {
+        int floor = resistance(world, x, y - 1, z);
+        if (floor == 0) {
             return null;
         }
-        scratch.set(x, y - 1, z);
-        if (!world.getBlockState(scratch).isSideSolidFullSquare(world, scratch, Direction.UP)) {
-            return null;
-        }
-
-        boolean allBedrock = true;
+        boolean allBedrock = floor == 2;
+        Direction opening = null;
         for (Direction direction : HORIZONTAL) {
-            scratch.set(x + direction.getOffsetX(), y, z + direction.getOffsetZ());
-            BlockState wall = world.getBlockState(scratch);
-            if (wall.isOf(Blocks.BEDROCK)) {
+            int nx = x + direction.getOffsetX();
+            int nz = z + direction.getOffsetZ();
+            int wall = resistance(world, nx, y, nz);
+            if (wall == 0) {
+                if (opening != null || !isOpenColumn(world, nx, y, nz)) {
+                    return null;
+                }
+                opening = direction;
+            } else {
+                allBedrock &= wall == 2;
+            }
+        }
+        if (opening == null) {
+            return new HolePosition(x, y, z, 1, 1, allBedrock ? HoleType.BEDROCK : HoleType.OBSIDIAN);
+        }
+        // Own a pair only from its north/west cell: one joined outline, no seam.
+        if (opening != Direction.EAST && opening != Direction.SOUTH) {
+            return null;
+        }
+        int otherX = x + opening.getOffsetX();
+        int otherZ = z + opening.getOffsetZ();
+        int otherFloor = resistance(world, otherX, y - 1, otherZ);
+        if (otherFloor == 0) {
+            return null;
+        }
+        allBedrock &= otherFloor == 2;
+        for (Direction direction : HORIZONTAL) {
+            if (direction == opening.getOpposite()) continue;
+            int wall = resistance(world, otherX + direction.getOffsetX(), y, otherZ + direction.getOffsetZ());
+            if (wall == 0) return null;
+            allBedrock &= wall == 2;
+        }
+        return new HolePosition(x, y, z, opening == Direction.EAST ? 2 : 1,
+            opening == Direction.SOUTH ? 2 : 1, allBedrock ? HoleType.BEDROCK : HoleType.OBSIDIAN);
+    }
+
+    private boolean isOpenColumn(ClientWorld world, int x, int y, int z) {
+        scratch.set(x, y, z);
+        if (world.isOutOfHeightLimit(scratch) || !world.isChunkLoaded(scratch)
+            || !world.getBlockState(scratch).isAir()) return false;
+        scratch.set(x, y + 1, z);
+        return !world.isOutOfHeightLimit(scratch) && world.getBlockState(scratch).isAir();
+    }
+
+    private int resistance(ClientWorld world, int x, int y, int z) {
+        scratch.set(x, y, z);
+        if (world.isOutOfHeightLimit(scratch) || !world.isChunkLoaded(scratch)) return 0;
+        BlockState state = world.getBlockState(scratch);
+        if (state.isOf(Blocks.BEDROCK)) return 2;
+        return state.isOf(Blocks.OBSIDIAN) ? 1 : 0;
+    }
+
+    private void revalidate(ClientWorld world, ClientPlayerEntity player) {
+        double rangeSquared = (double) (range + 1) * (range + 1);
+        var iterator = known.entrySet().iterator();
+        // MAX_HOLES caps this work independently from the discovery scan budget.
+        while (iterator.hasNext()) {
+            Map.Entry<Long, HolePosition> entry = iterator.next();
+            HolePosition hole = entry.getValue();
+            if (squaredDistance(player.getX(), player.getY(), player.getZ(),
+                hole.x() + hole.sizeX() * 0.5D, hole.y() + 0.5D, hole.z() + hole.sizeZ() * 0.5D) > rangeSquared) {
+                iterator.remove();
                 continue;
             }
-            if (!wall.isOf(Blocks.OBSIDIAN)) {
-                return null;
-            }
-            allBedrock = false;
+            HolePosition current = classify(world, hole.x(), hole.y(), hole.z());
+            if (current == null) iterator.remove();
+            else entry.setValue(current);
         }
-        return allBedrock ? HoleType.BEDROCK : HoleType.OBSIDIAN;
     }
 
-    private void advanceCursor() {
-        if (++cursorX <= range) {
-            return;
-        }
-        cursorX = -range;
-        if (++cursorZ <= range) {
-            return;
-        }
-        cursorZ = -range;
-        cursorY++;
-    }
-
-    private void finishCycle() {
-        List<HolePosition> next = new ArrayList<>(working.size());
-        for (Map.Entry<Long, HoleType> entry : working.entrySet()) {
-            long packed = entry.getKey();
-            next.add(new HolePosition(
-                BlockPos.unpackLongX(packed),
-                BlockPos.unpackLongY(packed),
-                BlockPos.unpackLongZ(packed),
-                entry.getValue()
-            ));
-        }
-        published = List.copyOf(next);
-        working.clear();
-        cycleActive = false;
-    }
-
-    private void rebuildRenderBoxes(ClientPlayerEntity player) {
-        if (!showBedrock && !showObsidian) {
-            renderBoxes = List.of();
+    void extract(WorldExtractionContext context, List<VisualWorldRenderer.WorldBox> output,
+                 List<WorldGlowRenderer.Quad> glows) {
+        ClientPlayerEntity player = MinecraftClient.getInstance().player;
+        if (!enabled || (!showBedrock && !showObsidian) || player == null || !player.isAlive()
+            || player.getEntityWorld() != context.world() || scannedWorld != context.world()) {
             return;
         }
 
         double rangeSquared = (double) range * range;
-        List<VisualWorldRenderer.WorldBox> next = new ArrayList<>(published.size());
+        Vec3d position = player.getLerpedPos(context.tickCounter().getTickProgress(false));
+        double time = Util.getMeasuringTimeMs() / 1000.0D;
+        int textured = 0;
         for (HolePosition hole : published) {
+            double distanceSquared = squaredDistance(
+                position.x, position.y, position.z,
+                hole.x() + hole.sizeX() * 0.5D, hole.y() + 0.5D, hole.z() + hole.sizeZ() * 0.5D
+            );
             if ((hole.type() == HoleType.BEDROCK && !showBedrock)
                 || (hole.type() == HoleType.OBSIDIAN && !showObsidian)
-                || squaredDistance(
-                    player.getX(), player.getY(), player.getZ(),
-                    hole.x() + 0.5D, hole.y() + 0.5D, hole.z() + 0.5D
-                ) > rangeSquared) {
+                || distanceSquared > rangeSquared) {
                 continue;
             }
 
-            int color = hole.type() == HoleType.BEDROCK ? BEDROCK_COLOR : OBSIDIAN_COLOR;
-            next.add(new VisualWorldRenderer.WorldBox(
-                new Box(
-                    hole.x() + 0.06D, hole.y() + 0.02D, hole.z() + 0.06D,
-                    hole.x() + 0.94D, hole.y() + 0.16D, hole.z() + 0.94D
-                ),
-                VisualWorldRenderer.argb(0.16F, color),
-                VisualWorldRenderer.argb(0.82F, color),
-                1.35F
+            float fade = (float) MathHelper.clamp((range - Math.sqrt(distanceSquared)) / 2.0D, 0.0D, 1.0D);
+            fade = fade * fade * (3.0F - 2.0F * fade);
+            if (fade <= 0.002F) continue;
+            int color = hole.type() == HoleType.BEDROCK ? bedrockColor : obsidianColor;
+            double displayHeight = style == VisualWorldRenderer.Shape.FOOTPRINT ? 0.0D : height;
+            Box bounds = new Box(
+                hole.x() + 0.035D, hole.y() + 0.025D, hole.z() + 0.035D,
+                hole.x() + hole.sizeX() - 0.035D, hole.y() + 0.025D + displayHeight,
+                hole.z() + hole.sizeZ() - 0.035D
+            );
+            boolean texturedHole = glow && textured < MAX_TEXTURED_HOLES && distanceSquared < 12.0D * 12.0D
+                && (context.frustum() == null || context.frustum().isVisible(bounds.expand(0.16D)));
+            output.add(new VisualWorldRenderer.WorldBox(
+                bounds,
+                VisualWorldRenderer.argb(fillOpacity * fade * (texturedHole ? 0.45F : 1.0F), color),
+                VisualWorldRenderer.argb(style == VisualWorldRenderer.Shape.BEACON ? 0.0F : fillOpacity * fade * 0.25F, color),
+                VisualWorldRenderer.argb(opacity * fade * (texturedHole ? 0.62F : 1.0F), color),
+                lineWidth,
+                style,
+                false
             ));
+            if (texturedHole) {
+                appendField(glows, hole, color, fade, time);
+                textured++;
+            }
         }
-        renderBoxes = List.copyOf(next);
+    }
+
+    /** Soft floor membrane and thin moving energy edges, never an opaque wall of bloom. */
+    private void appendField(List<WorldGlowRenderer.Quad> glows, HolePosition hole, int color,
+                             float fade, double time) {
+        double x1 = hole.x() + 0.045D;
+        double x2 = hole.x() + hole.sizeX() - 0.045D;
+        double z1 = hole.z() + 0.045D;
+        double z2 = hole.z() + hole.sizeZ() - 0.045D;
+        double y = hole.y() + 0.035D;
+        int accent = hole.type() == HoleType.BEDROCK ? 0xD4FCFF : 0xF5B3FF;
+        float strength = opacity * fade;
+        glows.add(new WorldGlowRenderer.Quad(WorldGlowRenderer.Texture.PULSE,
+            new Vec3d(x1, y, z1), new Vec3d(x2, y, z1),
+            new Vec3d(x2, y, z2), new Vec3d(x1, y, z2),
+            VisualWorldRenderer.argb(strength * 0.34F, color),
+            VisualWorldRenderer.argb(strength * 0.30F, accent)));
+        double phase = time * 1.15D + hole.x() * 0.71D + hole.z() * 0.39D;
+        double bandHeight = style == VisualWorldRenderer.Shape.FOOTPRINT ? 0.13D : Math.min(0.42D, height * 0.65D);
+        double lift = style == VisualWorldRenderer.Shape.FOOTPRINT ? 0.0D
+            : (0.5D + 0.5D * Math.sin(phase)) * Math.max(0.0D, height - bandHeight);
+        double bottom = y + lift;
+        double top = bottom + bandHeight;
+        int startColor = VisualWorldRenderer.argb(strength * 0.50F, color);
+        int endColor = VisualWorldRenderer.argb(strength * 0.42F, accent);
+        // Keep the long edges parallel to the pair direction, with no bright seam in 1x2 holes.
+        if (hole.sizeZ() > hole.sizeX()) {
+            glows.add(new WorldGlowRenderer.Quad(WorldGlowRenderer.Texture.RIBBON,
+                new Vec3d(x1, bottom, z1), new Vec3d(x1, bottom, z2),
+                new Vec3d(x1, top, z2), new Vec3d(x1, top, z1), startColor, endColor));
+            glows.add(new WorldGlowRenderer.Quad(WorldGlowRenderer.Texture.RIBBON,
+                new Vec3d(x2, bottom, z2), new Vec3d(x2, bottom, z1),
+                new Vec3d(x2, top, z1), new Vec3d(x2, top, z2), endColor, startColor));
+        } else {
+            glows.add(new WorldGlowRenderer.Quad(WorldGlowRenderer.Texture.RIBBON,
+                new Vec3d(x1, bottom, z1), new Vec3d(x2, bottom, z1),
+                new Vec3d(x2, top, z1), new Vec3d(x1, top, z1), startColor, endColor));
+            glows.add(new WorldGlowRenderer.Quad(WorldGlowRenderer.Texture.RIBBON,
+                new Vec3d(x2, bottom, z2), new Vec3d(x1, bottom, z2),
+                new Vec3d(x1, top, z2), new Vec3d(x2, top, z2), endColor, startColor));
+        }
     }
 
     private void resetScan() {
         cycleActive = false;
-        working.clear();
+        cursor = 0;
     }
 
     private void resetAll() {
         resetScan();
+        known.clear();
         published = List.of();
-        renderBoxes = List.of();
+        scannedWorld = null;
     }
 
     private static double squaredDistance(double ax, double ay, double az, double bx, double by, double bz) {
@@ -253,6 +368,6 @@ public final class HoleEspFeature implements ModuleFeature {
         BEDROCK
     }
 
-    private record HolePosition(int x, int y, int z, HoleType type) {
+    private record HolePosition(int x, int y, int z, int sizeX, int sizeZ, HoleType type) {
     }
 }

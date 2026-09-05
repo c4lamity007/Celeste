@@ -28,6 +28,7 @@ public final class VisualExpansion {
         manager.register(new FpsCounterFeature());
         manager.register(new WatermarkFeature());
         manager.register(new ArrayListFeature());
+        manager.register(new FakeGambleFeature());
 
         VisualExpansionRenderer.initialize(trajectories, ores, arrows, items, targets);
     }

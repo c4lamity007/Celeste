@@ -1,11 +1,11 @@
 package dev.c4lam.celeste;
 
 import dev.c4lam.celeste.action.GameplayFoundation;
+import dev.c4lam.celeste.auth.AuthBootstrap;
 import dev.c4lam.celeste.config.ConfigProfileManager;
 import dev.c4lam.celeste.config.InterfaceConfig;
 import dev.c4lam.celeste.friend.FriendManager;
 import dev.c4lam.celeste.gui.CelesteScreen;
-import dev.c4lam.celeste.hud.HudEditorScreen;
 import dev.c4lam.celeste.hud.HudManager;
 import dev.c4lam.celeste.media.SystemMediaService;
 import dev.c4lam.celeste.module.BuiltInFeatures;
@@ -16,25 +16,36 @@ import dev.c4lam.celeste.render.font.Fonts;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
-import net.fabricmc.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.fabricmc.fabric.api.resource.v1.ResourceLoader;
-import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
 import net.minecraft.resource.SynchronousResourceReloader;
 import net.minecraft.resource.ResourceType;
 import net.minecraft.util.Identifier;
-import org.lwjgl.glfw.GLFW;
 
 public final class CelesteClient implements ClientModInitializer {
     public static final String MOD_ID = "celeste";
     public static final String NAME = "Celeste Client";
     public static final String VERSION = "1.0";
 
-    private static final KeyBinding.Category CATEGORY = KeyBinding.Category.create(Identifier.of(MOD_ID, "main"));
+    private boolean initialized;
+    private boolean menuKeyDown;
 
     @Override
     public void onInitializeClient() {
         GuiPipelines.register();
+        ResourceLoader.get(ResourceType.CLIENT_RESOURCES).registerReloader(
+            Identifier.of(MOD_ID, "fonts"),
+            (SynchronousResourceReloader) manager -> Fonts.reload()
+        );
+        AuthBootstrap.install(this::initializeAuthorizedClient, this::shutdownAuthorizedClient);
+        ClientLifecycleEvents.CLIENT_STOPPING.register(client -> shutdownAuthorizedClient());
+    }
+
+    private void initializeAuthorizedClient() {
+        if (initialized) {
+            return;
+        }
+        initialized = true;
         InterfaceConfig.initialize();
         FriendManager.getInstance().initialize();
         HudManager.getInstance().initialize();
@@ -46,36 +57,30 @@ public final class CelesteClient implements ClientModInitializer {
         ConfigProfileManager.getInstance().initialize();
         HudManager.getInstance().synchronizeModuleBackedElements();
 
-        KeyBinding openGui = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.celeste.open_gui",
-            InputUtil.Type.KEYSYM,
-            GLFW.GLFW_KEY_RIGHT_SHIFT,
-            CATEGORY
-        ));
-
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
-            while (openGui.wasPressed()) {
-                if (client.currentScreen instanceof CelesteScreen || client.currentScreen instanceof HudEditorScreen) {
-                    client.setScreen(null);
-                } else if (client.currentScreen == null) {
-                    client.setScreen(new CelesteScreen());
-                }
+            if (!initialized) {
+                return;
             }
-
+            boolean pressed = InputUtil.isKeyPressed(client.getWindow(), InterfaceConfig.menuKey());
+            if (pressed && !menuKeyDown && client.currentScreen == null) {
+                client.setScreen(new CelesteScreen());
+            }
+            menuKeyDown = pressed;
         });
 
-        ResourceLoader.get(ResourceType.CLIENT_RESOURCES).registerReloader(
-            Identifier.of(MOD_ID, "fonts"),
-            (SynchronousResourceReloader) manager -> Fonts.reload()
-        );
+    }
 
-        ClientLifecycleEvents.CLIENT_STOPPING.register(client -> {
-            ModuleManager.getInstance().close();
-            InterfaceConfig.close();
-            GameplayFoundation.close(client);
-            FriendManager.getInstance().close();
-            SystemMediaService.getInstance().close();
-            RenderUtil.cleanup();
-        });
+    private void shutdownAuthorizedClient() {
+        if (!initialized) {
+            return;
+        }
+        initialized = false;
+        menuKeyDown = false;
+        ModuleManager.getInstance().close();
+        InterfaceConfig.close();
+        GameplayFoundation.close(net.minecraft.client.MinecraftClient.getInstance());
+        FriendManager.getInstance().close();
+        SystemMediaService.getInstance().close();
+        RenderUtil.cleanup();
     }
 }

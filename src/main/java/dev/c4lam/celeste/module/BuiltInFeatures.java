@@ -7,8 +7,10 @@ import dev.c4lam.celeste.module.impl.combat.AutoCrystalAuraFeature;
 import dev.c4lam.celeste.module.impl.combat.AutoCrystalFeature;
 import dev.c4lam.celeste.module.impl.combat.AutoHitCrystalFeature;
 import dev.c4lam.celeste.module.impl.combat.AutoSwordFeature;
+import dev.c4lam.celeste.module.impl.combat.CatchFeature;
 import dev.c4lam.celeste.module.impl.combat.CombatOverlayRenderer;
 import dev.c4lam.celeste.module.impl.combat.DamageRenderFeature;
+import dev.c4lam.celeste.module.impl.combat.FakeLagFeature;
 import dev.c4lam.celeste.module.impl.combat.MaceAuraFeature;
 import dev.c4lam.celeste.module.impl.combat.MaceSwapFeature;
 import dev.c4lam.celeste.module.impl.combat.ShieldBreakFeature;
@@ -18,7 +20,6 @@ import dev.c4lam.celeste.module.impl.combat.SwordAuraFeature;
 import dev.c4lam.celeste.module.impl.combat.WindChargeFeature;
 import dev.c4lam.celeste.module.impl.combat.TBOTFeature;
 import dev.c4lam.celeste.module.impl.movement.ElytraFeature;
-import dev.c4lam.celeste.module.impl.movement.BoatFlightFeature;
 import dev.c4lam.celeste.module.impl.movement.SafeWalkFeature;
 import dev.c4lam.celeste.module.impl.movement.SprintFeature;
 import dev.c4lam.celeste.module.impl.visual.EntityEspFeature;
@@ -48,8 +49,10 @@ public final class BuiltInFeatures {
         modules.register(new AutoSwordFeature());
         modules.register(new ShieldBreakFeature());
         modules.register(new TBOTFeature());
+        modules.register(new FakeLagFeature());
         modules.register(new MaceAuraFeature());
         modules.register(new WindChargeFeature());
+        modules.register(new CatchFeature());
         MaceSwapFeature maceSwap = new MaceSwapFeature();
         modules.register(maceSwap);
         SwordAttackCoordinator.installMaceSwap(maceSwap);
@@ -68,7 +71,6 @@ public final class BuiltInFeatures {
         modules.register(new SprintFeature());
         modules.register(new SafeWalkFeature());
         modules.register(new ElytraFeature());
-        modules.register(new BoatFlightFeature());
         modules.register(new FullbrightFeature());
         
         EntityEspFeature entityEsp = new EntityEspFeature();

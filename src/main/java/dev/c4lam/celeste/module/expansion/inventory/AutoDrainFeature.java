@@ -23,7 +23,7 @@ import net.minecraft.world.RaycastContext;
 
 /** Flick-aims at nearby still water or lava, buckets it, then looks back. */
 final class AutoDrainFeature implements ModuleFeature {
-    private static final int PRIORITY = 145;
+    private static final int PRIORITY = 130;
     private int lastActionAge = Integer.MIN_VALUE / 2;
     private Plan plan;
 
@@ -88,7 +88,7 @@ final class AutoDrainFeature implements ModuleFeature {
     }
 
     private static BlockPos findSource(MinecraftClient client) {
-        if (client.player == null || client.world == null) {
+        if (client.player == null || client.world == null || OwnFluidTracker.getInstance().hasClaim()) {
             return null;
         }
         double reach = client.player.getBlockInteractionRange();

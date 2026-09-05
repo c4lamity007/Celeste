@@ -23,8 +23,17 @@ public final class FontBuilder {
 
     public FontBuilder find(String fontName) {
         name = fontName;
-        dataIdentifier = Identifier.of("celeste", "fonts/" + fontName + ".json");
-        atlasIdentifier = Identifier.of("celeste", "fonts/" + fontName + ".png");
+        // Keep JSON and PNG as complete identifier literals so the release packer
+        // can relocate both files and rewrite both lookups as one mapping.
+        if (fontName.endsWith(".json") || fontName.contains(":")) {
+            String json = fontName.endsWith(".json") ? fontName : fontName + ".json";
+            String png = json.substring(0, json.length() - 5) + ".png";
+            dataIdentifier = Identifier.of(json);
+            atlasIdentifier = Identifier.of(png);
+        } else {
+            dataIdentifier = Identifier.of("celeste:fonts/" + fontName + ".json");
+            atlasIdentifier = Identifier.of("celeste:fonts/" + fontName + ".png");
+        }
         return this;
     }
 

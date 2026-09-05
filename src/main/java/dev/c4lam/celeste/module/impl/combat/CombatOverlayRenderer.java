@@ -1,7 +1,9 @@
 package dev.c4lam.celeste.module.impl.combat;
 
 import dev.c4lam.celeste.CelesteClient;
+import dev.c4lam.celeste.auth.AuthBootstrap;
 import dev.c4lam.celeste.config.InterfaceConfig;
+import dev.c4lam.celeste.module.expansion.inventory.SilentInventoryScreen;
 import dev.c4lam.celeste.render.GuiRenderer;
 import dev.c4lam.celeste.render.RenderUtil;
 import dev.c4lam.celeste.render.font.Fonts;
@@ -33,6 +35,10 @@ public final class CombatOverlayRenderer {
     private static float smashVisibility;
     private static float damageVisibility;
     private static long lastFrameNanos;
+    private static Object shownWorld;
+    private static String damageTarget;
+    private static float targetFill;
+    private static float selfFill;
 
     private CombatOverlayRenderer() {
     }
@@ -48,8 +54,26 @@ public final class CombatOverlayRenderer {
     }
 
     private static void render(DrawContext context, RenderTickCounter tickCounter) {
+        if (!AuthBootstrap.authorized()) {
+            return;
+        }
         MinecraftClient client = MinecraftClient.getInstance();
-        if (client.currentScreen != null || client.player == null || client.world == null) {
+        if (client.world != shownWorld || client.player == null || !client.player.isAlive()) {
+            shownWorld = client.world;
+            lastSmash = null;
+            lastDamage = null;
+            smashVisibility = damageVisibility = 0;
+            lastFrameNanos = 0;
+            damageTarget = null;
+        }
+        if ((client.currentScreen != null && !(client.currentScreen instanceof SilentInventoryScreen))
+            || client.options.hudHidden || client.player == null
+            || !client.player.isAlive() || client.world == null) {
+            lastSmash = null;
+            lastDamage = null;
+            smashVisibility = damageVisibility = 0;
+            lastFrameNanos = 0;
+            damageTarget = null;
             return;
         }
 
@@ -63,6 +87,19 @@ public final class CombatOverlayRenderer {
         }
 
         float seconds = frameSeconds();
+        if (lastDamage != null) {
+            float target = DamageRenderFeature.fraction(lastDamage.targetDamage(), lastDamage.targetHealth());
+            float self = DamageRenderFeature.fraction(lastDamage.selfDamage(), lastDamage.selfHealth());
+            if (!lastDamage.targetName().equals(damageTarget) || damageVisibility < .008F) {
+                targetFill = target;
+                selfFill = self;
+                damageTarget = lastDamage.targetName();
+            } else {
+                // Only the decorative tracks ease; numeric estimates and lethal warnings stay immediate.
+                targetFill = damp(targetFill, target, 18F, seconds);
+                selfFill = damp(selfFill, self, 18F, seconds);
+            }
+        }
         smashVisibility = damp(smashVisibility, currentSmash == null ? 0.0F : 1.0F, 15.0F, seconds);
         damageVisibility = damp(damageVisibility, currentDamage == null ? 0.0F : 1.0F, 15.0F, seconds);
         if (smashVisibility < 0.008F && damageVisibility < 0.008F) {
@@ -74,19 +111,23 @@ public final class CombatOverlayRenderer {
         GuiRenderer.getInstance().clearScissors();
         float centerX = context.getScaledWindowWidth() * 0.5F;
         float centerY = context.getScaledWindowHeight() * 0.5F;
-        if (lastSmash != null && smashVisibility >= 0.008F) {
+        boolean showSmash = lastSmash != null && smashVisibility >= 0.008F;
+        boolean showDamage = lastDamage != null && damageVisibility >= 0.008F;
+        float smashHeight = showSmash ? (lastSmash.showHeight() ? 31F : 23F) : 0F;
+        float damageHeight = showDamage ? (lastDamage.detailed() ? 56F : 43F) : 0F;
+        float contentHeight = smashHeight + damageHeight + (showSmash && showDamage ? 8F : 0F);
+        float cardY = Math.max(4F, Math.min(centerY + (showSmash ? 31F : 69F),
+            context.getScaledWindowHeight() - 48F - contentHeight));
+        if (showSmash) {
             String primary = String.format(Locale.ROOT, "Smash  %.1f", lastSmash.damage());
             String secondary = lastSmash.showHeight()
                 ? String.format(Locale.ROOT, "%.1f blocks fallen", lastSmash.fallDistance()) : "";
-            drawCard(matrices, centerX, centerY + 31.0F, primary, secondary, smashVisibility);
+            drawCard(matrices, centerX, cardY, primary, secondary, smashVisibility);
+            cardY += smashHeight + 8F;
         }
-        if (lastDamage != null && damageVisibility >= 0.008F) {
-            String primary = lastDamage.detailed() ? "Crystal estimate"
-                : String.format(Locale.ROOT, "Crystal  %.1f", lastDamage.targetDamage());
-            String secondary = lastDamage.detailed()
-                ? trim(lastDamage.targetName(), 12) + String.format(Locale.ROOT, " %.1f   Self %.1f",
-                    lastDamage.targetDamage(), lastDamage.selfDamage()) : "";
-            drawCard(matrices, centerX, centerY + 69.0F, primary, secondary, damageVisibility);
+        if (showDamage) {
+            DamageRenderFeature.drawEstimate(matrices, centerX, cardY, lastDamage, damageVisibility,
+                targetFill, selfFill);
         }
     }
 
@@ -125,8 +166,8 @@ public final class CombatOverlayRenderer {
 
     private static float frameSeconds() {
         long now = System.nanoTime();
-        float seconds = lastFrameNanos == 0L ? 1.0F / 60.0F
-            : Math.min(0.05F, Math.max(0.0F, (now - lastFrameNanos) / 1_000_000_000.0F));
+        float seconds = lastFrameNanos == 0L ? 0F
+            : Math.max(0.0F, (now - lastFrameNanos) / 1_000_000_000.0F);
         lastFrameNanos = now;
         return seconds;
     }

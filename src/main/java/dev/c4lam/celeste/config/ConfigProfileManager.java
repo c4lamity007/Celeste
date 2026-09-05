@@ -21,9 +21,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Properties;
 
-/**
- * Every saved config is a PNG. That is the same file a later VPS cloud host would serve.
- */
+/** Every saved config is a PNG; published copies are served by the licensed cloud host. */
 public final class ConfigProfileManager {
     private static final Logger LOGGER = LoggerFactory.getLogger("Celeste/Configs");
     private static final ConfigProfileManager INSTANCE = new ConfigProfileManager();
@@ -171,6 +169,24 @@ public final class ConfigProfileManager {
         saveIndex();
     }
 
+    public synchronized byte[] exportImage(String rawName) {
+        String name = sanitize(rawName);
+        Path file = configFile(name);
+        if (!Files.isRegularFile(file)) {
+            throw new IllegalArgumentException("Config '" + name + "' does not exist");
+        }
+        try {
+            return Files.readAllBytes(file);
+        } catch (IOException exception) {
+            throw new IllegalStateException("Could not read " + name, exception);
+        }
+    }
+
+    public synchronized String importCloudImage(String rawName, byte[] image) {
+        Properties properties = readPng(image);
+        return importSnapshot(rawName, properties);
+    }
+
     private Properties capture() {
         ModuleManager.getInstance().saveNow();
         HudManager.getInstance().saveLayout();
@@ -306,6 +322,16 @@ public final class ConfigProfileManager {
     }
 
     private static Properties readPng(Path png) {
+        try {
+            Properties properties = new Properties();
+            properties.load(new ByteArrayInputStream(ConfigImageCodec.read(png)));
+            return properties;
+        } catch (IOException exception) {
+            throw new IllegalStateException(exception.getMessage(), exception);
+        }
+    }
+
+    private static Properties readPng(byte[] png) {
         try {
             Properties properties = new Properties();
             properties.load(new ByteArrayInputStream(ConfigImageCodec.read(png)));

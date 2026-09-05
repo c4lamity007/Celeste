@@ -10,9 +10,11 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
 
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 /** Remembers still water/lava the local player placed so Auto Drain will not steal it. */
 public final class OwnFluidTracker {
@@ -21,6 +23,7 @@ public final class OwnFluidTracker {
     private static final long PLACE_GRACE_NANOS = 3_000_000_000L;
 
     private final Map<BlockPos, Long> owned = new LinkedHashMap<>();
+    private final Set<BlockPos> claimed = new HashSet<>();
     private ClientWorld world;
 
     private OwnFluidTracker() {
@@ -38,20 +41,62 @@ public final class OwnFluidTracker {
         BlockPos key = pos.toImmutable();
         owned.remove(key);
         owned.put(key, System.nanoTime());
-        while (owned.size() > MAX_OWNED) {
-            Iterator<BlockPos> iterator = owned.keySet().iterator();
-            iterator.next();
-            iterator.remove();
+        if (owned.size() > MAX_OWNED) {
+            owned.keySet().removeIf(ownedPos -> !claimed.contains(ownedPos));
+            while (owned.size() > MAX_OWNED) {
+                Iterator<BlockPos> iterator = owned.keySet().iterator();
+                if (!iterator.hasNext()) {
+                    break;
+                }
+                iterator.next();
+                iterator.remove();
+            }
         }
+    }
+
+    public void claim(BlockPos pos) {
+        if (pos == null) {
+            return;
+        }
+        BlockPos key = pos.toImmutable();
+        claimed.add(key);
+        mark(key);
+        for (BlockPos neighbor : BlockPos.iterate(key.add(-1, -1, -1), key.add(1, 1, 1))) {
+            claimed.add(neighbor.toImmutable());
+            mark(neighbor);
+        }
+    }
+
+    public void release(BlockPos pos) {
+        if (pos == null) {
+            return;
+        }
+        BlockPos key = pos.toImmutable();
+        claimed.remove(key);
+        for (BlockPos neighbor : BlockPos.iterate(key.add(-1, -1, -1), key.add(1, 1, 1))) {
+            claimed.remove(neighbor.toImmutable());
+        }
+    }
+
+    public boolean hasClaim() {
+        prune();
+        return !claimed.isEmpty();
     }
 
     public boolean isOwn(BlockPos pos) {
         prune();
-        return pos != null && owned.containsKey(pos);
+        if (pos == null) {
+            return false;
+        }
+        if (claimed.contains(pos)) {
+            return true;
+        }
+        return owned.containsKey(pos);
     }
 
     public void clear() {
         owned.clear();
+        claimed.clear();
         world = null;
     }
 
@@ -84,6 +129,7 @@ public final class OwnFluidTracker {
         ClientWorld current = client == null ? null : client.world;
         if (current != world) {
             owned.clear();
+            claimed.clear();
             world = current;
             return;
         }
