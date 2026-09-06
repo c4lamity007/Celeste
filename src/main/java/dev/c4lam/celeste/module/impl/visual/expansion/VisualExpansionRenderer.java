@@ -5,6 +5,7 @@ import com.mojang.blaze3d.pipeline.BlendFunction;
 import com.mojang.blaze3d.platform.DepthTestFunction;
 import dev.c4lam.celeste.CelesteClient;
 import dev.c4lam.celeste.auth.AuthBootstrap;
+import dev.c4lam.celeste.module.impl.combat.AnchorAuraFeature;
 import dev.c4lam.celeste.module.expansion.inventory.ReBuffNotifierFeature;
 import net.fabricmc.fabric.api.client.rendering.v1.RenderStateDataKey;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
@@ -15,8 +16,10 @@ import net.minecraft.client.gl.RenderPipelines;
 import net.minecraft.client.render.RenderLayer;
 import net.minecraft.client.render.RenderSetup;
 import net.minecraft.client.render.VertexConsumer;
+import net.minecraft.client.render.VertexConsumerProvider;
 import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.util.Identifier;
+import net.minecraft.util.Util;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
@@ -62,12 +65,18 @@ public final class VisualExpansionRenderer {
         OreEspExpansionFeature ores,
         ArrowEspFeature arrows,
         ItemEspFeature items,
-        TargetEspFeature targets
+        TargetEspFeature targets,
+        JumpCirclesFeature jumps,
+        PlayerBoxEspFeature players,
+        ChamsFeature chams,
+        BlockHighlightFeature blockHighlight,
+        AmbientEffectsFeature ambient
     ) {
         if (initialized) return;
         initialized = true;
         WorldGlowRenderer.initialize();
         UnifiedChamsRenderer.initialize();
+        AmbientEffectsRenderer.initialize();
 
         WorldRenderEvents.END_EXTRACTION.register(context -> {
             if (!AuthBootstrap.authorized()) {
@@ -81,17 +90,37 @@ public final class VisualExpansionRenderer {
             List<WorldBox> boxes = new ArrayList<>();
             List<WorldLineStrip> lines = new ArrayList<>();
             List<WorldGlowRenderer.Quad> glows = new ArrayList<>();
-            trajectories.extract(context, lines, boxes, glows);
-            ores.extract(context, boxes, lines, glows);
-            items.extract(context, boxes, lines, glows);
-            targets.extract(context, boxes, lines, glows);
-            PlayerEchoRenderer.Frame echoes = FakeLagVisualRenderer.extract(context, boxes, lines, glows);
+            List<WorldGlowRenderer.Quad> blockMarkers = new ArrayList<>();
+            blockHighlight.extract(context, blockMarkers, 192);
+            var anchorPlan = AnchorAuraFeature.preview();
+            long previewAge = anchorPlan == null ? -1 : Util.getMeasuringTimeMs() - anchorPlan.sampledAtMillis();
+            if (anchorPlan != null && anchorPlan.world() == context.world()
+                && previewAge >= 0 && previewAge <= 500) {
+                var position = anchorPlan.position();
+                SolidVisuals.faces(blockMarkers, BlockHighlightMesh.materialize(ANCHOR_PREVIEW_SHAPE,
+                    position.getX(), position.getY(), position.getZ(), 0x58D5A4FF, 6), 198);
+            }
+            // Reserve jump effects first so busy ESP scenes cannot starve their short lifetime.
+            jumps.extract(context, glows);
+            // Absolute ceilings reserve complete geometry for later effects at saturation.
+            // Earlier unused space remains available; each module keeps its normal detail cap.
+            // After target: at least 24 player / 96 trajectory / 16 ore / 48 loot / 128 lag quads.
+            targets.extract(context, boxes, lines, glows, 456);
+            players.extract(context, glows, 480);
+            trajectories.extract(context, lines, boxes, glows, 576);
+            ores.extract(context, boxes, lines, glows, 592);
+            items.extract(context, boxes, lines, glows, 640);
+            PlayerEchoRenderer.Frame echoes = FakeLagVisualRenderer.extract(context, boxes, lines, glows, 768);
+            PlayerEchoRenderer.Frame silhouettes = chams.extract(context);
+            AmbientEffectsRenderer.Frame atmosphere = ambient.extract(context);
             FakeGambleFeature.extract(context, boxes, lines);
             worldState.setData(
                 FRAME_KEY,
                 boxes.isEmpty() && lines.isEmpty() && glows.isEmpty() && echoes.echoes().isEmpty()
+                    && silhouettes.echoes().isEmpty() && blockMarkers.isEmpty() && atmosphere.particles().isEmpty()
                     ? Frame.EMPTY
-                    : new Frame(List.copyOf(boxes), List.copyOf(lines), List.copyOf(glows), echoes)
+                    : new Frame(List.copyOf(boxes), List.copyOf(lines), List.copyOf(glows), echoes, silhouettes,
+                        List.copyOf(blockMarkers), atmosphere)
             );
         });
         // AFTER_ENTITIES runs inside the prepared draw pass; BEFORE_DEBUG_RENDER
@@ -130,6 +159,8 @@ public final class VisualExpansionRenderer {
         Vec3d camera = worldState.cameraRenderState.pos;
         if (camera == null) return;
 
+        AmbientEffectsRenderer.draw(context, frame.atmosphere());
+
         // These custom layers use the provider's shared fallback allocator. Requesting
         // a different layer ends the current BufferBuilder, so finish every quad before
         // acquiring the line consumer (otherwise `fills` is no longer building).
@@ -145,8 +176,15 @@ public final class VisualExpansionRenderer {
         for (WorldLineStrip strip : frame.lineStrips()) {
             drawLineStrip(matrices, lines, strip, camera);
         }
+        // Volume-only batches do not switch provider layers before compositing.
+        // Finish our lines first, without flushing unrelated world renderers.
+        if (consumers instanceof VertexConsumerProvider.Immediate immediate) {
+            immediate.draw(XRAY_LINES);
+        }
         WorldGlowRenderer.draw(context, frame.glows());
+        UnifiedVolumeRenderer.draw(context, frame.blockMarkers(), true);
         UnifiedChamsRenderer.draw(context, frame.echoes(), true);
+        UnifiedChamsRenderer.draw(context, frame.chams());
     }
 
     private static void drawLineStrip(MatrixStack matrices, VertexConsumer consumer, WorldLineStrip strip, Vec3d camera) {
@@ -234,7 +272,13 @@ public final class VisualExpansionRenderer {
     }
 
     private record Frame(List<WorldBox> boxes, List<WorldLineStrip> lineStrips,
-                         List<WorldGlowRenderer.Quad> glows, PlayerEchoRenderer.Frame echoes) {
-        private static final Frame EMPTY = new Frame(List.of(), List.of(), List.of(), PlayerEchoRenderer.Frame.EMPTY);
+                         List<WorldGlowRenderer.Quad> glows, PlayerEchoRenderer.Frame echoes,
+                         PlayerEchoRenderer.Frame chams, List<WorldGlowRenderer.Quad> blockMarkers,
+                         AmbientEffectsRenderer.Frame atmosphere) {
+        private static final Frame EMPTY = new Frame(List.of(), List.of(), List.of(),
+            PlayerEchoRenderer.Frame.EMPTY, PlayerEchoRenderer.Frame.EMPTY, List.of(), AmbientEffectsRenderer.Frame.EMPTY);
     }
+
+    private static final List<SolidVisualMesh.Face> ANCHOR_PREVIEW_SHAPE = BlockHighlightMesh.surface(
+        List.of(new BlockHighlightMesh.Cuboid(-.002, -.002, -.002, 1.002, 1.002, 1.002)), 6);
 }

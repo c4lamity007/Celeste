@@ -1,0 +1,15 @@
+Jump effects — generated 2026-09-05
+
+Generated with the built-in OpenAI image-generation tool for this Celeste visual update.
+Original output PNGs are copied without alpha changes or raster post-processing.
+The renderer supplies tint, radial edge feathering, UV flow, growth and fade.
+
+Assets:
+assets/celeste/textures/visual/jump/glow.png
+assets/celeste/textures/visual/jump/splash.png
+
+Glow prompt:
+Use case: stylized-concept. Asset type: production real-time game VFX sprite, top-down expanding jump shockwave, 1024 square. Generate ONE centered perfectly circular thick luminous energy ring, viewed orthographically straight down with NO perspective. White and neutral silver only so shader can tint it. Bright substantial liquid-plasma band with flowing fine internal wisps and a broad soft feathered glow on both edges; inner open hole diameter about 52 percent of whole image; outer glow ends within 88 percent of image width leaving clean padding. Clean polished futuristic energy, rich substance rather than wire outlines. Genuinely transparent background, transparent center, alpha feathering. No floor, no shadows, no text, symbols, glyphs, starbursts, boxes, checkerboard, vignette, scene, or surrounding objects. This is a texture to be mapped flat onto a quad, not a concept art scene.
+
+Splash prompt:
+Use case: stylized-concept. Asset type: production real-time game water splash VFX sprite, top-down ring splash, 1024 square. Generate ONE centered circular water shockwave with a substantial irregular raised foamy crest, concentric watery refraction detail and a few closely grouped radial droplets. Orthographic straight overhead, circular not elliptical, no perspective and no environment. Pearl white and neutral grayscale only to allow aqua shader tint. Open transparent middle, crest centered at roughly 66 percent of full canvas diameter, soft translucent mist around crest, all effects fade out inside 88 percent of width with clean fully transparent border. Clean premium fluid-simulation quality: silky refractive water and sparkling broad foam, not thin drawn outlines. Genuinely transparent background and center, no floor, pool, shadows, typography, symbols, checkerboard or background scene.

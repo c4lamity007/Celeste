@@ -1,0 +1,9 @@
+Celeste plasma_flow.png
+Original shader texture generated with the built-in image-generation tool, 2026-09-05.
+Source output: exec-848b6c9c-221f-42b5-9d72-5e903d283450.png
+Consumed by: world_prism.fsh / Player ESP and unified_chams_composite.fsh / Chams. Pixels copied unchanged from the generated PNG.
+
+Final prompt:
+Use case: stylized-concept. Asset type: seamless tileable grayscale game shader texture, square 1024x1024 PNG. Create an original luminous plasma/flow mask for futuristic translucent player-box ESP and energy effects in a game. Flat orthographic texture only: broad silky flowing energy curls, liquid caustic cells, layered wisps and a few bright smooth filaments, with mid-scale variation rather than tiny noise. Grayscale only, black/dark gray through soft white; no colored lighting, no baked scene shadows, no vignette. Dense evenly distributed pattern with seamlessly tileable matching edges on both axes, no central focal shape. This is a sampling texture for a GPU shader to recolor and animate, NOT a mockup, screenshot, sphere or framed panel. Opaque full square. No text, symbols, grids, objects, logos or watermark.
+
+The shader uses smooth bounded sampling instead of relying on perfect generated tile seams.

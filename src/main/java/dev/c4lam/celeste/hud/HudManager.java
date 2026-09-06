@@ -384,6 +384,7 @@ public final class HudManager {
     private void render(DrawContext context, int mouseX, int mouseY, boolean editor, HudElementState dragging,
                         boolean chatMediaMode) {
         MinecraftClient client = MinecraftClient.getInstance();
+        targetTracker.updateLifecycle(client);
         if (!editor && (client.options.hudHidden || client.world == null || client.player == null)) {
             return;
         }
@@ -705,7 +706,7 @@ public final class HudManager {
 
         float textX = x + 40.0f;
         float right = x + width - 8.0f;
-        String healthText = formatHealth(presentation.health());
+        String healthText = "EST " + formatHealth(presentation.health());
         float healthTextWidth = Fonts.bold().width(healthText, 6.4f);
         float availableNameWidth = Math.max(18.0f, right - healthTextWidth - 4.0f - textX);
         String name = trimToWidth(presentation.name(), availableNameWidth, 7.2f);
@@ -714,7 +715,7 @@ public final class HudManager {
             withAlpha(ACCENT, opacity * content));
 
         String detail = presentation.preview()
-            ? "Live combat preview"
+            ? "Local estimate preview"
             : String.format(Locale.ROOT, "%.1fm away", presentation.distance());
         Fonts.regular().draw(matrices, detail, textX, y + 20.0f, 5.6f, contentMuted);
         if (presentation.absorption() > 0.05f) {

@@ -1,0 +1,121 @@
+package dev.c4lam.celeste.module.impl.combat;
+
+/** No Minecraft mocks: exercises the same decisions, gates and lease used by runtime. */
+public final class AuraRulesCheck {
+    private static int assertions;
+    public static void main(String[] args) {
+        damage(); crystal(); confirmation(); ownership();
+        System.out.println("PASS AuraRules: " + assertions + " assertions");
+    }
+
+    private static void damage() {
+        near(AuraRules.damage(0, 6, 1, 0, 0, 2), 85, "crystal center normal");
+        near(AuraRules.damage(0, 5, 1, 0, 0, 2), 71, "anchor center normal");
+        near(AuraRules.damage(6, 6, 1, 0, 0, 2), 32.5, "fractional damage is not floored");
+        near(AuraRules.damage(6, 6, 1, 0, 0, 1), 17.25, "easy scaling");
+        near(AuraRules.damage(6, 6, 1, 0, 0, 3), 48.75, "hard scaling");
+        near(AuraRules.damage(6, 6, 1, 20, 8, 2), 17.0625, "armor and toughness order");
+        near(AuraRules.damage(12, 6, 1, 0, 0, 2), 1, "inclusive explosion boundary");
+        near(AuraRules.damage(Math.nextUp(12.0), 6, 1, 0, 0, 2), 0, "outside radius");
+        near(AuraRules.damage(1, 6, 0, 0, 0, 2), 1, "zero exposure vanilla base point");
+        near(AuraRules.damage(0, 6, 1, 0, 0, 0), 0, "peaceful");
+        near(AuraRules.protectedDamage(10, 8), 6.8, "visible blast protection");
+        near(AuraRules.protectedDamage(10, 100), 2, "protection cap");
+        near(AuraRules.protectedDamage(10, -1), 10, "negative protection");
+        for (double bad : new double[] {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
+            near(AuraRules.damage(bad, 6, 1, 0, 0, 2), 0, "invalid distance");
+            near(AuraRules.damage(1, bad, 1, 0, 0, 2), 0, "invalid power");
+            near(AuraRules.damage(1, 6, bad, 0, 0, 2), 0, "invalid exposure");
+            check(!AuraRules.safe(8, 4, bad, 4, 6, false), "invalid safety health");
+        }
+        for (int power : new int[] {5, 6}) for (int armor : new int[] {0, 10, 20}) {
+            double previous = Double.POSITIVE_INFINITY;
+            for (int step = 0; step <= 80; step++) {
+                double value = AuraRules.damage(step * power / 40.0, power, 0.73, armor, 8, 2);
+                check(Double.isFinite(value) && value >= 0 && value <= previous + 1e-7, "bounded decreasing distance curve");
+                previous = value;
+            }
+        }
+        check(AuraRules.safe(4, 6, 8.01, 4, 6, false), "inclusive min/max, strict health margin");
+        check(!AuraRules.safe(4, 6, 8, 4, 6, false), "two HP margin cannot be exhausted");
+        check(!AuraRules.safe(3.99, 1, 20, 4, 6, false), "minimum target damage");
+        check(!AuraRules.safe(8, 6.01, 20, 4, 6, false), "maximum self damage");
+        check(!AuraRules.safe(8, 1, 20, 4, 6, true), "friend exclusion");
+        check(!AuraRules.safe(0, 0, 20, 0, 6, false), "no pointless explosion");
+    }
+
+    private static void crystal() {
+        check(!AuraRules.swordReady(5, 1.6), "full empty-hand charge is not full silent sword charge");
+        check(!AuraRules.swordReady(11, 1.6), "sword recovery below92percent");
+        check(AuraRules.swordReady(12, 1.6), "sword recovery at96percent");
+        check(AuraRules.swordReady(46, 0.4) && !AuraRules.swordReady(45, 0.4), "slow modified weapon boundary");
+        check(!AuraRules.swordReady(-1, 1.6) && !AuraRules.swordReady(20, Double.NaN), "invalid recovery inputs");
+        eq(AuraRules.crystalAction(64, 64, false, true), AuraRules.CrystalAction.SWORD, "same feet sword");
+        eq(AuraRules.crystalAction(64, 64, false, false), AuraRules.CrystalAction.NONE, "cooldown blocks sword");
+        eq(AuraRules.crystalAction(64, 64.1, false, true), AuraRules.CrystalAction.SWORD, "tiny motion not lift");
+        eq(AuraRules.crystalAction(64, 64.2, false, false), AuraRules.CrystalAction.PLACE, "observed lift permits placement");
+        eq(AuraRules.crystalAction(64, 64.2, true, false), AuraRules.CrystalAction.BREAK, "observed crystal permits break");
+        eq(AuraRules.crystalAction(64, 63, false, true), AuraRules.CrystalAction.NONE, "lower target is not lifted");
+        eq(AuraRules.crystalAction(64, Double.NaN, false, true), AuraRules.CrystalAction.NONE, "invalid target");
+        // Failed knockback never advances to explosive placement merely because a sword was sent.
+        for (int tick = 0; tick < 24; tick++)
+            check(AuraRules.crystalAction(64, 64, false, tick == 0) != AuraRules.CrystalAction.PLACE, "no assumed lift");
+    }
+
+    private static void confirmation() {
+        var gate = new AuraRules.Confirmation();
+        gate.begin(10, 100);
+        eq(gate.observe(11, 100, true), AuraRules.ConfirmationResult.WAITING, "same tick cannot confirm");
+        eq(gate.observe(10, 101, true), AuraRules.ConfirmationResult.WAITING, "prediction lacks server revision");
+        eq(gate.observe(11, 102, false), AuraRules.ConfirmationResult.WAITING, "rollback mismatch waits");
+        eq(gate.observe(11, 103, true), AuraRules.ConfirmationResult.CONFIRMED, "new server state reconciled");
+        check(!gate.active(), "confirmed gate clears");
+        gate.begin(11, 104);
+        eq(gate.observe(11, 105, true), AuraRules.ConfirmationResult.WAITING, "retry cannot reuse old acknowledgement");
+        eq(gate.observe(12, 127, false), AuraRules.ConfirmationResult.WAITING, "23 tick pending boundary");
+        eq(gate.observe(12, 128, true), AuraRules.ConfirmationResult.TIMED_OUT, "late match must not revive timeout");
+        check(!gate.active(), "timeout clears");
+        gate.begin(12, 130);
+        eq(gate.observe(13, 129, true), AuraRules.ConfirmationResult.TIMED_OUT, "clock rollback invalidates");
+        gate.begin(13, 140); gate.clear();
+        check(!gate.active(), "disable/world loss clears confirmation");
+        gate.begin(14, 150);
+        // A transient inventory screen does not call clear; pending still needs a new matching update.
+        check(gate.active(), "pending survives a transient pause");
+        eq(gate.observe(14, 153, true), AuraRules.ConfirmationResult.WAITING, "pause does not approve prediction");
+        eq(gate.observe(15, 154, true), AuraRules.ConfirmationResult.CONFIRMED, "pause resumes server confirmation");
+    }
+
+    private static void ownership() {
+        var arm = new AuraRules.ActionArm();
+        check(!arm.ready(1, true, false, false), "no first-frame interaction");
+        arm.observeEnd(10, true);
+        check(!arm.ready(10, true, false, false), "look must complete prior tick");
+        check(arm.ready(11, true, false, false), "owned prior look arms action");
+        check(!arm.ready(11, false, false, false), "higher priority owner preempts");
+        check(!arm.ready(11, true, true, false), "manual input preempts");
+        check(!arm.ready(11, true, false, true), "Silent Totem/other slot preempts");
+        check(!arm.ready(12, true, false, false), "stale prior tick cannot arm");
+        arm.observeEnd(12, false);
+        check(!arm.ready(13, true, false, false), "lost end ownership resets");
+        arm.observeEnd(13, true); arm.clear();
+        check(!arm.ready(14, true, false, false), "disable/reset disarms");
+        var lease = new AuraRules.PendingLease();
+        Object crystal = new Object(), anchor = new Object();
+        check(lease.available(crystal) && lease.acquire(crystal), "first aura takes pending lease");
+        check(lease.available(crystal) && !lease.available(anchor) && !lease.acquire(anchor), "other aura cannot overlap unconfirmed damage");
+        lease.release(anchor);
+        check(!lease.available(anchor), "another owner cannot release pending lease");
+        lease.release(crystal);
+        check(lease.acquire(anchor), "confirmation/timeout releases for next aura");
+        lease.release(anchor);
+        check(lease.available(crystal) && !lease.acquire(null), "clear and invalid owner");
+    }
+
+    private static void eq(Object actual, Object expected, String label) { check(actual.equals(expected), label + ": " + actual); }
+    private static void near(double actual, double expected, String label) { check(Math.abs(actual - expected) < 1e-6, label + ": " + actual); }
+    private static void check(boolean condition, String label) {
+        assertions++;
+        if (!condition) throw new AssertionError(label);
+    }
+}

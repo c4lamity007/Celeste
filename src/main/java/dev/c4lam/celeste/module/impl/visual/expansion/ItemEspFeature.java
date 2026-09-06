@@ -15,12 +15,13 @@ import java.util.List;
 import java.util.ArrayList;
 import java.util.Comparator;
 
-/** Interpolated dropped-item halos; never changes an entity's glow/team state. */
+/** Interpolated dropped-item gems and solid halos; never changes an entity's glow/team state. */
 public final class ItemEspFeature implements ModuleFeature {
     private static final int MAX_ITEMS = 96;
     private static final int MAX_GLOW_ITEMS = 24;
-    private static final int MAX_BEAM_ITEMS = 16;
-    private static final int MAX_EFFECT_QUADS = 64;
+    private static final int MAX_GEM_ITEMS = 6;
+    private static final int MAX_HALO_ITEMS = 2;
+    private static final int MAX_EFFECT_QUADS = 128;
     private static final int MAX_ENTITY_VISITS = 1_024;
     private volatile boolean enabled;
     private volatile String style = "Halo";
@@ -64,6 +65,11 @@ public final class ItemEspFeature implements ModuleFeature {
 
     void extract(WorldExtractionContext context, List<VisualExpansionRenderer.WorldBox> output,
                  List<VisualExpansionRenderer.WorldLineStrip> lines, List<WorldGlowRenderer.Quad> glows) {
+        extract(context, output, lines, glows, 768);
+    }
+
+    void extract(WorldExtractionContext context, List<VisualExpansionRenderer.WorldBox> output,
+                 List<VisualExpansionRenderer.WorldLineStrip> lines, List<WorldGlowRenderer.Quad> glows, int quadLimit) {
         ClientPlayerEntity self = MinecraftClient.getInstance().player;
         if (!enabled || self == null || self.getEntityWorld() != context.world()) {
             return;
@@ -89,7 +95,7 @@ public final class ItemEspFeature implements ModuleFeature {
         candidates.sort(Comparator.comparingDouble((ItemEntity item) -> self.squaredDistanceTo(item))
             .thenComparingInt(ItemEntity::getId));
         int glowing = 0;
-        int effectLimit = glows == null ? 0 : Math.min(384, glows.size() + MAX_EFFECT_QUADS);
+        int effectLimit = glows == null ? 0 : Math.min(Math.min(768, Math.max(0, quadLimit)), glows.size() + MAX_EFFECT_QUADS);
         for (ItemEntity item : candidates) {
             if (count >= MAX_ITEMS) break;
             Vec3d interpolated = item.getLerpedPos(tickProgress);
@@ -115,40 +121,36 @@ public final class ItemEspFeature implements ModuleFeature {
                 double radius = Math.max(0.22D, bounds.getLengthX() * 0.8D);
                 radius *= 1.0D + 0.035D * Math.sin(phase);
                 Vec3d center = new Vec3d(interpolated.x, bounds.minY + 0.028D, interpolated.z);
-                boolean textured = nearby && glows != null && glow > 0.01D
-                    && glowing < MAX_GLOW_ITEMS && glows.size() < effectLimit;
-                VisualEffects.line(lines, VisualEffects.arc(center, VisualEffects.X, VisualEffects.Z,
-                    radius, 0.0D, VisualEffects.TAU, nearby ? 32 : 16),
-                    color, alpha * (textured ? 0.22D : 0.38D), 1.0F, 0.0D);
-                if (!textured) {
+                boolean glowAvailable = glows != null && glow > 0.01D;
+                boolean textured = nearby && glowAvailable && glowing < MAX_GLOW_ITEMS;
+                // A full shared mesh budget skips detail, rather than replacing a
+                // solid nearby marker with a suddenly thin ring.
+                if (!textured && (!nearby || !glowAvailable)) {
+                    VisualEffects.line(lines, VisualEffects.arc(center, VisualEffects.X, VisualEffects.Z,
+                        radius, 0.0D, VisualEffects.TAU, nearby ? 32 : 16),
+                        color, alpha * 0.38D, 1.0F, 0.0D);
                     List<Vec3d> sweep = VisualEffects.arc(center, VisualEffects.X, VisualEffects.Z,
                         radius, -phase - Math.PI, Math.PI * 1.3D, nearby ? 20 : 8);
                     VisualEffects.trail(lines, sweep, theme, customColor, time + seed,
                         alpha, 0.08D, 1.0D, 1.15F, 0.0D, nearby ? 6 : 3);
                 }
-                if (textured) {
-                    double size = radius * 1.65D;
-                    glows.add(new WorldGlowRenderer.Quad(WorldGlowRenderer.Texture.PULSE,
-                        center.add(-size, 0.006D, -size), center.add(size, 0.006D, -size),
-                        center.add(size, 0.006D, size), center.add(-size, 0.006D, size),
-                        VisualExpansionRenderer.argb((float) (alpha * glow * 0.76D), color)));
-                    if (glowing < MAX_BEAM_ITEMS && glows.size() + 2 <= effectLimit) {
-                        // Crossed, tapered filaments retain a readable volume from every angle.
-                        // World-relative geometry uses interpolated item motion, never a tick-step bob.
-                        double height = 0.56D + 0.12D * Math.sin(phase * 0.8D);
-                        int accent = VisualEffects.color(theme, customColor, time, seed * 0.2D + 0.35D);
-                        beam(glows, center, phase * 0.20D, radius * 0.32D, height,
-                            color, accent, alpha * glow * 0.64D);
-                        beam(glows, center, phase * 0.20D + Math.PI * 0.5D, radius * 0.24D,
-                            height * 0.92D, accent, color, alpha * glow * 0.46D);
+                if (textured && glows.size() < effectLimit) {
+                    if (glowing < MAX_GEM_ITEMS && glows.size() + 8 <= effectLimit) {
+                        double gemRadius = Math.max(0.18D, radius * 0.90D);
+                        Vec3d gemCenter = center.add(0.0D, 0.48D + 0.06D * Math.sin(phase * 1.2D), 0.0D);
+                        int gemColor = VisualExpansionRenderer.argb((float) (alpha * Math.min(1.0D, glow * 1.8D)), color);
+                        SolidVisuals.faces(glows, SolidVisualMesh.diamond(point(gemCenter), gemRadius,
+                            gemRadius * 1.70D, gemColor, effectLimit - glows.size()), effectLimit);
                     }
-                    if (glowing < 8 && glows.size() < effectLimit) {
-                        double core = radius * 0.65D;
-                        glows.add(new WorldGlowRenderer.Quad(WorldGlowRenderer.Texture.SOFT,
-                            center.add(-core, 0.012D, -core), center.add(core, 0.012D, -core),
-                            center.add(core, 0.012D, core), center.add(-core, 0.012D, core),
-                            VisualExpansionRenderer.argb((float) (alpha * glow * 0.36D),
-                                VisualEffects.mix(color, 0xFFFFFF, 0.55D))));
+                    if (glowing < MAX_HALO_ITEMS && glows.size() + 16 <= effectLimit) {
+                        solidHalo(glows, effectLimit, center, radius, phase, time, seed, alpha);
+                    }
+                    double size = radius * 1.80D;
+                    if (glows.size() < effectLimit) {
+                        glows.add(new WorldGlowRenderer.Quad(WorldGlowRenderer.Texture.PULSE,
+                            center.add(-size, 0.006D, -size), center.add(size, 0.006D, -size),
+                            center.add(size, 0.006D, size), center.add(-size, 0.006D, size),
+                            VisualExpansionRenderer.argb((float) (alpha * glow * 0.46D), color)));
                     }
                     glowing++;
                 }
@@ -157,17 +159,24 @@ public final class ItemEspFeature implements ModuleFeature {
         }
     }
 
-    private static void beam(List<WorldGlowRenderer.Quad> glows, Vec3d base, double angle,
-                             double width, double height, int bottom, int top, double alpha) {
-        Vec3d side = new Vec3d(Math.cos(angle) * width, 0.0D, Math.sin(angle) * width);
-        Vec3d tip = base.add(0.0D, height, 0.0D);
-        // U follows the beam upward, so the texture's long filaments and vertex fade
-        // run vertically; V spans the taper. This is deliberately not a solid column.
-        glows.add(new WorldGlowRenderer.Quad(WorldGlowRenderer.Texture.RIBBON,
-            base.subtract(side), tip.subtract(side.multiply(0.18D)),
-            tip.add(side.multiply(0.18D)), base.add(side),
-            VisualExpansionRenderer.argb((float) alpha, bottom),
-            VisualExpansionRenderer.argb((float) (alpha * 0.025D), top)));
+    private void solidHalo(List<WorldGlowRenderer.Quad> glows, int limit, Vec3d base,
+                           double radius, double phase, double time, double seed, double alpha) {
+        List<SolidVisualMesh.Node> nodes = new ArrayList<>(8);
+        for (int i = 0; i < 8; i++) {
+            double progress = i / 8.0D;
+            double angle = phase * 0.28D + progress * VisualEffects.TAU;
+            Vec3d center = base.add(Math.cos(angle) * radius * 1.72D,
+                0.16D + 0.025D * Math.sin(phase), Math.sin(angle) * radius * 1.72D);
+            nodes.add(new SolidVisualMesh.Node(point(center), 0.085D, 0.095D,
+                VisualExpansionRenderer.argb((float) (alpha * Math.min(1.0D, glow * 1.65D)),
+                    VisualEffects.color(theme, customColor, time, seed * 0.2D + progress * 0.45D))));
+        }
+        SolidVisuals.append(glows, nodes, new SolidVisualMesh.Point(0.0D, 1.0D, 0.0D), 4,
+            Math.min(limit, glows.size() + 32), true);
+    }
+
+    private static SolidVisualMesh.Point point(Vec3d point) {
+        return new SolidVisualMesh.Point(point.x, point.y, point.z);
     }
 
     private void update(ModuleContext context) {

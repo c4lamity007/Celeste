@@ -110,6 +110,11 @@ public final class OreEspExpansionFeature implements ModuleFeature {
 
     void extract(WorldExtractionContext context, List<VisualExpansionRenderer.WorldBox> boxes,
                  List<VisualExpansionRenderer.WorldLineStrip> lines, List<WorldGlowRenderer.Quad> glows) {
+        extract(context, boxes, lines, glows, 768);
+    }
+
+    void extract(WorldExtractionContext context, List<VisualExpansionRenderer.WorldBox> boxes,
+                 List<VisualExpansionRenderer.WorldLineStrip> lines, List<WorldGlowRenderer.Quad> glows, int quadLimit) {
         ClientPlayerEntity player = MinecraftClient.getInstance().player;
         if (!enabled || player == null || player.getEntityWorld() != context.world()) return;
         // Block queries remain tick-bounded; only presentation/fades follow the render frame.
@@ -117,7 +122,8 @@ public final class OreEspExpansionFeature implements ModuleFeature {
         boxes.addAll(frame.boxes());
         lines.addAll(frame.lines());
         if (glows != null && glow > 0.01D) {
-            appendResonance(context, player.getLerpedPos(context.tickCounter().getTickProgress(false)), glows);
+            appendResonance(context, player.getLerpedPos(context.tickCounter().getTickProgress(false)), glows,
+                Math.min(768, Math.max(0, quadLimit)));
         }
     }
 
@@ -281,7 +287,7 @@ public final class OreEspExpansionFeature implements ModuleFeature {
     }
 
     /** Nearby ore cores use a rotating spectral membrane and a flowing texture, not fat lines. */
-    private void appendResonance(WorldExtractionContext context, Vec3d player, List<WorldGlowRenderer.Quad> glows) {
+    private void appendResonance(WorldExtractionContext context, Vec3d player, List<WorldGlowRenderer.Quad> glows, int quadLimit) {
         double time = Util.getMeasuringTimeMs() / 1000.0D;
         Vector3f right = context.camera().getRotation().transform(new Vector3f(1F, 0F, 0F));
         Vector3f up = context.camera().getRotation().transform(new Vector3f(0F, 1F, 0F));
@@ -296,6 +302,8 @@ public final class OreEspExpansionFeature implements ModuleFeature {
                 ore.x() + 0.5D, ore.y() + 0.5D, ore.z() + 0.5D)))
             .limit(MAX_TEXTURED).toList();
         for (OrePosition ore : nearest) {
+            // Both layers describe one marker; reserve the whole pair.
+            if (glows.size() + 2 > quadLimit) break;
             Vec3d center = new Vec3d(ore.x() + 0.5D, ore.y() + 0.5D, ore.z() + 0.5D);
             double distance = player.distanceTo(center);
             double fade = MathHelper.clamp((range - distance) / Math.max(2.0D, range * 0.18D), 0.0D, 1.0D);

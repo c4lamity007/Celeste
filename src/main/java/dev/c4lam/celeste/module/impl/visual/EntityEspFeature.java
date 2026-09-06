@@ -4,6 +4,7 @@ import dev.c4lam.celeste.friend.FriendManager;
 import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.module.ModuleFeature;
 import dev.c4lam.celeste.module.impl.visual.expansion.PlayerEchoRenderer;
+import dev.c4lam.celeste.module.impl.visual.expansion.ChamsFeature;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldExtractionContext;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.AbstractClientPlayerEntity;
@@ -119,7 +120,7 @@ public final class EntityEspFeature implements ModuleFeature {
                 : "Custom".equals(colorMode) ? colorRgb : CELESTE_PINK;
             float fillAlpha = (float) (fillOpacity * edge * animation);
             boolean posed = false;
-            if (glow && captured < MAX_CHAMS && distanceSquared <= 48.0D * 48.0D
+            if (glow && !ChamsFeature.isActive() && captured < MAX_CHAMS && distanceSquared <= 48.0D * 48.0D
                 && (context.frustum() == null || context.frustum().isVisible(bounds.expand(0.15D)))) {
                 float poseProgress = context.tickCounter().getTickProgress(
                     !context.world().getTickManager().shouldSkipTick(player));

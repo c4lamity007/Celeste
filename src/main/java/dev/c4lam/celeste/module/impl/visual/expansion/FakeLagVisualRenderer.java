@@ -33,6 +33,12 @@ public final class FakeLagVisualRenderer {
     static PlayerEchoRenderer.Frame extract(WorldExtractionContext context, List<VisualExpansionRenderer.WorldBox> boxes,
                         List<VisualExpansionRenderer.WorldLineStrip> lines,
                         List<WorldGlowRenderer.Quad> glows) {
+        return extract(context, boxes, lines, glows, 768);
+    }
+
+    static PlayerEchoRenderer.Frame extract(WorldExtractionContext context, List<VisualExpansionRenderer.WorldBox> boxes,
+                        List<VisualExpansionRenderer.WorldLineStrip> lines,
+                        List<WorldGlowRenderer.Quad> glows, int quadLimit) {
         MinecraftClient client = MinecraftClient.getInstance();
         VisualSnapshot snapshot = FakeLagFeature.visualSnapshot();
         long now = System.nanoTime();
@@ -79,7 +85,7 @@ public final class FakeLagVisualRenderer {
         double clock = now / 1_000_000_000D;
         Vector3f right = context.camera().getRotation().transform(new Vector3f(1F, 0F, 0F));
         Vector3f up = context.camera().getRotation().transform(new Vector3f(0F, 1F, 0F));
-        GlowFrame glow = new GlowFrame(glows, glows.size(), context.camera().getCameraPos(),
+        GlowFrame glow = new GlowFrame(glows, glows.size(), Math.min(768, Math.max(0, quadLimit)), context.camera().getCameraPos(),
             new Vec3d(right.x, right.y, right.z), new Vec3d(up.x, up.y, up.z));
         boolean showPlayer = !"box".equalsIgnoreCase(settings.style()) && !"rings".equalsIgnoreCase(settings.style());
         PlayerEchoRenderer.Frame echoes = PlayerEchoRenderer.Frame.EMPTY;
@@ -301,13 +307,16 @@ public final class FakeLagVisualRenderer {
 
     private static void quad(GlowFrame frame, WorldGlowRenderer.Texture texture, Vec3d a, Vec3d b,
                              Vec3d c, Vec3d d, int color, float alpha) {
-        if (alpha <= .001F || frame.quads().size() - frame.startIndex() >= MAX_GLOW_QUADS) return;
+        if (alpha <= .001F || frame.quads().size() >= frame.quadLimit()
+            || frame.quads().size() - frame.startIndex() >= MAX_GLOW_QUADS) return;
         frame.quads().add(new WorldGlowRenderer.Quad(texture, a, b, c, d, argb(alpha * GLOW_GAIN, color)));
     }
 
     private static int connected(GlowFrame frame, List<ConnectedRibbon.Node> nodes, Vec3d axis,
                                   int requestedSegments, boolean closed) {
-        int available = MAX_GLOW_QUADS - (frame.quads().size() - frame.startIndex());
+        int available = Math.min(frame.quadLimit() - frame.quads().size(),
+            MAX_GLOW_QUADS - (frame.quads().size() - frame.startIndex()));
+        if (available <= 0) return 0;
         return ConnectedRibbon.append(frame.quads(), nodes, frame.eye(), axis,
             Math.min(available, requestedSegments), closed);
     }
@@ -334,5 +343,6 @@ public final class FakeLagVisualRenderer {
         shownYaw = 0D;
     }
 
-    private record GlowFrame(List<WorldGlowRenderer.Quad> quads, int startIndex, Vec3d eye, Vec3d right, Vec3d up) { }
+    private record GlowFrame(List<WorldGlowRenderer.Quad> quads, int startIndex, int quadLimit,
+                             Vec3d eye, Vec3d right, Vec3d up) { }
 }

@@ -9,6 +9,7 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.AbstractClientPlayerEntity;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.util.Util;
 import net.minecraft.util.math.Box;
 import net.minecraft.util.math.MathHelper;
@@ -17,10 +18,12 @@ import net.minecraft.util.math.Vec3d;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Frame-animated energy ribbons framing the target without obscuring its silhouette. */
+/** Frame-animated solid orbital models framing the selected target. */
 public final class TargetEspFeature implements ModuleFeature {
-    private static final int MAX_EFFECT_QUADS = 128;
-    private static final Vec3d RIBBON_AXIS = new Vec3d(0.0D, 1.0D, 0.0D);
+    private static final int MAX_EFFECT_QUADS = 256;
+    private static final int TUBE_SIDES = 4;
+    private static final int MIN_MODEL_QUADS = 3 * TUBE_SIDES;
+    private static final SolidVisualMesh.Point TUBE_AXIS = new SolidVisualMesh.Point(0.0D, 1.0D, 0.0D);
     private volatile boolean enabled;
     private volatile String style = "Orbit";
     private volatile String theme = "Celeste";
@@ -71,6 +74,11 @@ public final class TargetEspFeature implements ModuleFeature {
 
     void extract(WorldExtractionContext context, List<VisualExpansionRenderer.WorldBox> boxes,
                  List<VisualExpansionRenderer.WorldLineStrip> lines, List<WorldGlowRenderer.Quad> glows) {
+        extract(context, boxes, lines, glows, 768);
+    }
+
+    void extract(WorldExtractionContext context, List<VisualExpansionRenderer.WorldBox> boxes,
+                 List<VisualExpansionRenderer.WorldLineStrip> lines, List<WorldGlowRenderer.Quad> glows, int quadLimit) {
         ClientPlayerEntity self = MinecraftClient.getInstance().player;
         if (!enabled || self == null || self.getEntityWorld() != context.world()) return;
         long now = Util.getMeasuringTimeMs();
@@ -106,23 +114,37 @@ public final class TargetEspFeature implements ModuleFeature {
         double alpha = opacity * enter * exit * distanceFade * (0.94D + 0.06D * Math.sin(phase * 1.2D));
         Box bounds = target.getBoundingBox().offset(interpolated.subtract(target.getEntityPos()));
         Vec3d center = bounds.getCenter();
-        double ringRadius = MathHelper.clamp(target.getWidth() * 0.76D, 0.40D, 2.4D) * radius;
+        double ringRadius = MathHelper.clamp(target.getWidth() * 1.12D, 0.60D, 2.8D) * radius;
+        double bodyYaw = TargetAuraShape.bodyYawRadians(target.lastBodyYaw, target.bodyYaw, tickProgress);
+        boolean playerFit = target instanceof PlayerEntity && !target.isGliding()
+            && !target.isInSwimmingPose() && !target.isSleeping();
         int color = VisualEffects.color(theme, customColor, time, 0.0D);
-        // Each feature owns a bounded share of the shared material batches.
-        int effectLimit = glows == null ? 0 : Math.min(768, glows.size() + MAX_EFFECT_QUADS);
-        List<WorldGlowRenderer.Quad> effects = glow > 0.01D ? glows : null;
+        if (glows == null) {
+            // Compatibility extraction has no material batch; keep a simple
+            // target box there, never a hairline fallback in the actual path.
+            boxes.add(new VisualExpansionRenderer.WorldBox(bounds.expand(0.065D * radius),
+                VisualExpansionRenderer.argb((float) (alpha * 0.045D), color),
+                VisualExpansionRenderer.argb((float) (alpha * 0.85D), color), 1.4F));
+            return;
+        }
+        int effectLimit = Math.min(Math.min(768, Math.max(0, quadLimit)), glows.size() + MAX_EFFECT_QUADS);
+        // Glow controls the accents; the filled model remains visible at zero.
+        int modelLimit = Math.max(glows.size(), effectLimit - (glow > 0.01D ? 3 : 0));
 
         switch (style) {
-            case "Helix" -> helix(lines, effects, effectLimit, bounds, center, ringRadius, phase, time, alpha);
-            case "Scan" -> scan(lines, effects, effectLimit, bounds, center, ringRadius, phase, time, alpha);
-            case "Box" -> box(boxes, lines, effects, effectLimit, bounds, color, alpha, time);
-            default -> orbit(lines, effects, effectLimit, bounds, center, ringRadius, phase, time, alpha);
+            case "Helix" -> helix(glows, modelLimit, bounds, center, ringRadius, phase, time, alpha, bodyYaw, playerFit);
+            case "Scan" -> scan(glows, modelLimit, bounds, center, ringRadius, phase, time, alpha, bodyYaw, playerFit);
+            case "Box" -> box(glows, modelLimit, bounds, color, alpha, time);
+            default -> orbit(glows, modelLimit, bounds, center, ringRadius, phase, time, alpha, bodyYaw, playerFit);
         }
-        if (effects != null && effects.size() + 2 <= effectLimit) {
+        if (glow > 0.01D && glows.size() + 3 <= effectLimit) {
             Vec3d foot = new Vec3d(center.x, bounds.minY + 0.02D, center.z);
-            groundGlow(effects, WorldGlowRenderer.Texture.SOFT, foot, ringRadius * 1.55D, color, alpha * glow * 0.09D);
-            groundGlow(effects, WorldGlowRenderer.Texture.PULSE, foot.add(0.0D, 0.008D, 0.0D),
-                ringRadius * 1.26D, color, alpha * glow * 0.54D);
+            groundGlow(glows, WorldGlowRenderer.Texture.SOFT, foot, ringRadius * 1.52D, color, alpha * glow * 0.12D);
+            groundGlow(glows, WorldGlowRenderer.Texture.PULSE, foot.add(0.0D, 0.008D, 0.0D),
+                ringRadius * 1.34D, color, alpha * glow * 0.50D);
+            groundGlow(glows, WorldGlowRenderer.Texture.PULSE, foot.add(0.0D, 0.015D, 0.0D),
+                ringRadius * (0.82D + 0.06D * Math.sin(phase * 0.72D)),
+                VisualEffects.color(theme, customColor, time, 0.48D), alpha * glow * 0.24D);
         }
     }
 
@@ -132,117 +154,115 @@ public final class TargetEspFeature implements ModuleFeature {
             center.add(size, 0, size), center.add(-size, 0, size), VisualExpansionRenderer.argb((float) alpha, color)));
     }
 
-    private void orbit(List<VisualExpansionRenderer.WorldLineStrip> lines,
-                       List<WorldGlowRenderer.Quad> effects, int limit, Box bounds, Vec3d center,
-                       double ringRadius, double phase, double time, double alpha) {
+    private void orbit(List<WorldGlowRenderer.Quad> effects, int limit, Box bounds, Vec3d center,
+                       double ringRadius, double phase, double time, double alpha, double bodyYaw, boolean playerFit) {
+        int[] budgets = modelBudgets(effects.size(), limit, 24, 16);
         for (int orbit = 0; orbit < 2; orbit++) {
-            List<Vec3d> points = new ArrayList<>(49);
-            double head = phase + orbit * Math.PI;
-            for (int i = 0; i <= 48; i++) {
-                double angle = head - 1.42D * Math.PI + 1.42D * Math.PI * i / 48.0D;
-                double y = center.y + Math.sin(angle + orbit * Math.PI) * bounds.getLengthY() * 0.32D;
-                points.add(new Vec3d(center.x + Math.cos(angle) * ringRadius, y,
-                    center.z + Math.sin(angle) * ringRadius));
-            }
-            ribbon(effects, limit, points, time + orbit * 1.4D, alpha,
-                0.18D + bounds.getLengthY() * 0.07D, true, false, 48);
-            VisualEffects.trail(lines, points, theme, customColor, time + orbit * 1.4D,
-                alpha * 0.72D, 0.025D, 1.0D, 1.10F, effects == null ? glow : 0.0D, 8);
+            if (budgets[orbit] < MIN_MODEL_QUADS) continue;
+            List<Vec3d> points = shapePoints("Orbit", orbit, bounds, center, ringRadius, phase, bodyYaw, playerFit);
+            // 24*4 + 16*4 = 160 filled facets, with both square-section loops closed.
+            solid(effects, Math.min(limit, effects.size() + budgets[orbit]), points,
+                time + orbit * 1.4D, alpha * (orbit == 0 ? 1.0D : 0.82D),
+                orbit == 0 ? 0.16D : 0.13D, orbit == 0 ? 0.12D : 0.10D, true);
         }
-        VisualEffects.line(lines, VisualEffects.arc(new Vec3d(center.x, bounds.minY + 0.025D, center.z),
-            VisualEffects.X, VisualEffects.Z, ringRadius * 0.86D, 0.0D, VisualEffects.TAU, 48),
-            VisualEffects.color(theme, customColor, time, 0.2D), alpha * 0.16D, 1.0F, 0.0D);
     }
 
-    private void helix(List<VisualExpansionRenderer.WorldLineStrip> lines,
-                       List<WorldGlowRenderer.Quad> effects, int limit, Box bounds, Vec3d center,
-                       double ringRadius, double phase, double time, double alpha) {
+    private void helix(List<WorldGlowRenderer.Quad> effects, int limit, Box bounds, Vec3d center,
+                       double ringRadius, double phase, double time, double alpha, double bodyYaw, boolean playerFit) {
+        int[] budgets = modelBudgets(effects.size(), limit, 20, 20);
         for (int strand = 0; strand < 2; strand++) {
-            List<Vec3d> points = new ArrayList<>(57);
-            for (int i = 0; i <= 56; i++) {
-                double t = i / 56.0D;
-                double angle = phase + strand * Math.PI + t * VisualEffects.TAU * 1.4D;
-                double y = bounds.minY + 0.06D + t * (bounds.getLengthY() - 0.06D);
-                points.add(new Vec3d(center.x + Math.cos(angle) * ringRadius, y,
-                    center.z + Math.sin(angle) * ringRadius));
-            }
-            ribbon(effects, limit, points, time + strand, alpha, 0.28D, false, false, 56);
-            VisualEffects.trail(lines, points, theme, customColor, time + strand,
-                alpha * 0.62D, 0.12D, 0.85D, 1.0F, effects == null ? glow : 0.0D, 8);
+            if (budgets[strand] < MIN_MODEL_QUADS) continue;
+            List<Vec3d> points = shapePoints("Helix", strand, bounds, center, ringRadius, phase, bodyYaw, playerFit);
+            solid(effects, Math.min(limit, effects.size() + budgets[strand]), points,
+                time + strand, alpha, 0.14D, 0.105D, false);
         }
     }
 
-    private void scan(List<VisualExpansionRenderer.WorldLineStrip> lines,
-                      List<WorldGlowRenderer.Quad> effects, int limit, Box bounds, Vec3d center,
-                      double ringRadius, double phase, double time, double alpha) {
-        double height = (0.5D + Math.sin(phase) * 0.5D) * Math.max(0.05D, bounds.getLengthY() - 0.12D);
-        Vec3d ringCenter = new Vec3d(center.x, bounds.minY + 0.06D + height, center.z);
-        List<Vec3d> ring = VisualEffects.arc(ringCenter, VisualEffects.X, VisualEffects.Z,
-            ringRadius, -phase * 0.38D, VisualEffects.TAU, 64);
-        ribbon(effects, limit, ring, time, alpha * 0.88D, 0.38D, false, true, 64);
-        VisualEffects.line(lines, ring, VisualEffects.color(theme, customColor, time, 0.2D),
-            alpha * 0.78D, 1.2F, effects == null ? glow : 0.0D);
-        // A second, counter-moving arc makes the scan read as depth, not a flat hoop.
-        List<Vec3d> undertow = VisualEffects.arc(ringCenter.add(0.0D, -0.11D, 0.0D),
-            VisualEffects.X, VisualEffects.Z, ringRadius * 1.02D,
-            phase * 0.7D, Math.PI * 1.22D, 32);
-        ribbon(effects, limit, undertow, time + 1.2D, alpha * 0.33D, 0.18D, true, false, 32);
+    private void scan(List<WorldGlowRenderer.Quad> effects, int limit, Box bounds, Vec3d center,
+                      double ringRadius, double phase, double time, double alpha, double bodyYaw, boolean playerFit) {
+        int[] budgets = modelBudgets(effects.size(), limit, 24, 16);
+        for (int layer = 0; layer < 2; layer++) {
+            if (budgets[layer] < MIN_MODEL_QUADS) continue;
+            List<Vec3d> points = shapePoints("Scan", layer, bounds, center, ringRadius, phase, bodyYaw, playerFit);
+            solid(effects, Math.min(limit, effects.size() + budgets[layer]), points,
+                time + layer * 1.2D, alpha * (layer == 0 ? 0.96D : 0.58D),
+                layer == 0 ? 0.16D : 0.10D, layer == 0 ? 0.12D : 0.105D, true);
+        }
     }
 
-    /** Vertical ribbon cross-sections stay stable as the camera moves around the target. */
-    private void ribbon(List<WorldGlowRenderer.Quad> effects, int limit, List<Vec3d> points,
-                        double time, double alpha, double width, boolean comet, boolean closed, int segments) {
-        if (effects == null || points.size() < 2 || effects.size() >= limit) return;
-        double[] distances = new double[points.size()];
-        for (int i = 1; i < points.size(); i++) {
-            distances[i] = distances[i - 1] + points.get(i - 1).distanceTo(points.get(i));
+    private static List<Vec3d> shapePoints(String style, int layer, Box bounds, Vec3d center,
+                                          double ringRadius, double phase, double bodyYaw, boolean playerFit) {
+        List<TargetAuraShape.Point> shape = TargetAuraShape.path(style, layer, ringRadius,
+            bounds.getLengthY(), phase, bodyYaw, playerFit);
+        List<Vec3d> points = new ArrayList<>(shape.size());
+        for (TargetAuraShape.Point point : shape) {
+            points.add(new Vec3d(center.x + point.x(), bounds.minY + point.y(), center.z + point.z()));
         }
-        double length = distances[distances.length - 1];
-        if (length < 1.0E-6D) return;
-        List<ConnectedRibbon.Node> nodes = new ArrayList<>(points.size());
+        return points;
+    }
+
+    /** Reserve both complete models before either can spend the shared budget. */
+    private static int[] modelBudgets(int current, int limit, int firstSegments, int secondSegments) {
+        int total = Math.max(0, Math.min((firstSegments + secondSegments) * TUBE_SIDES, limit - current))
+            / TUBE_SIDES * TUBE_SIDES;
+        if (total < MIN_MODEL_QUADS) return new int[]{0, 0};
+        if (total < 2 * MIN_MODEL_QUADS) return new int[]{Math.min(firstSegments * TUBE_SIDES, total), 0};
+        int first = total * firstSegments / (firstSegments + secondSegments) / TUBE_SIDES * TUBE_SIDES;
+        first = Math.max(MIN_MODEL_QUADS,
+            Math.min(total - MIN_MODEL_QUADS, Math.min(firstSegments * TUBE_SIDES, first)));
+        return new int[]{first, Math.min(secondSegments * TUBE_SIDES, total - first)};
+    }
+
+    private int solid(List<WorldGlowRenderer.Quad> effects, int limit, List<Vec3d> points,
+                      double time, double alpha, double halfWidth, double halfDepth, boolean closed) {
+        if (effects == null || points.size() < 2 || effects.size() >= limit || alpha <= 0.002D) return 0;
+        List<SolidVisualMesh.Node> nodes = new ArrayList<>(points.size());
         for (int i = 0; i < points.size(); i++) {
-            double progress = distances[i] / length;
-            double fade = comet ? Math.pow(progress, 1.35D)
-                : closed ? 0.75D - 0.25D * Math.cos(VisualEffects.TAU * progress)
-                : 0.50D + 0.50D * Math.sin(Math.PI * progress);
-            int color = VisualEffects.color(theme, customColor, time, progress * (closed ? 1.0D : 0.7D));
-            nodes.add(new ConnectedRibbon.Node(points.get(i), width * (0.25D + fade * 0.75D),
-                VisualExpansionRenderer.argb((float) (alpha * glow * fade * 0.82D), color)));
+            double progress = (double) i / (closed ? points.size() : points.size() - 1);
+            double taper = closed ? 1.0D : 0.64D + 0.36D * Math.sin(Math.PI * progress);
+            double fade = closed ? 0.86D + 0.14D * Math.pow(Math.sin(VisualEffects.TAU * progress), 2.0D)
+                : 0.46D + 0.54D * Math.sin(Math.PI * progress);
+            Vec3d point = points.get(i);
+            int color = VisualEffects.color(theme, customColor, time, progress);
+            nodes.add(new SolidVisualMesh.Node(new SolidVisualMesh.Point(point.x, point.y, point.z),
+                halfWidth * taper, halfDepth * taper,
+                VisualExpansionRenderer.argb((float) (alpha * fade * (0.72D + glow * 0.28D)), color)));
         }
-        // Reuse the exact first section at a closed seam, including color and width.
-        if (closed) nodes.set(nodes.size() - 1, nodes.getFirst());
-        ConnectedRibbon.append(effects, nodes, Vec3d.ZERO, RIBBON_AXIS,
-            Math.min(segments, limit - effects.size()), closed);
+        return SolidVisuals.append(effects, nodes, TUBE_AXIS, TUBE_SIDES, limit, closed);
     }
 
-    private void box(List<VisualExpansionRenderer.WorldBox> boxes,
-                     List<VisualExpansionRenderer.WorldLineStrip> lines,
-                     List<WorldGlowRenderer.Quad> effects, int limit, Box original, int color, double alpha, double time) {
+    private void box(List<WorldGlowRenderer.Quad> effects, int limit, Box original,
+                     int color, double alpha, double time) {
+        if (effects.size() + 6 > limit) return;
         Box bounds = original.expand(0.065D * radius);
-        boxes.add(new VisualExpansionRenderer.WorldBox(bounds,
-            VisualExpansionRenderer.argb((float) (alpha * 0.045D), color),
-            VisualExpansionRenderer.argb((float) (alpha * 0.20D), color), 1.0F));
-        double horizontal = bounds.getLengthX() * 0.26D;
-        double vertical = Math.min(0.25D, bounds.getLengthY() * 0.17D);
-        for (int x = 0; x < 2; x++) {
-            for (int y = 0; y < 2; y++) {
-                for (int z = 0; z < 2; z++) {
-                    Vec3d corner = new Vec3d(x == 0 ? bounds.minX : bounds.maxX,
-                        y == 0 ? bounds.minY : bounds.maxY, z == 0 ? bounds.minZ : bounds.maxZ);
-                    VisualEffects.line(lines, List.of(corner.add((x == 0 ? 1 : -1) * horizontal, 0, 0),
-                        corner, corner.add(0, (y == 0 ? 1 : -1) * vertical, 0)), color, alpha, 1.4F,
-                        effects == null ? glow : 0.0D);
-                    VisualEffects.line(lines, List.of(corner, corner.add(0, 0, (z == 0 ? 1 : -1) * horizontal)),
-                        color, alpha, 1.4F, effects == null ? glow : 0.0D);
-                }
-            }
-        }
-        // Keep the box's exact silhouette, with one connected light seam travelling around it.
+        Vec3d a = new Vec3d(bounds.minX, bounds.minY, bounds.minZ);
+        Vec3d b = new Vec3d(bounds.maxX, bounds.minY, bounds.minZ);
+        Vec3d c = new Vec3d(bounds.maxX, bounds.maxY, bounds.minZ);
+        Vec3d d = new Vec3d(bounds.minX, bounds.maxY, bounds.minZ);
+        Vec3d e = new Vec3d(bounds.minX, bounds.minY, bounds.maxZ);
+        Vec3d f = new Vec3d(bounds.maxX, bounds.minY, bounds.maxZ);
+        Vec3d g = new Vec3d(bounds.maxX, bounds.maxY, bounds.maxZ);
+        Vec3d h = new Vec3d(bounds.minX, bounds.maxY, bounds.maxZ);
+        int main = VisualExpansionRenderer.argb((float) (alpha * 0.34D), color);
+        int accent = VisualExpansionRenderer.argb((float) (alpha * 0.28D),
+            VisualEffects.color(theme, customColor, time, 0.5D));
+        prismFace(effects, a, b, c, d, main, accent);
+        prismFace(effects, f, e, h, g, main, accent);
+        prismFace(effects, e, a, d, h, main, accent);
+        prismFace(effects, b, f, g, c, main, accent);
+        prismFace(effects, d, c, g, h, accent, main);
+        prismFace(effects, e, f, b, a, accent, main);
+        // Six exact box faces plus a real solid travelling seam; no line corners.
         double y = bounds.minY + bounds.getLengthY() * (0.5D + 0.5D * Math.sin(time * speed * 1.8D));
         List<Vec3d> seam = List.of(new Vec3d(bounds.minX, y, bounds.minZ),
             new Vec3d(bounds.maxX, y, bounds.minZ), new Vec3d(bounds.maxX, y, bounds.maxZ),
-            new Vec3d(bounds.minX, y, bounds.maxZ), new Vec3d(bounds.minX, y, bounds.minZ));
-        ribbon(effects, limit, seam, time, alpha * 0.72D, 0.22D, false, true, 32);
+            new Vec3d(bounds.minX, y, bounds.maxZ));
+        solid(effects, limit, seam, time, alpha * 0.88D, 0.065D, 0.055D, true);
+    }
+
+    private static void prismFace(List<WorldGlowRenderer.Quad> effects, Vec3d a, Vec3d b, Vec3d c, Vec3d d,
+                                  int color, int accent) {
+        effects.add(new WorldGlowRenderer.Quad(WorldGlowRenderer.Texture.PRISM, a, b, c, d, color, accent));
     }
 
     private LivingEntity select(ClientPlayerEntity self) {

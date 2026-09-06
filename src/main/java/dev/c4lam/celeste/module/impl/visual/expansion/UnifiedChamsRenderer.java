@@ -41,7 +41,7 @@ import java.util.OptionalInt;
  * <p>Neither overlapping body/clothing faces nor hidden joint faces can accumulate
  * opacity. Every part of one Echo has exactly the same unlit RGBA. Historical
  * Echoes can still have different colors and fades. The final material adds a
- * silhouette-only rim and continuous holographic color sweep without changing
+ * silhouette-only neon rim and continuous aurora material without changing
  * coverage. The union is independent of terrain depth.</p>
  */
 public final class UnifiedChamsRenderer {
@@ -66,6 +66,7 @@ public final class UnifiedChamsRenderer {
             .withFragmentShader(id("core/unified_chams_composite"))
             .withVertexFormat(VertexFormats.EMPTY, VertexFormat.DrawMode.TRIANGLES)
             .withSampler("InSampler")
+            .withSampler("EnergySampler")
             .withBlend(BlendFunction.TRANSLUCENT)
             .withDepthTestFunction(DepthTestFunction.NO_DEPTH_TEST)
             .withDepthWrite(false).withColorWrite(true).withCull(false).build());
@@ -119,6 +120,9 @@ public final class UnifiedChamsRenderer {
         if (target == null || target.isClosed()) return;
         int width = target.getWidth(0), height = target.getHeight(0);
         if (width < 1 || height < 1) return;
+        GpuTextureView energyTexture = client.getTextureManager()
+            .getTexture(id("textures/visual/plasma_flow.png")).getGlTextureView();
+        if (energyTexture == null || energyTexture.isClosed()) return;
 
         Object currentModels = client.getLoadedEntityModels();
         if (loadedModels != currentModels) {
@@ -207,6 +211,8 @@ public final class UnifiedChamsRenderer {
                     RenderSystem.bindDefaultUniforms(pass);
                     pass.bindTexture("InSampler", silhouette.getColorAttachmentView(),
                         RenderSystem.getSamplerCache().get(FilterMode.NEAREST));
+                    pass.bindTexture("EnergySampler", energyTexture,
+                        RenderSystem.getSamplerCache().get(FilterMode.LINEAR, true));
                     pass.draw(0, 3);
                 }
             }
@@ -250,7 +256,8 @@ public final class UnifiedChamsRenderer {
     }
 
     private static boolean drawable(PlayerEchoRenderer.Echo echo) {
-        return echo.alpha() > .003F && finite(echo.position()) && Float.isFinite(echo.yaw());
+        return echo != null && echo.mesh() != null && Float.isFinite(echo.alpha())
+            && echo.alpha() > .003F && finite(echo.position()) && Float.isFinite(echo.yaw());
     }
 
     private static int principalIndex(PlayerEchoRenderer.Frame frame, int count) {
