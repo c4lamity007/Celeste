@@ -33,13 +33,20 @@ dependencies {
     implementation include("net.java.dev.jna:jna-platform:5.19.0")
 }
 
+// The external JNI bridge is optional for source checks. A Windows media release
+// must supply it through MEDIA_PLAYER_INFO_DLL or local-libs/MediaPlayerInfo.dll.
+def mediaPlayerInfoDll = providers.environmentVariable('MEDIA_PLAYER_INFO_DLL')
+    .map { suppliedPath -> file(suppliedPath) }
+    .orElse(layout.projectDirectory.file('local-libs/MediaPlayerInfo.dll').asFile)
+
 processResources {
     inputs.property 'version', project.version
 
     // Package the supplied JNI bridge with the mod so the runtime extractor
     // never depends on PowerShell or a separately installed helper.
-    from('C:/Users/c4lam/Downloads/New folder (5)/MediaPlayerInfo.dll') {
+    from(mediaPlayerInfoDll) {
         into 'mediaplayerinfo/natives/win'
+        rename { 'MediaPlayerInfo.dll' }
     }
 
     filesMatching('fabric.mod.json') {

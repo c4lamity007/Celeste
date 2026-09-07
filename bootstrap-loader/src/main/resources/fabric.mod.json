@@ -1,23 +1,30 @@
 {
   "schemaVersion": 1,
-  "id": "mixinextras",
-  "version": "0.5.4",
-  "name": "MixinExtras",
-  "description": "Authenticated staged bootstrap for Celeste.",
-  "authors": ["c4lam"],
+  "id": "celeste_bootstrap",
+  "version": "${version}",
+  "name": "Celeste",
+  "description": "Authenticated Celeste bootstrap for Minecraft 1.21.11 with Fabric.",
+  "authors": [
+    "c4lam"
+  ],
   "license": "All-Rights-Reserved",
   "environment": "client",
-  "mixins": [
-    "mixinextras.init.mixins.json"
-  ],
   "entrypoints": {
-    "preLaunch": ["dev.c4lam.celeste.auth.GatewayPreLaunch"],
-    "client": ["dev.c4lam.celeste.auth.GatewayClient"]
+    "preLaunch": [
+      "dev.c4lam.celeste.auth.GatewayPreLaunch"
+    ],
+    "client": [
+      "dev.c4lam.celeste.auth.GatewayClient"
+    ]
   },
   "depends": {
     "fabricloader": ">=0.19.3",
     "minecraft": "~1.21.11",
     "java": ">=21",
-    "fabric-api": "*"
+    "fabric-api": "*",
+    "mixinextras": ">=0.5.4"
+  },
+  "breaks": {
+    "quilt_loader": "*"
   }
 }

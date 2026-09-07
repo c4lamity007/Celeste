@@ -94,7 +94,9 @@ def create_license(config: Settings, key: str) -> int:
             "INSERT INTO licenses(key_hash,label,status,max_devices,created_at) VALUES(?,?,'active',1,1)",
             (hash_license(config.key_pepper, key), "test"),
         )
-        return int(cursor.lastrowid)
+        uid = int(cursor.lastrowid)
+        connection.execute("INSERT INTO license_entitlements(license_uid,product,created_at) VALUES(?,'celeste',1)", (uid,))
+        return uid
 
 
 def enroll(
@@ -103,6 +105,7 @@ def enroll(
     client_sha256: str | None = None,
     release_id: str | None = None,
     client_version: str | None = None,
+    product: str = "celeste",
 ):
     install_signing = ed25519.Ed25519PrivateKey.generate()
     install_encryption = x25519.X25519PrivateKey.generate()
@@ -114,6 +117,7 @@ def enroll(
             **({"release_id": release_id} if release_id is not None else {}),
             **({"client_version": client_version} if client_version is not None else {}),
             "license_key": license_key,
+            "product": product,
             "install_signing_key": raw_public(install_signing),
             "install_encryption_key": raw_public(install_encryption),
             "hardware": hardware(),
@@ -481,7 +485,7 @@ def test_admin_duration_creation_and_license_detail(tmp_path):
         csrf = re.search(r'name="csrf" value="([^"]+)"', login.text).group(1)
         created = client.post(
             "/admin/licenses",
-            data={"csrf": csrf, "label": "One day", "duration": "day", "max_devices": "1"},
+            data={"csrf": csrf, "product": "celeste", "label": "One day", "duration": "day", "max_devices": "1"},
         )
         assert created.status_code == 200
         assert "License created" in created.text

@@ -1,76 +1,133 @@
-# Celeste Client
+# Celeste
 
-Current Celeste client source, its Fabric bootstrap and three later loader stages, the Python authentication service, Windows native launcher, assets, and release tooling.
+Celeste is the normal Minecraft mod installation product. Select a Fabric
+Minecraft 1.21.11 instance in `Celeste.exe`, enter a **Celeste** or **Both**
+license when needed, and install the signed bootstrap at `mods/Celeste.jar`.
+Start Minecraft with its usual launcher afterward. Every game startup performs
+fresh signed authentication using the saved device activation, so installation
+can happen well before the first launch.
 
-This is a source snapshot, not a distributable release. Private credentials, local game data, build caches, generated JARs/DLLs/EXEs, payload chunks, and release mappings are intentionally excluded. The checked-in Gradle wrapper JAR is the standard build-tool bootstrap dependency, not a Celeste payload.
+[Celeste+](https://github.com/c4lamity007/Celeste-Plus) is the separate live-loading
+project. Both products use this repository's authentication service. License
+creation requires **Celeste**, **Celeste+**, or **Both**; labels and numeric UIDs
+grant no special access. See the [installer guide](native-verifier/README.md),
+[bootstrap guide](bootstrap-loader/README.md), and
+[product licensing contract](auth-service/PRODUCT_LICENSING.md).
 
-## Components
+This repository contains source and build tooling. Generated release binaries,
+private credentials, local activations, game data, caches, and obfuscation mappings
+are excluded. Publishing or building this source does not deploy the service or
+reset licenses; those are separate operator actions.
 
-- `src/main/`: client Java code, authored native cleanup bridge, shaders, fonts, textures, and asset provenance.
-- `bootstrap-loader/`, `stage-two-loader/`, `stage-three-loader/`, `stage-four-loader/`: loader Gradle projects.
-- `auth-service/`: FastAPI service, admin UI, tests, and deployment configuration.
-- `native-verifier/`: Windows Rust launcher and the Java launcher-hook source.
-- `tools/` and `obfuscation/release-profiles/`: authored release packaging scripts and obfuscation profiles.
+## Repository layout
 
-## Java / Gradle
+- `src/main/`: normal client source, assets, and authored native cleanup wrapper.
+- `bootstrap-loader/`: the Fabric mod installed as `Celeste.jar`.
+- `stage-two-loader/`, `stage-three-loader/`, `stage-four-loader/`: authenticated
+  delivery stages used by the bootstrap.
+- `native-verifier/`: Windows instance picker, activation, and mod installer.
+- `auth-service/`: shared product licensing service, dashboard, tests, and operator tools.
+- `tools/` and `obfuscation/release-profiles/`: source release packaging tools.
+- `beta-lab/beta-client-protocol/`: shared normal/Plus authentication protocol
+  fixtures; the live-loading implementation is maintained in the Celeste+ project.
 
-Use JDK 21 with Java and the JDK tools available on PATH. The root build targets Minecraft 1.21.11; dependency versions are in `gradle.properties`.
+The bootstrap has Fabric ID `celeste_bootstrap`; the downloaded runtime retains
+ID `celeste`. Fabric Loader supplies MixinExtras as a separate dependency. Normal
+installation uses Fabric's ordinary mod discovery and preserves launcher profiles.
+The remote delivery stages are separate from the old launcher discovery helper.
 
-From the repository root on Windows:
+## Java builds and checks
+
+Use JDK 21 and put its tools on `PATH`. Dependency versions, including Minecraft
+1.21.11, are recorded in `gradle.properties`. From the repository root:
 
 ```powershell
 .\gradlew.bat build
+.\gradlew.bat :bootstrap-loader:checkBootstrapMod
+.\gradlew.bat -I beta-lab/beta-client-protocol/check.init.gradle betaClientProtocolCheck
 ```
 
-The root settings include all four loader projects. Generated outputs are written beneath each project's `build/` directory.
+Add `--offline` when dependencies are already cached. The bootstrap check uses
+Fabric's real mod discovery and metadata parser in a temporary directory. The
+protocol check uses real cryptographic proofs with a local fake transport. Neither
+check opens Minecraft or contacts the authentication service. A complete signed
+delivery game test is a separate validation step.
 
-The current build retains a machine-specific prerequisite: `build.gradle` references an externally supplied `MediaPlayerInfo.dll` using an absolute workstation path. That DLL and its implementation source are not present in this repository. Obtain the correct compatible bridge separately and adjust that input path in your own checkout before expecting Windows media playback to work. This snapshot does not alter the working project's packaging behavior.
+For Windows media-capable release packaging, supply the compatible external
+`MediaPlayerInfo.dll` either through the `MEDIA_PLAYER_INFO_DLL` environment
+variable or at the default ignored path `local-libs/MediaPlayerInfo.dll`.
+`build.gradle` packages the supplied file under its expected runtime name.
+Source compilation and checks can run without this DLL. Its implementation and
+binary are not included in this repository.
 
-The authored cleanup wrapper is `src/main/native/CelesteMediaCleanup.cpp`. Compile it as an x64 Windows JNI DLL using a compatible C++ compiler, Windows SDK, and JDK JNI headers (both `include` and `include/win32`). Place the generated output at `src/main/resources/mediaplayerinfo/natives/win/CelesteMediaCleanup.dll` before packaging if Windows media cleanup support is required. There is currently no automated native-bridge build task. Generated DLLs remain untracked.
+The authored cleanup wrapper is `src/main/native/CelesteMediaCleanup.cpp`.
+Compile it as an x64 Windows JNI DLL with a C++ compiler, Windows SDK, and the
+JDK's `include` and `include/win32` headers. Media-capable packaging also needs
+that generated wrapper at
+`src/main/resources/mediaplayerinfo/natives/win/CelesteMediaCleanup.dll`.
+There is currently no automated build task for this native wrapper. Keep supplied
+and compiled DLLs out of Git.
 
-## Native launcher
+## Windows installer build
 
-Use Windows and a Rust toolchain supporting edition 2024. Dependencies are locked in `native-verifier/Cargo.lock`.
+Use a Rust toolchain supporting edition 2024. Keep the repository layout intact:
+the installer embeds the tracked client logo. Cargo dependencies are locked in
+`native-verifier/Cargo.lock`.
 
-Before `cargo build --release`, generate the hook JAR required by `native-verifier/src/launchers.rs`. Its source is `native-verifier/assets/hook-src/dev/celeste/hook/Main.java`. From `native-verifier/`, a JDK 21 build can be prepared with:
+The source still includes legacy compatibility code whose compile-time asset is
+generated from the tracked Java helper. Generate this ignored asset before Cargo;
+the current normal installation path does not deploy it or use its launcher patch
+routines. No `HOOK_SHA1` source edit is required for the normal installer.
+
+From `native-verifier/`:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path assets/hook-build
 javac --release 21 -d assets/hook-build assets/hook-src/dev/celeste/hook/Main.java
 jar --create --file assets/celeste-hook.jar -C assets/hook-build .
-Get-FileHash -Algorithm SHA1 assets/celeste-hook.jar
+cargo test --locked
+cargo build --release --locked
 ```
 
-Update `HOOK_SHA1` in `src/launchers.rs` in your checkout to the lowercase SHA-1 of that exact generated JAR before building. JAR metadata can change its digest between builds; do not assume it matches the existing digest. The JAR is embedded at compile time through `include_bytes!` and must exist even for a compilation check.
+Distribute `target/release/CelesteLauncher.exe` as `Celeste.exe`. The native checks
+use temporary instance fixtures. One additional ignored test requires prepared
+release artifacts and is documented in the [installer guide](native-verifier/README.md).
 
-Then run:
+`launcher-channel.json` and `src/release.rs` contain public protocol identifiers,
+an endpoint, digests, and the public Ed25519 verification key. They contain no
+signing private key. Keep them aligned during deliberate protocol changes;
+ordinary payload updates preserve the stable installer channel.
 
-```powershell
-cargo build --release
-```
+## Shared authentication service
 
-The launcher icon is embedded from the existing client logo at `src/main/resources/assets/celeste/textures/gui/celeste-logo.png`; keep the repository layout intact.
-
-`launcher-channel.json` and `src/release.rs` are intentionally checked-in public configuration. They contain protocol/channel identity, an endpoint, digests, and a public Ed25519 verification key, not a signing private key. Keep them aligned during an intentional launcher-channel or signing-key migration. Ordinary payload updates should preserve the stable channel.
-
-## Authentication service
-
-Use Python 3.12, matching the Dockerfile. In `auth-service/`, create an isolated environment, install `requirements.txt`, and run:
+Use Python 3.12, matching the service Dockerfile. In `auth-service/`, create an
+isolated environment, install dependencies, and run the tests:
 
 ```powershell
 python -m pip install -r requirements.txt
 python -m pytest
 ```
 
-Tests use temporary data and deterministic fixture keys. Production private keys, session secret, key pepper, and admin password hash are required from environment variables in `app/config.py`; do not put real values into source files or Git.
+Tests use temporary data and fixture keys. Production signing secrets, key pepper,
+session secrets, and administrator credentials come from the environment specified
+in `app/config.py`. Deployment requires separately prepared release artifacts.
+Only the empty-directory marker for `auth-service/releases/` is committed.
 
-The Dockerfile copies `releases/`. Only its empty-directory marker is committed. Populate it using the release packaging workflow and supply required runtime settings before deploying. A fresh source checkout alone is not a running production auth service.
+Read [PRODUCT_LICENSING.md](auth-service/PRODUCT_LICENSING.md) before using the
+explicit key-creation or license-reset tools. Service startup does not create
+sample licenses or reset existing ones.
 
 ## Release packaging
 
-See `auth-service/README.md` and each script's `--help`. Build the payload and all loader stages, apply the authored obfuscation profiles with the separately available compatible obfuscator, then package authentication metadata after obfuscation. Some loader profiles retain absolute Gradle-cache dependency paths from the original workstation; resolve those paths for your machine.
+Build the client and loader projects, apply the authored obfuscation profiles with
+the separately supplied compatible obfuscator, and then configure authentication
+metadata. Check each profile's dependency paths for the build machine.
 
-`tools/package_final_release.py` creates configured release artifacts and metadata. `tools/package_loader_chain.py` refreshes the loader chain against an existing packaged payload. Their `--server-key` input is the public verification key, not the private signing key. Generated `release.env`, manifest JSON, JARs, binary chunks, logs, and symbol mappings are not part of this source snapshot.
+`tools/package_final_release.py` prepares the protected payload and release
+metadata. `tools/package_loader_chain.py` refreshes the bootstrap and loader chain
+against an existing packaged payload. Their `--server-key` argument is the public
+verification key. See each tool's `--help` and the [service guide](auth-service/README.md).
+Generated JARs, EXEs, payload chunks, `release.env`, manifests, and mappings remain
+outside the source publication.
 
-Asset attribution and provenance are under `src/main/resources/META-INF/licenses/celeste/`.
-
+Asset attribution is under `src/main/resources/META-INF/licenses/celeste/`.

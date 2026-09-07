@@ -51,15 +51,31 @@ final class AuthServiceClient {
     private final HttpClient http;
     private final PublicKey serverKey;
     private final GameIdentity identity;
+    private final String expectedBetaCatalog;
 
     AuthServiceClient(AuthConfig config, GameIdentity identity) throws GeneralSecurityException {
-        this.config = config;
-        this.identity = identity;
-        this.serverKey = Crypto.ed25519Public(config.serverKey());
-        this.http = HttpClient.newBuilder()
+        this(config, identity, null);
+    }
+
+    AuthServiceClient(AuthConfig config, GameIdentity identity, String expectedBetaCatalog)
+        throws GeneralSecurityException {
+        this(config, identity, expectedBetaCatalog, HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(8))
             .followRedirects(HttpClient.Redirect.NEVER)
-            .build();
+            .build());
+    }
+
+    /** Package-local transport seam for protocol fixtures; runtime always uses the HTTPS client above. */
+    AuthServiceClient(AuthConfig config, GameIdentity identity, String expectedBetaCatalog, HttpClient http)
+        throws GeneralSecurityException {
+        if (expectedBetaCatalog != null && !expectedBetaCatalog.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("Expected beta catalog hash is invalid");
+        }
+        this.config = config;
+        this.identity = identity;
+        this.expectedBetaCatalog = expectedBetaCatalog;
+        this.serverKey = Crypto.ed25519Public(config.serverKey());
+        this.http = java.util.Objects.requireNonNull(http, "http");
     }
 
     Enrollment enroll(String licenseKey, HardwareFingerprint hardware) throws Exception {
@@ -73,6 +89,7 @@ final class AuthServiceClient {
         startBody.add("hardware", hardwareJson(hardware));
         JsonObject start = post("/v1/enroll/start", startBody);
         byte[] message = requiredB64(start, "message");
+        requireProduct(GSON.fromJson(new String(message, StandardCharsets.UTF_8), JsonObject.class));
 
         JsonObject completeBody = new JsonObject();
         completeBody.addProperty("challenge_id", requiredString(start, "challenge_id"));
@@ -116,9 +133,13 @@ final class AuthServiceClient {
         credential.validate();
         JsonObject startBody = releaseBody();
         startBody.addProperty("device_id", credential.deviceId());
+        if (expectedBetaCatalog != null) {
+            startBody.addProperty("beta_catalog_sha256", expectedBetaCatalog);
+        }
         startBody.add("hardware", hardwareJson(hardware));
         JsonObject start = post("/v1/auth/start", startBody);
         byte[] message = requiredB64(start, "message");
+        requireProduct(GSON.fromJson(new String(message, StandardCharsets.UTF_8), JsonObject.class));
 
         JsonObject completeBody = new JsonObject();
         completeBody.addProperty("challenge_id", requiredString(start, "challenge_id"));
@@ -128,12 +149,33 @@ final class AuthServiceClient {
         String grant = requiredString(complete, "grant");
         long uid = requiredLong(complete, "uid");
         JsonObject claims = verifyToken(grant, "celeste-client");
+        requireProduct(claims);
+        if (expectedBetaCatalog != null) {
+            requireBetaContext(claims);
+        }
         if (uid != credential.uid()
             || uid != Long.parseLong(requiredString(claims, "sub"))
             || !credential.deviceId().equals(requiredString(claims, "device"))
             || !config.releaseId().equals(requiredString(claims, "release"))
             || !config.releaseDigest().equals(requiredString(claims, "client_sha256"))) {
             throw new GeneralSecurityException("Session grant does not match this installation");
+        }
+        if (expectedBetaCatalog != null) {
+            JsonObject runtime = requiredObject(complete, "runtime");
+            if (!config.releaseId().equals(requiredString(runtime, "release"))
+                || !config.releaseDigest().equals(requiredHex(runtime, "sha256"))
+                || !config.clientVersion().equals(requiredString(runtime, "client_version"))
+                || !expectedBetaCatalog.equals(requiredHex(runtime, "catalog_sha256"))
+                || complete.has("artifact") || complete.has("loader")
+                || claims.has("chunks") || claims.has("stage2") || claims.has("stage2_sha256")) {
+                throw new GeneralSecurityException("Beta runtime grant does not match the verified catalog");
+            }
+            // The beta host already supplied both verified parts. This grant
+            // must never be usable as a normal bootstrap/download authorization.
+            return new Authenticated(uid, grant, null, null);
+        }
+        if (complete.has("runtime") || claims.has("beta_catalog_sha256")) {
+            throw new GeneralSecurityException("Beta authorization requires its verified catalog context");
         }
         JsonObject artifact = requiredObject(complete, "artifact");
         JsonArray rawChunks = artifact.getAsJsonArray("chunks");
@@ -162,6 +204,7 @@ final class AuthServiceClient {
 
     void consumeInstallerTicket(String ticket, InstallCredential credential) throws Exception {
         JsonObject claims = verifyToken(ticket, "celeste-installer");
+        requireProduct(claims);
         if (!credential.deviceId().equals(requiredString(claims, "device"))
             || credential.uid() != Long.parseLong(requiredString(claims, "sub"))
             || requiredHex(claims, "client_sha256").isBlank()
@@ -230,6 +273,9 @@ final class AuthServiceClient {
         body.addProperty("nonce", nonce);
         body.addProperty("observed_sha256", observedDigest);
         body.addProperty("event", event);
+        if (expectedBetaCatalog != null) {
+            body.addProperty("beta_catalog_sha256", expectedBetaCatalog);
+        }
         body.addProperty("install_signature", Crypto.b64(Crypto.sign(credential.signingKey(), message)));
         body.addProperty("token_signature", Crypto.b64(Crypto.sign(credential.tokenKey(), message)));
         JsonObject response = post("/v1/session/check", body);
@@ -238,6 +284,7 @@ final class AuthServiceClient {
         }
         String sessionToken = requiredString(response, "session_token");
         JsonObject claims = verifyToken(sessionToken, "celeste-session");
+        requireProduct(claims);
         if (!"active".equals(requiredString(response, "status"))
             || !"active".equals(requiredString(claims, "status"))
             || !nonce.equals(requiredString(claims, "nonce"))
@@ -246,7 +293,26 @@ final class AuthServiceClient {
             || !config.releaseDigest().equals(requiredString(claims, "client_sha256"))) {
             throw new GeneralSecurityException("Session verification response did not match this installation");
         }
+        if (expectedBetaCatalog != null) {
+            requireBetaContext(claims);
+        } else if (claims.has("beta_catalog_sha256")) {
+            throw new GeneralSecurityException("Unexpected beta session context");
+        }
         return sessionToken;
+    }
+
+    private void requireBetaContext(JsonObject claims) throws GeneralSecurityException {
+        try {
+            if (!expectedBetaCatalog.equals(requiredHex(claims, "beta_catalog_sha256"))
+                || !config.releaseId().equals(requiredString(claims, "release"))
+                || !config.clientVersion().equals(requiredString(claims, "client_version"))) {
+                throw new GeneralSecurityException("Beta session belongs to another verified catalog");
+            }
+        } catch (IllegalStateException | IllegalArgumentException exception) {
+            // A malformed signed context is an authentication failure, not a
+            // transient transport outage eligible for the heartbeat grace period.
+            throw new GeneralSecurityException("Malformed beta session context", exception);
+        }
     }
 
     CloudResponse cloudRequest(String method, String path, String contentType, byte[] body, String grant)
@@ -290,11 +356,27 @@ final class AuthServiceClient {
             + deviceId + "\n" + timestamp + "\n" + nonce + "\n"
             + expectedDigest + "\n" + observedDigest + "\n" + event + "\n"
             + identity.uuid() + "\n" + identity.username();
+        if (expectedBetaCatalog != null) {
+            message += "\n" + config.releaseId() + "\n" + config.clientVersion() + "\n" + expectedBetaCatalog;
+        }
         return message.getBytes(StandardCharsets.UTF_8);
+    }
+
+    private String product() { return expectedBetaCatalog == null ? "celeste" : "celeste_plus"; }
+
+    private void requireProduct(JsonObject claims) throws GeneralSecurityException {
+        try {
+            if (claims == null || !product().equals(requiredString(claims, "product"))) {
+                throw new GeneralSecurityException("Authorization belongs to another product");
+            }
+        } catch (IllegalStateException | IllegalArgumentException exception) {
+            throw new GeneralSecurityException("Malformed authorization product", exception);
+        }
     }
 
     private JsonObject releaseBody() {
         JsonObject body = new JsonObject();
+        body.addProperty("product", product());
         body.addProperty("release_id", config.releaseId());
         body.addProperty("client_version", config.clientVersion());
         body.addProperty("client_sha256", config.releaseDigest());
@@ -379,7 +461,9 @@ final class AuthServiceClient {
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             String message = switch (response.statusCode()) {
                 case 401, 403 -> "License or device verification failed";
-                case 409 -> "This license needs its device binding reset";
+                case 409 -> expectedBetaCatalog == null
+                    ? "This license needs its device binding reset"
+                    : "Refresh the beta release before trying again";
                 case 429 -> "Too many attempts; wait before retrying";
                 default -> "Authentication service returned " + response.statusCode();
             };

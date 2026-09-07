@@ -10,6 +10,7 @@ from typing import Any
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerifyMismatchError
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -67,7 +68,7 @@ def verify_ed25519(public_key: bytes, message: bytes, signature: str) -> bool:
     try:
         ed25519.Ed25519PublicKey.from_public_bytes(public_key).verify(b64d(signature, 64), message)
         return True
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, InvalidSignature):
         return False
 
 
@@ -125,7 +126,7 @@ class GrantSigner:
             if int(claims.get("nbf", 0)) > now + 5 or int(claims.get("exp", 0)) <= now:
                 return None
             return claims
-        except (ValueError, TypeError, json.JSONDecodeError):
+        except (ValueError, TypeError, InvalidSignature, json.JSONDecodeError):
             return None
 
 

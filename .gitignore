@@ -54,6 +54,7 @@ id_ed25519
 credentials*.json
 *credential*.dat
 *credential*.bin
+*.dpapi
 launch-ticket*
 session-token*
 
@@ -90,6 +91,7 @@ mappings.txt
 *-mapping.txt
 *-mappings.txt
 *.map
+*.mapping.json
 /obfuscation/mappings/
 
 # Editor/patch backups
@@ -98,3 +100,6 @@ mappings.txt
 *.new
 *.backup
 *~
+
+# Locally supplied native dependencies; never commit provider binaries.
+/local-libs/

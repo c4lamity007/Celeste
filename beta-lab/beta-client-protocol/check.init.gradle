@@ -1,0 +1,24 @@
+allprojects { project ->
+    project.afterEvaluate {
+        if (project == project.rootProject) {
+            def output = project.layout.buildDirectory.dir('module-qa/beta-client-protocol/classes')
+            def compileCheck = project.tasks.register('compileBetaClientProtocolCheck', JavaCompile) {
+                dependsOn project.tasks.named('compileJava')
+                source project.fileTree('beta-lab/beta-client-protocol/src') { include '**/*.java' }
+                classpath = project.sourceSets.main.compileClasspath + project.sourceSets.main.output.classesDirs
+                destinationDirectory = output
+                options.release = 21
+                options.encoding = 'UTF-8'
+                options.compilerArgs += ['-Xlint:all', '-Werror']
+            }
+            project.tasks.register('betaClientProtocolCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(output) + project.sourceSets.main.output.classesDirs + project.sourceSets.main.runtimeClasspath
+                mainClass = 'dev.c4lam.celeste.auth.BetaClientProtocolCheck'
+                enableAssertions = true
+                workingDir = project.layout.buildDirectory.dir('module-qa/beta-client-protocol').get().asFile
+                doFirst { workingDir.mkdirs() }
+            }
+        }
+    }
+}

@@ -1,5 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod atomic_store;
+pub(crate) use atomic_store::atomic_write;
+mod bindings;
 mod launchers;
 mod release;
 mod ui;
@@ -35,7 +38,6 @@ use wmi::{COMLibrary, WMIConnection};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
 const STORE_MAGIC: &[u8; 4] = b"CST1";
-const TICKET_MAGIC: &[u8; 4] = b"CLT1";
 const INSTALLER_UUID: &str = "00000000-0000-0000-0000-000000000000";
 const INSTALLER_NAME: &str = "CelesteInstaller";
 const TOKEN_INFO: &[u8] = b"celeste-install-token-v1";
@@ -132,52 +134,53 @@ pub(crate) fn verify_and_install(
     let send = |message: &str| {
         let _ = tx.send(UiEvent::Status(message.to_owned()));
     };
+    launchers::validate_install_target(&launcher, &instance)?;
     send("Authenticating");
-    let stored = credential_path(&instance.game_dir);
     let runtime_stored = runtime_credential_path(&instance.game_dir);
     let license = license.trim();
 
-    let existing_credential = if stored.is_file() {
-        Some(stored.as_path())
-    } else if runtime_stored.is_file() {
-        Some(runtime_stored.as_path())
-    } else {
-        None
-    };
-
-    let (credential, session) = if let Some(existing) = existing_credential {
-        let hardware = collect_hardware()?;
-        let credential = load_credential(existing)
-            .context("The saved installation binding could not be opened")?;
-        match authenticate_installer(&credential, &hardware) {
-            Ok(session) => (credential, session),
-            Err(error) if is_unauthorized(&error) => {
-                if !license_looks_valid(license) {
-                    bail!(
-                        "This installation is no longer authorized. Enter a valid Celeste license to rebind."
-                    );
-                }
-                let replacement = enroll(license, &hardware)?;
-                save_credential(&stored, &replacement)?;
-                let session = authenticate_installer(&replacement, &hardware)?;
-                (replacement, session)
-            }
-            Err(error) => return Err(error),
+    let hardware = collect_hardware()?;
+    let saved = bindings::reuse_for_key(
+        credential_candidates(&instance.game_dir),
+        license_looks_valid(license),
+        load_credential,
+        |credential| {
+            authenticate_installer(
+                credential,
+                &hardware,
+                (!license.is_empty()).then_some(license),
+            )
+        },
+    );
+    let (credential, session) = match saved {
+        Ok(Some(binding)) => binding,
+        Ok(None) if license_looks_valid(license) => {
+            let created = enroll(license, &hardware)?;
+            persist_binding(&instance.game_dir, &created)?;
+            let session = authenticate_installer(&created, &hardware, Some(license))?;
+            (created, session)
         }
-    } else if license_looks_valid(license) {
-        let hardware = collect_hardware()?;
-        let created = enroll(license, &hardware)?;
-        save_credential(&stored, &created)?;
-        let session = authenticate_installer(&created, &hardware)?;
-        (created, session)
-    } else {
-        bail!("Enter a valid Celeste license to bind this installation")
+        Err(original)
+            if (is_unauthorized(&original) || is_product_denied(&original))
+                && license_looks_valid(license) =>
+        {
+            let replacement = enroll(license, &hardware).with_context(|| {
+                format!("The saved activation was rejected and rebinding did not succeed. Original authentication error: {original:#}")
+            })?;
+            persist_binding(&instance.game_dir, &replacement)?;
+            let session = authenticate_installer(&replacement, &hardware, Some(license))?;
+            (replacement, session)
+        }
+        Err(error) => return Err(error),
+        Ok(None) => bail!(
+            "No saved activation was found. Enter your Celeste license once to activate this PC"
+        ),
     };
 
     // Older Celeste builds only wrote the runtime credential. Once that
     // server-signed credential authenticates successfully, promote it into
     // the native verifier store so the user is never forced to re-enroll.
-    save_credential(&stored, &credential)?;
+    persist_binding(&instance.game_dir, &credential)?;
 
     send("Downloading");
     let loader = get_bytes(
@@ -191,18 +194,8 @@ pub(crate) fn verify_and_install(
     // Give them the same DPAPI-bound credential only after the native verifier
     // has completed its independent authentication and verified the bootstrap.
     save_credential(&runtime_stored, &credential)?;
-    let _jar = launchers::install_and_patch(&launcher, &instance, &loader)?;
-    save_launch_ticket(
-        &instance
-            .game_dir
-            .join("config")
-            .join("celeste")
-            .join("auth")
-            .join("launch.bin"),
-        required_text(&session, "/grant")?,
-    )?;
-    send("Launching");
-    launchers::launch(&launcher, &instance)?;
+    let _jar = launchers::install_mod(&launcher, &instance, &loader)?;
+    send("Installed. Open this instance in your launcher.");
     Ok(())
 }
 
@@ -212,15 +205,94 @@ fn license_looks_valid(license: &str) -> bool {
 }
 
 pub(crate) fn saved_binding_exists(game_dir: &Path) -> bool {
-    credential_path(game_dir).is_file() || runtime_credential_path(game_dir).is_file()
+    !credential_candidates(game_dir).is_empty()
 }
 
 pub(crate) fn any_saved_binding() -> bool {
-    launchers::detect_installed().iter().any(|launcher| {
-        launchers::preferred_instances(&launchers::list_instances(launcher))
-            .iter()
-            .any(|instance| saved_binding_exists(&instance.game_dir))
-    })
+    !credential_candidates(Path::new("")).is_empty()
+}
+
+fn user_binding_dir() -> Option<PathBuf> {
+    env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .filter(|root| root.is_absolute())
+        .map(|root| {
+            root.join("Celeste")
+                .join("auth")
+                .join(release::LAUNCHER_CHANNEL_ID)
+        })
+}
+
+fn credential_candidates(game_dir: &Path) -> Vec<bindings::Candidate> {
+    let mut candidates = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut add = |path: PathBuf, selected_instance: bool| {
+        if path.is_file() && seen.insert(path.clone()) {
+            candidates.push(bindings::Candidate {
+                path,
+                selected_instance,
+            });
+        }
+    };
+    if !game_dir.as_os_str().is_empty() {
+        add(credential_path(game_dir), true);
+        add(runtime_credential_path(game_dir), true);
+    }
+    if let Some(cache) = user_binding_dir() {
+        let mut files = fs::read_dir(cache)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("uid-") && name.ends_with(".bin"))
+            })
+            .collect::<Vec<_>>();
+        files.sort();
+        for path in files {
+            add(path, false);
+        }
+    }
+    for launcher in launchers::detect_installed() {
+        for instance in launchers::list_instances(&launcher) {
+            add(credential_path(&instance.game_dir), false);
+            add(runtime_credential_path(&instance.game_dir), false);
+            // Old Prism installs could write to the instance root before
+            // minecraft existed. Authenticate that binding before migrating it.
+            if let Some(legacy_root) = launchers::legacy_binding_root(&launcher, &instance) {
+                let selected = instance.game_dir == game_dir
+                    && !credential_path(game_dir).is_file()
+                    && !runtime_credential_path(game_dir).is_file();
+                add(credential_path(&legacy_root), selected);
+                add(runtime_credential_path(&legacy_root), selected);
+            }
+        }
+    }
+    candidates
+}
+
+fn persist_binding(game_dir: &Path, credential: &InstallCredential) -> Result<()> {
+    // Save the user-local copy first so a game folder write failure does not
+    // strand a newly enrolled device with no recoverable credential.
+    let cache_result = if let Some(cache) = user_binding_dir() {
+        save_credential(
+            &cache.join(format!("uid-{}.bin", credential.uid)),
+            credential,
+        )
+        .context("Could not save this PC's activation in the Windows user profile")
+    } else {
+        Ok(())
+    };
+    let instance_result = save_credential(&credential_path(game_dir), credential)
+        .context("Could not save activation for the selected Minecraft instance");
+    // Attempt both independent copies even if one location is not writable.
+    instance_result?;
+    // Existing installations must remain usable when the optional user cache
+    // is unavailable. The selected instance still retains its protected copy.
+    let _ = cache_result;
+    Ok(())
 }
 
 fn credential_path(game_root: &Path) -> PathBuf {
@@ -241,8 +313,36 @@ fn runtime_credential_path(game_root: &Path) -> PathBuf {
 
 fn is_unauthorized(error: &anyhow::Error) -> bool {
     error
-        .chain()
-        .any(|cause| cause.to_string().contains("(401)"))
+        .downcast_ref::<HttpFailure>()
+        .is_some_and(|failure| failure.status == 401)
+}
+
+#[derive(Debug)]
+struct HttpFailure {
+    status: u16,
+    path: String,
+    detail: String,
+}
+
+impl std::fmt::Display for HttpFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Authentication server rejected the request ({}) at {}: {}",
+            self.status, self.path, self.detail
+        )
+    }
+}
+
+impl std::error::Error for HttpFailure {}
+
+fn http_failure(status: u16, path: &str, detail: &str) -> anyhow::Error {
+    HttpFailure {
+        status,
+        path: path.to_owned(),
+        detail: detail.to_owned(),
+    }
+    .into()
 }
 
 fn collect_hardware() -> Result<HardwareProfile> {
@@ -350,6 +450,7 @@ fn enroll(license: &str, hardware: &HardwareProfile) -> Result<InstallCredential
     let start = post_json(
         "/v1/enroll/start",
         &json!({
+            "product": "celeste",
             "release_id": release::LAUNCHER_CHANNEL_ID,
             "client_version": release::LAUNCHER_PROTOCOL_VERSION,
             "client_sha256": release::LAUNCHER_CHANNEL_DIGEST,
@@ -360,10 +461,13 @@ fn enroll(license: &str, hardware: &HardwareProfile) -> Result<InstallCredential
             "install_encryption_key": encode(encryption_public.as_bytes()),
             "hardware": hardware,
         }),
-    )
-    .context(
-        "License activation failed. Use the complete one-time key from the current auth dashboard",
-    )?;
+    ).map_err(|error| {
+        if error.downcast_ref::<HttpFailure>().is_some_and(|failure| failure.status == 409) {
+            error.context("This license is already activated. Select its original instance and Windows account, or contact support if the saved activation was lost")
+        } else {
+            error.context("License activation failed")
+        }
+    })?;
     let message = decode(required_text(&start, "/message")?)?;
     let complete = post_json(
         "/v1/enroll/complete",
@@ -408,18 +512,21 @@ fn enroll(license: &str, hardware: &HardwareProfile) -> Result<InstallCredential
 fn authenticate_installer(
     credential: &InstallCredential,
     hardware: &HardwareProfile,
+    license: Option<&str>,
 ) -> Result<Value> {
     let signing = signing_key(&credential.signing_private)?;
     let token = signing_key(&credential.token_seed)?;
     let start = post_json(
         "/v1/installer/start",
         &json!({
+            "product": "celeste",
             "release_id": release::LAUNCHER_CHANNEL_ID,
             "client_version": release::LAUNCHER_PROTOCOL_VERSION,
             "client_sha256": release::LAUNCHER_CHANNEL_DIGEST,
             "game_uuid": INSTALLER_UUID,
             "game_name": INSTALLER_NAME,
             "device_id": credential.device_id,
+            "license_key": license,
             "hardware": hardware,
         }),
     )?;
@@ -437,7 +544,8 @@ fn authenticate_installer(
     let bootstrap_url = required_text(&complete, "/bootstrap/url")?;
     let bootstrap_id = bootstrap_url.rsplit('/').next().unwrap_or("");
     let bootstrap_sha = required_text(&complete, "/bootstrap/sha256")?;
-    if required_text(&claims, "/device")? != credential.device_id
+    if required_text(&claims, "/product")? != "celeste"
+        || required_text(&claims, "/device")? != credential.device_id
         || required_text(&claims, "/release")? != release::LAUNCHER_CHANNEL_ID
         || required_text(&claims, "/client_sha256")? != release::LAUNCHER_CHANNEL_DIGEST
         || required_text(&claims, "/bootstrap")? != bootstrap_id
@@ -491,10 +599,7 @@ fn post_json(path: &str, body: &Value) -> Result<Value> {
         Ok(response) => response.into_json().context("Server returned invalid JSON"),
         Err(ureq::Error::Status(code, response)) => {
             let detail = response.into_string().unwrap_or_default();
-            bail!(
-                "Authentication server rejected the request ({code}) at {path}: {}",
-                short_detail(&detail)
-            );
+            Err(http_failure(code, path, &short_detail(&detail)))
         }
         Err(error) => Err(anyhow!(error).context("Authentication server is unreachable")),
     }
@@ -601,28 +706,6 @@ fn save_credential(path: &Path, credential: &InstallCredential) -> Result<()> {
     atomic_write(path, &stored)
 }
 
-fn save_launch_ticket(path: &Path, ticket: &str) -> Result<()> {
-    let protected = dpapi_protect(ticket.as_bytes())?;
-    let mut stored = Vec::with_capacity(TICKET_MAGIC.len() + protected.len());
-    stored.extend_from_slice(TICKET_MAGIC);
-    stored.extend_from_slice(&protected);
-    atomic_write(path, &stored)
-}
-
-pub(crate) fn atomic_write(path: &Path, value: &[u8]) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("Output path has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let pending = path.with_extension("pending");
-    fs::write(&pending, value)?;
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
-    fs::rename(&pending, path)?;
-    Ok(())
-}
-
 fn dpapi_protect(value: &[u8]) -> Result<Vec<u8>> {
     unsafe {
         let mut input = DATA_BLOB {
@@ -721,4 +804,10 @@ fn short_detail(value: &str) -> String {
         .chars()
         .take(120)
         .collect()
+}
+
+fn is_product_denied(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<HttpFailure>()
+        .is_some_and(|failure| failure.status == 403)
 }
