@@ -62,6 +62,10 @@ tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
 
+// Bootstrap verification runs through checkBootstrapMod, an explicit Java main.
+// There are no JUnit tests for the automatic Gradle test task to discover.
+tasks.named('test') { enabled = false }
+
 // Validate the distributable with Fabric's real directory discovery and metadata parser.
 // This does not initialize Minecraft, contact auth, or modify a launcher instance.
 def bootstrapDiscoveryCheck = tasks.register('checkBootstrapMod', JavaExec) {
