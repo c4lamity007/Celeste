@@ -4,6 +4,9 @@ import dev.c4lam.celeste.module.impl.expansion.SeeRotationsFeature;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.render.entity.state.LivingEntityRenderState;
 import net.minecraft.client.render.entity.state.PlayerEntityRenderState;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.projectile.FireworkRocketEntity;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 
@@ -11,13 +14,53 @@ import net.minecraft.util.math.Vec3d;
 public final class ElytraSilentAim {
     private ElytraSilentAim() { }
 
-    /** Keeps the solved item angle exact without rotating the camera or applying ground movefix. */
+    /** One throw tick, with at most one extra tick for the existing bounded aim step. */
+    public static boolean withinAimWindow(long startedTick, long currentTick) {
+        return currentTick == startedTick || (startedTick != Long.MAX_VALUE && currentTick == startedTick + 1);
+    }
+
+    /** Boosting has a separate vanilla direction read. Conservatively defer while an owned rocket lives. */
+    public static boolean canAim(MinecraftClient client) {
+        if (client.player == null || client.world == null || !client.player.isAlive()
+            || !client.player.isGliding() || client.player.hasVehicle()) return false;
+        for (Entity entity : client.world.getEntities()) {
+            if (entity instanceof FireworkRocketEntity rocket && rocket.isAlive() && rocket.getOwner() == client.player) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Uses the solved look for packets and real flight, without rotating the camera or ground inputs. */
     public static boolean submit(Object owner, Rotation target, int priority) {
-        var player = MinecraftClient.getInstance().player;
-        if (player == null || !player.isGliding()) return false;
+        if (!canAim(MinecraftClient.getInstance())) {
+            RotationManager.getInstance().release(owner);
+            return false;
+        }
         return RotationManager.getInstance().submit(RotationTask.builder(owner, target)
             .priority(priority).lifetimeTicks(1).smoothing(180, 90)
-            .sensitivityQuantized(false).moveFix(MoveFixMode.OFF).build());
+            .sensitivityQuantized(false).moveFix(MoveFixMode.OFF).glidingPhysics(true).build());
+    }
+
+    /** Existing calcGlidingVelocity hook supplies this look to vanilla; never writes velocity itself. */
+    public static Vec3d physicsVector(LivingEntity entity) {
+        if (!alignsPhysics(entity)) return entity.getRotationVector();
+        RotationManager rotations = RotationManager.getInstance();
+        float yaw = rotations.outgoingYawOr(entity.getYaw());
+        float pitch = rotations.serverPitchOr(entity.getPitch());
+        // Use both the actual outgoing yaw phase and vanilla's float/table vector.
+        // A double-trig projectile ray is not interchangeable at vertical pitch.
+        return entity.getRotationVector(pitch, yaw);
+    }
+
+    public static float physicsPitch(LivingEntity entity) {
+        return alignsPhysics(entity) ? RotationManager.getInstance().serverPitchOr(entity.getPitch()) : entity.getPitch();
+    }
+
+    private static boolean alignsPhysics(LivingEntity entity) {
+        MinecraftClient client = MinecraftClient.getInstance();
+        return client.player == entity && client.world != null && entity.isAlive()
+            && entity.isGliding() && !entity.hasVehicle() && RotationManager.getInstance().glidingPhysics();
     }
 
     /**

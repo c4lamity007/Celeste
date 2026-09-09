@@ -14,6 +14,7 @@ public final class RotationTask {
     private final float maximumPitchStep;
     private final boolean sensitivityQuantized;
     private final MoveFixMode moveFixMode;
+    private final boolean glidingPhysics;
 
     private RotationTask(Builder builder) {
         owner = Objects.requireNonNull(builder.owner, "owner");
@@ -25,6 +26,7 @@ public final class RotationTask {
         maximumPitchStep = builder.maximumPitchStep;
         sensitivityQuantized = builder.sensitivityQuantized;
         moveFixMode = Objects.requireNonNull(builder.moveFixMode, "moveFixMode").packetRepresentable();
+        glidingPhysics = builder.glidingPhysics;
 
         if (lifetimeTicks < 1) {
             throw new IllegalArgumentException("lifetimeTicks must be at least one");
@@ -78,6 +80,11 @@ public final class RotationTask {
         return moveFixMode;
     }
 
+    /** Align vanilla gliding with this request's packet look, independently of ground input correction. */
+    public boolean glidingPhysics() {
+        return glidingPhysics;
+    }
+
     public static final class Builder {
         private final Object owner;
         private final Rotation target;
@@ -88,6 +95,7 @@ public final class RotationTask {
         private float maximumPitchStep = 180.0F;
         private boolean sensitivityQuantized = true;
         private MoveFixMode moveFixMode = MoveFixMode.STRICT;
+        private boolean glidingPhysics;
 
         private Builder(Object owner, Rotation target) {
             this.owner = owner;
@@ -122,6 +130,11 @@ public final class RotationTask {
 
         public Builder moveFix(MoveFixMode value) {
             moveFixMode = value;
+            return this;
+        }
+
+        public Builder glidingPhysics(boolean value) {
+            glidingPhysics = value;
             return this;
         }
 

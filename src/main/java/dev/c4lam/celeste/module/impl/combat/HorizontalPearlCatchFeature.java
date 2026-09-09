@@ -78,7 +78,15 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
             clear(client, true);
             return;
         }
-        if (stage == Stage.PEARL && tick - startedTick > 6) { clear(client, true); return; }
+        if (stage == Stage.PEARL && (glidingSequence
+            ? !ElytraSilentAim.withinAimWindow(startedTick, tick) : tick - startedTick > 6)) {
+            clear(client, true);
+            return;
+        }
+        if (glidingSequence && (!ElytraSilentAim.canAim(client) || usableSlot(client, stage == Stage.PEARL) < 0)) {
+            clear(client, true);
+            return;
+        }
         if (stage == Stage.CHARGE) {
             long delay = tick - pearlTick;
             if (!throwWindow(delay)) {
@@ -167,7 +175,15 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
                 player.setYaw(player.getYaw() + MathHelper.wrapDegrees(aim.yaw() - player.getYaw()));
                 player.setPitch(aim.pitch());
             }
-            if (!useSlot(actionClient, slot)) return;
+            if (!useSlot(actionClient, slot)) {
+                if (glidingSequence) {
+                    // A failed use must not renew flight steering; retain this tick's coherent look,
+                    // then release at the next START just like a successful final throw.
+                    stage = Stage.RESTORE;
+                    finishedTick = tick;
+                }
+                return;
+            }
             if (expected == Stage.PEARL) {
                 pearl = launched;
                 pearlTick = tick;
@@ -205,10 +221,18 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
         Vec inherited = inherited(movement, player.isOnGround());
         Vec flightOrigin = eyes, flightMovement = movement;
         boolean slowFalling = player.hasStatusEffect(StatusEffects.SLOW_FALLING);
+        RotationManager rotations = RotationManager.getInstance();
+        // The pearl action precedes travel. Its selected look also drives that first flight step.
+        // Before our request is resolved, the initial pearl look is simply the camera look.
+        boolean selectedFlight = rotations.isOwnedBy(this) && rotations.glidingPhysics();
+        float flightYaw = selectedFlight ? rotations.outgoingYawOr(player.getYaw()) : player.getYaw();
+        float flightPitch = selectedFlight ? rotations.serverPitchOr(player.getPitch()) : player.getPitch();
         for (int delay = 1; delay <= 2; delay++) {
             Vec origin, chargeMovement;
             if (glidingSequence) {
-                flightMovement = glideVelocity(flightMovement, player.getYaw(), player.getPitch(),
+                // If tick one has no charge solution, its request is not renewed: normal flight resumes.
+                flightMovement = glideVelocity(flightMovement, delay == 1 ? flightYaw : player.getYaw(),
+                    delay == 1 ? flightPitch : player.getPitch(),
                     player.getFinalGravity(), slowFalling);
                 if (flightMovement == null) return null;
                 flightOrigin = flightOrigin.add(flightMovement);

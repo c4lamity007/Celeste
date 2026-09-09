@@ -3,6 +3,7 @@ import dev.c4lam.celeste.rotation.RotationManager;
 import net.minecraft.client.MinecraftClient;
 public final class SeeRotationsFeature {
     public static boolean enabled = true;
+    public static boolean shouldQuantizeSensitivity() { return false; }
     public static boolean shouldApply(MinecraftClient client) {
         return enabled && client.player != null && RotationManager.getInstance().isActive();
     }

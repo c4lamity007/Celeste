@@ -4,6 +4,7 @@ package net.minecraft.util.math;
 public final class MathHelper {
     private MathHelper() { }
     public static float clamp(float value, float low, float high) { return Math.max(low, Math.min(high, value)); }
+    public static double clamp(double value, double low, double high) { return Math.max(low, Math.min(high, value)); }
     public static float wrapDegrees(float value) {
         float result = value % 360;
         if (result >= 180) result -= 360;

@@ -13,7 +13,7 @@ import java.util.Objects;
 
 /**
  * Client-thread rotation arbiter. It never mutates the player's camera rotation;
- * mixins only substitute this manager's value while vanilla constructs packets.
+ * hooks substitute the selected look for packets and the request's opted-in movement physics.
  */
 public final class RotationManager {
     private static final RotationManager INSTANCE = new RotationManager();
@@ -27,6 +27,7 @@ public final class RotationManager {
     private Rotation previousRenderRotation = Rotation.ZERO;
     private volatile Object activeOwner;
     private volatile MoveFixMode moveFixMode = MoveFixMode.OFF;
+    private volatile boolean glidingPhysics;
     private volatile boolean active;
     private float outgoingYaw;
     private boolean outgoingYawInitialized;
@@ -111,6 +112,7 @@ public final class RotationManager {
             active = false;
             activeOwner = null;
             moveFixMode = MoveFixMode.OFF;
+            glidingPhysics = false;
             serverRotation = camera;
             return;
         }
@@ -130,6 +132,7 @@ public final class RotationManager {
         serverRotation = stepped;
         activeOwner = task.owner();
         moveFixMode = task.moveFixMode().packetRepresentable();
+        glidingPhysics = task.glidingPhysics();
         active = true;
     }
 
@@ -224,6 +227,11 @@ public final class RotationManager {
         return active ? moveFixMode : MoveFixMode.OFF;
     }
 
+    /** Owned by the selected lease; release, expiration and preemption also release flight alignment. */
+    public boolean glidingPhysics() {
+        return active && glidingPhysics;
+    }
+
     public float serverYawOr(float fallback) {
         return active ? serverRotation.yaw() : fallback;
     }
@@ -258,6 +266,7 @@ public final class RotationManager {
         active = false;
         activeOwner = null;
         moveFixMode = MoveFixMode.OFF;
+        glidingPhysics = false;
         outgoingYaw = 0.0F;
         outgoingYawInitialized = false;
         ClientPlayerEntity player = MinecraftClient.getInstance().player;
@@ -271,6 +280,7 @@ public final class RotationManager {
         active = false;
         activeOwner = null;
         moveFixMode = MoveFixMode.OFF;
+        glidingPhysics = false;
         if (player != null) {
             serverRotation = new Rotation(player.getYaw(), player.getPitch());
         }

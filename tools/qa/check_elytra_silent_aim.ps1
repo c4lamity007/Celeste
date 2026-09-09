@@ -18,3 +18,17 @@ $qaSources += Join-Path $qaProject 'tools/qa/ElytraSilentAimCheck.java'
 if ($LASTEXITCODE -ne 0) { throw "Elytra silent-aim adapter compilation failed (exit $LASTEXITCODE)." }
 & (Join-Path $qaJdk 'bin/java.exe') -cp $qaClasses dev.c4lam.celeste.rotation.ElytraSilentAimCheck
 if ($LASTEXITCODE -ne 0) { throw "Elytra silent-aim adapter regression check failed (exit $LASTEXITCODE)." }
+
+# Run lifecycle checks against the actual arbiter, never the recording stub above.
+$qaPhysicsClasses = Join-Path $qaClasses 'physics'
+New-Item -ItemType Directory -Path $qaPhysicsClasses -Force | Out-Null
+$qaManagerStub = Join-Path $qaProject 'tools/qa/elytra-silent-aim-stubs/dev/c4lam/celeste/rotation/RotationManager.java'
+$qaPhysicsSources = @($qaSources | Where-Object { $_ -ne $qaManagerStub -and $_ -notlike '*ElytraSilentAimCheck.java' })
+foreach ($qaName in @('RotationManager', 'RotationQuantizer')) {
+    $qaPhysicsSources += Join-Path $qaProject ('src/main/java/dev/c4lam/celeste/rotation/' + $qaName + '.java')
+}
+$qaPhysicsSources += Join-Path $qaProject 'tools/qa/ElytraPhysicsCheck.java'
+& (Join-Path $qaJdk 'bin/javac.exe') --release 21 -d $qaPhysicsClasses @qaPhysicsSources
+if ($LASTEXITCODE -ne 0) { throw "Elytra flight physics compilation failed (exit $LASTEXITCODE)." }
+& (Join-Path $qaJdk 'bin/java.exe') -cp $qaPhysicsClasses dev.c4lam.celeste.rotation.ElytraPhysicsCheck
+if ($LASTEXITCODE -ne 0) { throw "Elytra flight physics regression check failed (exit $LASTEXITCODE)." }

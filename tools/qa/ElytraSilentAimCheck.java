@@ -2,6 +2,7 @@ package dev.c4lam.celeste.rotation;
 
 import dev.c4lam.celeste.module.impl.expansion.SeeRotationsFeature;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.world.ClientWorld;
 import net.minecraft.client.render.entity.state.LivingEntityRenderState;
 import net.minecraft.client.render.entity.state.PlayerEntityRenderState;
 import net.minecraft.util.math.Vec3d;
@@ -21,8 +22,10 @@ public final class ElytraSilentAimCheck {
 
     private static void reset() {
         CLIENT.player = new MinecraftClient.Player();
+        CLIENT.world = new ClientWorld();
         MANAGER.active = MANAGER.accepted = SeeRotationsFeature.enabled = true;
-        MANAGER.submits = MANAGER.renderCalls = 0;
+        MANAGER.submits = MANAGER.renderCalls = MANAGER.releases = 0;
+        MANAGER.lastReleasedOwner = null;
         MANAGER.lastTask = null;
         MANAGER.lastRenderDelta = -1;
         MANAGER.display = new Rotation(90, -30);
@@ -37,13 +40,15 @@ public final class ElytraSilentAimCheck {
         RotationTask task = MANAGER.lastTask;
         check(task.owner() == owner && task.target() == target, "exact owner and solved target forwarded");
         check(task.priority() == 235 && task.lifetimeTicks() == 1, "priority and bounded lease retained");
-        check(task.moveFixMode() == MoveFixMode.OFF && !task.sensitivityQuantized(), "no flight correction or aim quantization");
+        check(task.moveFixMode() == MoveFixMode.OFF && !task.sensitivityQuantized(), "no ground-input correction or aim quantization");
+        check(task.glidingPhysics(), "shared silent aim opts into packet-consistent flight physics");
         check(task.maximumYawStep() == 180 && task.maximumPitchStep() == 90, "existing tick rotation step preserved");
         MANAGER.accepted = false;
         check(!ElytraSilentAim.submit(owner, target, 230), "arbiter contention returned");
         int before = MANAGER.submits;
         CLIENT.player.gliding = false;
         check(!ElytraSilentAim.submit(owner, target, 230) && MANAGER.submits == before, "landed player submits nothing");
+        check(MANAGER.releases == 1 && MANAGER.lastReleasedOwner == owner, "guard rejection releases only requesting owner");
         CLIENT.player = null;
         check(!ElytraSilentAim.submit(owner, target, 230) && MANAGER.submits == before, "missing player submits nothing");
     }

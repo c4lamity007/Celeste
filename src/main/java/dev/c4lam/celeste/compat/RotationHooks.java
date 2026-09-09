@@ -1,6 +1,7 @@
 package dev.c4lam.celeste.compat;
 
 import dev.c4lam.celeste.module.expansion.inventory.SilentInventoryScreen;
+import dev.c4lam.celeste.rotation.ElytraSilentAim;
 import dev.c4lam.celeste.rotation.MoveFix;
 import dev.c4lam.celeste.rotation.MoveFixMode;
 import dev.c4lam.celeste.rotation.RotationManager;
@@ -44,6 +45,7 @@ public final class RotationHooks {
     }
     public static Vec3d glidingVector(LivingEntity entity) {
         RotationManager rotations = RotationManager.getInstance();
+        if (rotations.glidingPhysics()) return ElytraSilentAim.physicsVector(entity);
         if (MinecraftClient.getInstance().player != entity || !rotations.isActive() || rotations.moveFixMode() == MoveFixMode.OFF) {
             return entity.getRotationVector();
         }
@@ -51,6 +53,7 @@ public final class RotationHooks {
     }
     public static float glidingPitch(LivingEntity entity) {
         RotationManager rotations = RotationManager.getInstance();
+        if (rotations.glidingPhysics()) return ElytraSilentAim.physicsPitch(entity);
         if (MinecraftClient.getInstance().player != entity || !rotations.isActive() || rotations.moveFixMode() == MoveFixMode.OFF) {
             return entity.getPitch();
         }

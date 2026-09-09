@@ -37,6 +37,7 @@ public final class CatchFeature implements ModuleFeature {
     private boolean actionDown;
     private boolean aimSettledLastTick;
     private long stageStartedNanos;
+    private long stageStartedTick;
     private long readyAtNanos;
     private ClientPlayerEntity visiblePlayer;
     private ClientWorld visibleWorld;
@@ -191,6 +192,16 @@ public final class CatchFeature implements ModuleFeature {
 
     private void submitGlidingRotation(ModuleContext context) {
         MinecraftClient client = context.client();
+        if (stage == Stage.AIM_PEARL || stage == Stage.AIM_CHARGE) {
+            int slot = CombatLoadout.findItem(client, stage == Stage.AIM_PEARL ? Items.ENDER_PEARL : Items.WIND_CHARGE);
+            if (!ElytraSilentAim.canAim(client)
+                || !ElytraSilentAim.withinAimWindow(stageStartedTick, ActionScheduler.getInstance().tickNumber())
+                || slot < 0 || coolingDown(client, slot)
+                || (SilentSlotManager.getInstance().isActive() && !SilentSlotManager.getInstance().isOwnedBy(this))) {
+                abort(client, true);
+                return;
+            }
+        }
         if (stage == Stage.AIM_PEARL) {
             glidingAim = new Rotation(client.player.getYaw(), UP_PITCH);
         } else if (stage == Stage.AIM_CHARGE) {
@@ -238,11 +249,11 @@ public final class CatchFeature implements ModuleFeature {
                 return;
             }
             int slot = CombatLoadout.findItem(actionClient, pearl ? Items.ENDER_PEARL : Items.WIND_CHARGE);
-            if (slot < 0 || coolingDown(actionClient, slot)) return;
+            if (slot < 0 || coolingDown(actionClient, slot)) { beginRestore(context); return; }
             Vec eyes = vec(actionClient.player.getEyePos());
             Vec movement = inherited(vec(actionClient.player.getMovement()), actionClient.player.isOnGround());
             long tick = ActionScheduler.getInstance().tickNumber();
-            if (!useSlot(context, slot)) return;
+            if (!useSlot(context, slot)) { beginRestore(context); return; }
             if (pearl) {
                 glidingTrajectory.capture(eyes, movement, glidingAim.yaw(), glidingAim.pitch(), tick);
                 readyAtNanos = System.nanoTime() + randomMillis(context, "Charge delay", 200, 300) * 1_000_000L;
@@ -323,6 +334,7 @@ public final class CatchFeature implements ModuleFeature {
         stage = Stage.IDLE;
         aimSettledLastTick = false;
         stageStartedNanos = 0L;
+        stageStartedTick = 0L;
         readyAtNanos = 0L;
         visiblePlayer = null;
         visibleWorld = null;
@@ -336,6 +348,7 @@ public final class CatchFeature implements ModuleFeature {
     private void enter(Stage next) {
         stage = next;
         stageStartedNanos = System.nanoTime();
+        stageStartedTick = ActionScheduler.getInstance().tickNumber();
     }
 
     private static long randomMillis(ModuleContext context, String label, double fallbackLow, double fallbackHigh) {
