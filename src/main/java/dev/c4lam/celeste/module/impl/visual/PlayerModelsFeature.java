@@ -132,9 +132,9 @@ public final class PlayerModelsFeature implements ModuleFeature {
         }
         if (!celebrate) KILLS.clear();
         else if (KILLS.confirmedDeath(client.player.age, target -> target.getEntityWorld() == client.world,
-            target -> target.deathTime > 0 || target.isDead()) && imported != null && stationary(client.player)) {
+            target -> target.deathTime > 0 || target.isDead()) && imported != null) {
             var controller = ANIMATIONS.computeIfAbsent(client.player.getUuid(), key -> new ModelAnimations(imported));
-            controller.celebrate(client.player.age / 20.0, true, ThreadLocalRandom.current());
+            controller.celebrate(client.player.age / 20.0, ThreadLocalRandom.current());
         }
     }
     @Override public void onDisable(ModuleContext context) {

@@ -8,11 +8,11 @@ public final class PlayerModelMotionCheck {
         check(PlayerModelMotion.stationary(true, false, false, 0, 0, 0), "ordinary grounded still player");
         // Ground gravity (-.0784 velocity Y) is intentionally not an argument: displacement is zero.
         check(PlayerModelMotion.stationary(true, false, false, .001, -.001, 0), "small grounded correction remains still");
-        check(!PlayerModelMotion.stationary(true, false, false, .05, 0, 0), "horizontal movement cancels dance");
+        check(!PlayerModelMotion.stationary(true, false, false, .05, 0, 0), "horizontal movement is not stationary");
         check(!PlayerModelMotion.stationary(false, false, false, 0, 0, 0), "jump apex is not stationary");
-        check(!PlayerModelMotion.stationary(true, true, false, 0, 0, 0), "riding cannot celebrate");
-        check(!PlayerModelMotion.stationary(true, false, true, 0, 0, 0), "gliding cannot celebrate");
-        check(!PlayerModelMotion.stationary(true, false, false, 0, .1, 0), "vertical step prevents celebration");
+        check(!PlayerModelMotion.stationary(true, true, false, 0, 0, 0), "riding is not grounded locomotion");
+        check(!PlayerModelMotion.stationary(true, false, true, 0, 0, 0), "gliding is not grounded locomotion");
+        check(!PlayerModelMotion.stationary(true, false, false, 0, .1, 0), "vertical step is not stationary");
         check(!PlayerModelMotion.stationary(true, false, false, Double.NaN, 0, 0), "invalid position is safe");
         close(rate(0, .21585, 0), 1, "forward walk speed");
         close(rate(0, -.21585, 0), -1, "backward walk reverses stride");

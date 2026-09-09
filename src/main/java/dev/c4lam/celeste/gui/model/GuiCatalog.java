@@ -390,7 +390,7 @@ public final class GuiCatalog {
         settings.add(slider("Size", "Model height relative to a player", 1, .25, 3, .05));
         settings.add(toggle("Secondary motion", "Movement physics on supported paired secondary bones", true));
         settings.add(slider("Motion strength", "Secondary bone motion strength", .5, 0, 1, .05));
-        settings.add(toggle("Kill animations", "Play a random clip after a recent target dies while you stand still", true));
+        settings.add(toggle("Kill animations", "Play a random clip after a recent target dies, even while moving", true));
         return new GuiModule("Player Models", "Rigged models and animated player appearances", CelestePage.VISUALS,
             false, settings.toArray(GuiSetting[]::new));
     }

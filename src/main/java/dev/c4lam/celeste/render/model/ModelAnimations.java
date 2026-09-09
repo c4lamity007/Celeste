@@ -38,10 +38,15 @@ public final class ModelAnimations {
         celebrations = List.copyOf(choices);
     }
 
-    public void celebrate(double now, boolean stationary, RandomGenerator random) {
-        if (!stationary || !Double.isFinite(now) || celebrations.isEmpty()) return;
+    public void celebrate(double now, RandomGenerator random) {
+        if (!Double.isFinite(now) || celebrations.isEmpty()) return;
         celebration = celebrations.get(random.nextInt(celebrations.size()));
         started = now;
+    }
+
+    /** Retain the existing caller signature; movement no longer gates kill playback. */
+    public void celebrate(double now, boolean stationary, RandomGenerator random) {
+        celebrate(now, random);
     }
 
     public Playback frame(double now, boolean stationary, boolean celebrationsEnabled) {
@@ -56,7 +61,7 @@ public final class ModelAnimations {
         if (!Double.isFinite(now)) { resetPlayback(); return new Playback(-1, 0, false); }
         // Entity render age is interpolated, up to one tick behind the tick which observed the kill.
         // That first frame is not a clock rewind and must not discard the new celebration.
-        if (!stationary || !celebrationsEnabled || now < started - .051 || now < previousFrame - .001) clear();
+        if (!celebrationsEnabled || now < started - .051 || now < previousFrame - .001) clear();
         double elapsed = Double.isFinite(previousFrame) ? Math.max(0, Math.min(.25, now - previousFrame)) : 0;
         if (now < previousFrame - .001) { previousPlayback = null; transitionSource = null; }
         double rate = Double.isFinite(walkRate) ? Math.max(-1.8, Math.min(1.8, walkRate)) : 0;

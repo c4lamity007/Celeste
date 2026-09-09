@@ -203,9 +203,11 @@ public final class SahurAssetCheck {
                 "Dance remains active halfway through its bounded duration");
             check(controller.frame(10 + duration + .01, true, true).clip() == idle.clip(),
                 "Dance finishes and restores idle");
-            controller.celebrate(100, true, new ExactChoice(choice));
-            check(controller.frame(100.01, false, true).clip() == idle.clip(), "Moving cancels the dance immediately");
-            check(controller.frame(100.02, true, true).clip() == idle.clip(), "Stopping cannot resume a cancelled dance");
+            controller.celebrate(100, false, new ExactChoice(choice));
+            check(controller.frame(100.01, false, true).clip() == started.clip(), "Moving kill starts the selected dance immediately");
+            check(controller.frame(100.02, true, true).clip() == started.clip(), "Stopping keeps the selected dance active");
+            check(controller.frame(100 + duration + .01, false, true).clip() == idle.clip(),
+                "Completed dance uses this pack's idle fallback while moving");
         }
         check(selected.size() == model.animations().size() - 1, "Every non-idle clip is available after kills");
     }

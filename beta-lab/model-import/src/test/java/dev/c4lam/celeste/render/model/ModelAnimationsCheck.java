@@ -10,7 +10,8 @@ public final class ModelAnimationsCheck {
 
     public static void main(String[] args) {
         stationaryKillStartsOnce();
-        movementCancelsAndDoesNotQueue();
+        movingKillsPlayThroughAndFinish();
+        celebrationIgnoresWalkSpeed();
         endAndSafetyCapDoNotLoop();
         namesAndBindFallback();
         disabledAndExplicitReset();
@@ -21,7 +22,7 @@ public final class ModelAnimationsCheck {
         tickEventPrecedesInterpolatedFrame();
         rateChangesPreservePhase();
         transitionsAreBounded();
-        System.out.println("PASS model animation controller: " + checks + " checks; stationary kill, cancellation, expiry, fallback and clock guards");
+        System.out.println("PASS model animation controller: " + checks + " checks; moving kills, uninterrupted playback, expiry, reset and clock guards");
     }
 
     private static void stationaryKillStartsOnce() {
@@ -38,18 +39,36 @@ public final class ModelAnimationsCheck {
         equal(random.calls, 1, "frame calls never reroll the clip");
     }
 
-    private static void movementCancelsAndDoesNotQueue() {
+    private static void movingKillsPlayThroughAndFinish() {
         ModelAnimations controller = standard();
         CountingRandom random = new CountingRandom(0);
         controller.celebrate(3, false, random);
-        equal(random.calls, 0, "moving kill does not consume random or queue celebration");
-        playback(controller.frame(3, false, true), 1, 3, true, "moving chooses walk");
-        playback(controller.frame(4, true, true), 0, 4, true, "stopping later does not replay moving kill");
-        controller.celebrate(5, true, random);
-        playback(controller.frame(5.5, true, true), 2, .5, false, "stationary event active");
-        playback(controller.frame(6, false, true), 1, 6, true, "movement immediately cancels active clip");
-        playback(controller.frame(6.25, true, true), 0, 6.25, true, "standing again remains idle");
-        equal(random.calls, 1, "no delayed random selection after movement");
+        equal(random.calls, 1, "moving kill chooses a celebration immediately");
+        playback(controller.frame(3, false, true), 2, 0, false, "moving kill starts at clip zero");
+        playback(controller.frame(4, true, true), 2, 1, false, "stopping does not restart moving kill");
+        playback(controller.frame(5.75, false, true), 2, 2.75, false, "moving again preserves progress");
+        playback(controller.frame(6, false, true), 1, 6, true, "exact end resumes walking");
+        playback(controller.frame(6.25, true, true), 0, 6.25, true, "standing after completion uses idle");
+        controller.celebrate(7, random);
+        playback(controller.frame(7.5, true, true), 2, .5, false, "stationary event active");
+        playback(controller.frame(8, false, true), 2, 1, false, "starting movement preserves active clip");
+        playback(controller.frame(8.25, true, true), 2, 1.25, false, "standing again preserves progress");
+        equal(random.calls, 2, "only the two kill events select random clips");
+    }
+
+    private static void celebrationIgnoresWalkSpeed() {
+        ModelAnimations controller = standard();
+        controller.frame(0, false, true, .5);
+        controller.celebrate(1, new CountingRandom(0));
+        playback(controller.frame(1, false, true, -1), 2, 0, false, "backward movement starts celebration");
+        playback(controller.frame(1.2, false, true, .2), 2, .2, false, "slow walking does not slow celebration");
+        playback(controller.frame(1.4, false, true, 0), 2, .4, false, "airborne zero walk rate preserves celebration");
+        playback(controller.frame(1.6, true, true, 0), 2, .6, false, "stationary frame keeps advancing clip time");
+        var resumed = controller.frame(4, false, true, 1);
+        check(resumed.clip() == 1 && resumed.loop(), "frame-time API resumes walking after exact clip end");
+        controller.celebrate(5, new CountingRandom(0));
+        check(controller.frame(5.1, false, false, 1).clip() == 1, "disabling kill animations still cancels while moving");
+        check(controller.frame(5.2, false, true, 1).clip() == 1, "re-enabling does not replay canceled moving kill");
     }
 
     private static void endAndSafetyCapDoNotLoop() {
@@ -155,8 +174,8 @@ public final class ModelAnimationsCheck {
         playback(controller.frame(9.95, true, true), 2, 0, false, "one-tick-old interpolated age does not cancel newly observed kill");
         playback(controller.frame(9.99, true, true), 2, 0, false, "pre-event frames safely hold first dance frame");
         playback(controller.frame(10.2, true, true), 2, .2, false, "dance then advances normally");
-        controller.frame(10.21, false, true);
-        playback(controller.frame(10.22, true, true), 0, 10.22, true, "moving out of celebration does not resume it");
+        playback(controller.frame(10.21, false, true), 2, .21, false, "movement preserves interpolated celebration");
+        playback(controller.frame(10.22, true, true), 2, .22, false, "stopping preserves interpolated clip progress");
     }
     private static void rateChangesPreservePhase() {
         ModelAnimations controller = standard();
@@ -186,7 +205,8 @@ public final class ModelAnimationsCheck {
         ModelAnimations controller = new ModelAnimations(model(clip("Stand", 2), clip("Breakdance", 4)));
         playback(controller.frame(3, false, true), 0, 3, true, "missing walking clip uses idle instead of a T-pose");
         controller.celebrate(4, true, new CountingRandom(0));
-        playback(controller.frame(4.5, false, true), 0, 4.5, true, "moving cancels dance into idle fallback");
+        playback(controller.frame(4.5, false, true), 1, .5, false, "moving preserves dance even without a walking clip");
+        playback(controller.frame(8, false, true), 0, 8, true, "finished moving dance uses idle when walking clip is absent");
     }
     private static GlbModel.Animation clip(String name, float duration) { return new GlbModel.Animation(name, duration, List.of()); }
     private static GlbModel model(GlbModel.Animation... animations) {
