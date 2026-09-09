@@ -12,10 +12,14 @@ New-Item -ItemType Directory -Path $qaClasses -Force | Out-Null
 & (Join-Path $qaJdk 'bin/javac.exe') --release 21 -d $qaClasses `
     (Join-Path $qaProject 'src/main/java/dev/c4lam/celeste/module/impl/combat/HorizontalPearlTrajectory.java') `
     (Join-Path $qaProject 'src/main/java/dev/c4lam/celeste/module/impl/combat/CatchGlidingTrajectory.java') `
+    (Join-Path $qaProject 'src/main/java/dev/c4lam/celeste/rotation/ElytraRotationMath.java') `
     (Join-Path $qaProject 'tools/qa/HorizontalPearlCheck.java') `
-    (Join-Path $qaProject 'tools/qa/CatchGlidingCheck.java')
+    (Join-Path $qaProject 'tools/qa/CatchGlidingCheck.java') `
+    (Join-Path $qaProject 'tools/qa/ElytraRotationCheck.java')
 if ($LASTEXITCODE -ne 0) { throw "Pearl catch compilation failed (exit $LASTEXITCODE)." }
 & (Join-Path $qaJdk 'bin/java.exe') -cp $qaClasses dev.c4lam.celeste.module.impl.combat.HorizontalPearlCheck
 if ($LASTEXITCODE -ne 0) { throw "Horizontal pearl regression check failed (exit $LASTEXITCODE)." }
 & (Join-Path $qaJdk 'bin/java.exe') -cp $qaClasses dev.c4lam.celeste.module.impl.combat.CatchGlidingCheck
 if ($LASTEXITCODE -ne 0) { throw "Gliding Catch regression check failed (exit $LASTEXITCODE)." }
+& (Join-Path $qaJdk 'bin/java.exe') -cp $qaClasses dev.c4lam.celeste.rotation.ElytraRotationCheck
+if ($LASTEXITCODE -ne 0) { throw "Elytra render rotation check failed (exit $LASTEXITCODE)." }

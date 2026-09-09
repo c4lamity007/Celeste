@@ -6,6 +6,7 @@ import dev.c4lam.celeste.hud.HudManager;
 import dev.c4lam.celeste.module.impl.expansion.SeeRotationsFeature;
 import dev.c4lam.celeste.module.impl.visual.PlayerModelsFeature;
 import dev.c4lam.celeste.render.GuiRenderer;
+import dev.c4lam.celeste.rotation.ElytraSilentAim;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.Click;
 import net.minecraft.client.gui.DrawContext;
@@ -46,6 +47,10 @@ public final class PresentationHooks {
         if (entity != client.player || !SeeRotationsFeature.shouldApply(client)) {
             return;
         }
+        // PlayerEntityRenderer computes its glide bank after this superclass hook.
+        // Defer the complete gliding projection until render, instead of mixing silent
+        // body yaw/pitch with the subclass's camera-derived banking angle.
+        if (entity.isGliding()) return;
         state.bodyYaw = SeeRotationsFeature.getRenderYaw(entity);
         state.relativeHeadYaw = 0.0F;
         state.pitch = SeeRotationsFeature.getRenderPitch(entity);
@@ -53,6 +58,7 @@ public final class PresentationHooks {
 
     /** At LivingEntityRenderer.render HEAD; an unavailable replacement must retain vanilla. */
     public static boolean replacePlayerModel(LivingEntityRenderState state) {
+        ElytraSilentAim.finishRender(state);
         return PlayerModelsFeature.replaceVanilla(state);
     }
 }

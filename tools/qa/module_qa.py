@@ -218,7 +218,8 @@ def check(args):
             plan = [("auras", "check_auras.ps1", []),
                     ("horizontal-pearl", "check_horizontal_pearl.ps1", [])]
         if args.suite == "pearl-catches":
-            plan = [("pearl-catches", "check_horizontal_pearl.ps1", [])]
+            plan = [("pearl-catches", "check_horizontal_pearl.ps1", []),
+                    ("elytra-silent-aim", "check_elytra_silent_aim.ps1", [])]
         if args.suite == "trajectories":
             plan = [("trajectories", "run-trajectories.ps1", [])]
         if args.suite in ("sky-lyrics", "sky-lyrics-sword"):

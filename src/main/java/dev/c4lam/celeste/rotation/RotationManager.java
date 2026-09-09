@@ -24,6 +24,7 @@ public final class RotationManager {
     private ClientWorld world;
     private ClientPlayerEntity playerInstance;
     private volatile Rotation serverRotation = Rotation.ZERO;
+    private Rotation previousRenderRotation = Rotation.ZERO;
     private volatile Object activeOwner;
     private volatile MoveFixMode moveFixMode = MoveFixMode.OFF;
     private volatile boolean active;
@@ -80,6 +81,8 @@ public final class RotationManager {
 
     public void tick(MinecraftClient client) {
         prepare(client);
+        previousRenderRotation = active ? serverRotation : client.player == null ? serverRotation
+            : new Rotation(client.player.lastYaw, client.player.lastPitch);
         tick++;
         ClientPlayerEntity player = client.player;
         if (player == null || client.world == null) {
@@ -147,6 +150,7 @@ public final class RotationManager {
             playerInstance = player;
             world = nextWorld;
             serverRotation = new Rotation(player.getYaw(), player.getPitch());
+            previousRenderRotation = serverRotation;
             outgoingYaw = player.getYaw();
             outgoingYawInitialized = true;
         }
@@ -194,6 +198,13 @@ public final class RotationManager {
 
     public Rotation serverRotation() {
         return serverRotation;
+    }
+
+    /** Render-only interpolation; never substituted for the exact packet/action aim. */
+    public Rotation renderRotation(float tickDelta) {
+        Rotation current = serverRotation;
+        return new Rotation(ElytraRotationMath.yaw(previousRenderRotation.yaw(), current.yaw(), tickDelta),
+            ElytraRotationMath.pitch(previousRenderRotation.pitch(), current.pitch(), tickDelta));
     }
 
     /**
@@ -253,6 +264,7 @@ public final class RotationManager {
         if (player != null) {
             serverRotation = new Rotation(player.getYaw(), player.getPitch());
         }
+        previousRenderRotation = serverRotation;
     }
 
     private void deactivateToCamera(ClientPlayerEntity player) {

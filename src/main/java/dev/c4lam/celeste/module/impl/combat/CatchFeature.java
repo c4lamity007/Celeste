@@ -5,6 +5,7 @@ import dev.c4lam.celeste.action.GameplayFoundation;
 import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.module.ModuleFeature;
 import dev.c4lam.celeste.rotation.MoveFixMode;
+import dev.c4lam.celeste.rotation.ElytraSilentAim;
 import dev.c4lam.celeste.rotation.Rotation;
 import dev.c4lam.celeste.rotation.RotationManager;
 import dev.c4lam.celeste.rotation.RotationTask;
@@ -208,9 +209,7 @@ public final class CatchFeature implements ModuleFeature {
             glidingAim = null;
             return;
         }
-        RotationManager.getInstance().submit(RotationTask.builder(this, glidingAim)
-            .priority(PRIORITY).lifetimeTicks(1).smoothing(180.0F, 90.0F)
-            .sensitivityQuantized(false).moveFix(MoveFixMode.OFF).build());
+        ElytraSilentAim.submit(this, glidingAim, PRIORITY);
     }
 
     private void onGlidingActionTick(ModuleContext context) {

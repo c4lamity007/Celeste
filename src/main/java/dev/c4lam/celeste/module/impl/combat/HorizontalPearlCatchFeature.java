@@ -6,6 +6,7 @@ import dev.c4lam.celeste.action.VanillaInputGuard;
 import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.module.ModuleFeature;
 import dev.c4lam.celeste.rotation.MoveFixMode;
+import dev.c4lam.celeste.rotation.ElytraSilentAim;
 import dev.c4lam.celeste.rotation.Rotation;
 import dev.c4lam.celeste.rotation.RotationManager;
 import dev.c4lam.celeste.rotation.RotationTask;
@@ -93,11 +94,12 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
             }
             aim = new Rotation(solution.yaw(), solution.pitch());
         }
-        if (aim != null) RotationManager.getInstance().submit(RotationTask.builder(this, aim)
-            .priority(PRIORITY).lifetimeTicks(1).smoothing(180, 90)
-            // Strict movefix also replaces elytra pitch/vector, steering the flight
-            // toward the charge instead of the camera and invalidating our forecast.
-            .sensitivityQuantized(false).moveFix(glidingSequence ? MoveFixMode.OFF : MoveFixMode.STRICT).build());
+        if (aim != null) {
+            if (glidingSequence) ElytraSilentAim.submit(this, aim, PRIORITY);
+            else RotationManager.getInstance().submit(RotationTask.builder(this, aim)
+                .priority(PRIORITY).lifetimeTicks(1).smoothing(180, 90)
+                .sensitivityQuantized(false).moveFix(MoveFixMode.STRICT).build());
+        }
     }
 
     private void begin(ModuleContext context, long tick) {
