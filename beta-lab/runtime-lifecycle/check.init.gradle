@@ -1,0 +1,22 @@
+allprojects { project ->
+    project.afterEvaluate {
+        if (project == project.rootProject) {
+            def output = project.layout.buildDirectory.dir('module-qa/runtime-lifecycle/classes')
+            def compileCheck = project.tasks.register('compileBetaRuntimeLifecycleCheck', JavaCompile) {
+                dependsOn project.tasks.named('compileJava')
+                source project.fileTree('beta-lab/runtime-lifecycle/src') { include '**/*.java' }
+                classpath = project.sourceSets.main.output.classesDirs
+                destinationDirectory = output
+                options.release = 21
+                options.encoding = 'UTF-8'
+                options.compilerArgs += ['-Xlint:all', '-Werror']
+            }
+            project.tasks.register('betaRuntimeLifecycleCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(output) + project.sourceSets.main.output.classesDirs
+                mainClass = 'dev.c4lam.celeste.beta.lifecycle.fixture.RuntimeLifecycleCheck'
+                enableAssertions = true
+            }
+        }
+    }
+}

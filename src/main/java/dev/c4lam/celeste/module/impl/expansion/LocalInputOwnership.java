@@ -1,6 +1,6 @@
 package dev.c4lam.celeste.module.impl.expansion;
 
-import dev.c4lam.celeste.mixin.module.KeyBindingAccessor;
+import dev.c4lam.celeste.compat.MinecraftAccess;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
@@ -17,7 +17,7 @@ public final class LocalInputOwnership {
         if (window == null) {
             return binding.isPressed();
         }
-        InputUtil.Key key = ((KeyBindingAccessor) (Object) binding).celeste$getBoundKey();
+        InputUtil.Key key = MinecraftAccess.boundKey(binding);
         if (key.getCode() < 0) {
             return false;
         }

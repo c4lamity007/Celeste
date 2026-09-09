@@ -8,6 +8,8 @@ public final class SkyboxMath {
     public static int mode(String name) {
         if ("Nebula".equalsIgnoreCase(name)) return 1;
         if ("Sunset".equalsIgnoreCase(name)) return 2;
+        if ("Abyss".equalsIgnoreCase(name)) return 3;
+        if ("Black Hole".equalsIgnoreCase(name)) return 4;
         return 0;
     }
 

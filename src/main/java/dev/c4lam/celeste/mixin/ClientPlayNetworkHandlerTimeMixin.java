@@ -13,7 +13,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class ClientPlayNetworkHandlerTimeMixin {
     @Inject(method = "onWorldTimeUpdate", at = @At("TAIL"))
     private void celeste$measureServerTickRate(WorldTimeUpdateS2CPacket packet, CallbackInfo ci) {
-        MinecraftClient client = MinecraftClient.getInstance();
-        ServerTickRateTracker.getInstance().onTimeUpdate(client.world, packet.time());
+        dev.c4lam.celeste.compat.GameplayCallbacks.time(packet);
     }
 }

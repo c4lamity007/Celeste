@@ -1,5 +1,7 @@
 package dev.c4lam.celeste.module.impl.visual.expansion;
 
+import dev.c4lam.celeste.beta.lifecycle.BetaSubscriptions;
+
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.pipeline.BlendFunction;
@@ -50,7 +52,7 @@ public final class UnifiedVolumeRenderer {
     private static final int MAX_VERTICES = MAX_QUADS * 4;
     private static final int MAX_VERTEX_BYTES = MAX_VERTICES * VertexFormats.POSITION_TEXTURE_COLOR_NORMAL.getVertexSize();
 
-    private static final RenderPipeline SURFACE = RenderPipelines.register(
+    private static final RenderPipeline SURFACE = dev.c4lam.celeste.compat.BetaRenderPipelines.register(
         RenderPipeline.builder(RenderPipelines.TRANSFORMS_AND_PROJECTION_SNIPPET, RenderPipelines.GLOBALS_SNIPPET)
             .withLocation(id("pipeline/unified_volume_fill"))
             .withVertexShader(id("core/world_volume"))
@@ -61,7 +63,7 @@ public final class UnifiedVolumeRenderer {
             .withDepthTestFunction(DepthTestFunction.LEQUAL_DEPTH_TEST)
             .withDepthWrite(true).withColorWrite(true).withCull(false).build());
 
-    private static final RenderPipeline COMPOSITE = RenderPipelines.register(
+    private static final RenderPipeline COMPOSITE = dev.c4lam.celeste.compat.BetaRenderPipelines.register(
         RenderPipeline.builder()
             .withLocation(id("pipeline/unified_volume_composite"))
             .withVertexShader(id("core/unified_volume_composite"))
@@ -83,10 +85,13 @@ public final class UnifiedVolumeRenderer {
     public static void initialize() {
         if (initialized) return;
         initialized = true;
-        ClientLifecycleEvents.CLIENT_STOPPING.register(client -> requestRelease());
-        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> requestRelease());
-        ResourceLoader.get(ResourceType.CLIENT_RESOURCES).registerReloader(
-            id("unified_volume"), (SynchronousResourceReloader) manager -> requestRelease());
+        BetaSubscriptions.register(ClientLifecycleEvents.CLIENT_STOPPING, "celeste:unified_volume/stopping",
+            ClientLifecycleEvents.ClientStopping.class, client -> requestRelease(), ClientLifecycleEvents.CLIENT_STOPPING::register);
+        BetaSubscriptions.register(ClientPlayConnectionEvents.DISCONNECT, "celeste:unified_volume/disconnect",
+            ClientPlayConnectionEvents.Disconnect.class, (handler, client) -> requestRelease(), ClientPlayConnectionEvents.DISCONNECT::register);
+        ResourceLoader resources = ResourceLoader.get(ResourceType.CLIENT_RESOURCES);
+        BetaSubscriptions.register(resources, "celeste:unified_volume", SynchronousResourceReloader.class,
+            manager -> requestRelease(), proxy -> resources.registerReloader(id("unified_volume"), proxy));
     }
 
     public static void draw(WorldRenderContext context, List<WorldGlowRenderer.Quad> quads) {

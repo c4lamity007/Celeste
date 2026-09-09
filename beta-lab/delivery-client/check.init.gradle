@@ -1,0 +1,25 @@
+allprojects { project ->
+    project.afterEvaluate {
+        if (project == project.rootProject) {
+            def output = project.layout.buildDirectory.dir('module-qa/delivery-client/classes')
+            def compileCheck = project.tasks.register('compileBetaDeliveryClientCheck', JavaCompile) {
+                source project.fileTree('beta-lab/delivery-client/src') { include '**/*.java' }
+                source project.fileTree('beta-lab/delivery-client/test') { include '**/*.java' }
+                classpath = project.sourceSets.main.compileClasspath
+                destinationDirectory = output
+                options.release = 21
+                options.encoding = 'UTF-8'
+                options.compilerArgs += ['-Xlint:all', '-Werror']
+            }
+            project.tasks.register('betaDeliveryClientCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(output) + project.sourceSets.main.runtimeClasspath
+                mainClass = 'dev.c4lam.celeste.beta.delivery.BetaDeliveryClientCheck'
+                enableAssertions = true
+                args project.file('beta-lab/delivery-client/fixtures/server-schema2-golden.json').absolutePath
+                workingDir = project.layout.buildDirectory.dir('module-qa/delivery-client').get().asFile
+                doFirst { workingDir.mkdirs() }
+            }
+        }
+    }
+}

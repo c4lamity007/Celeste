@@ -56,6 +56,8 @@ class Settings:
     loader_four_filename: str = "stage-four.bin"
     grant_ttl_seconds: int = 600
     challenge_ttl_seconds: int = 90
+    plus_enabled: bool = False
+    beta_release_dir: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -68,6 +70,9 @@ class Settings:
         client_version = _required("CELESTE_CLIENT_VERSION")
         installer_channel_id = os.getenv("CELESTE_INSTALLER_CHANNEL_ID", release_id).strip() or release_id
         installer_channel_version = os.getenv("CELESTE_INSTALLER_CHANNEL_VERSION", client_version).strip() or client_version
+        plus_enabled = os.getenv("CELESTE_PLUS_ENABLED", "false").strip().lower()
+        if plus_enabled not in {"true", "false", "1", "0"}:
+            raise RuntimeError("CELESTE_PLUS_ENABLED must be true or false")
         if len(installer_channel_id) > 80 or len(installer_channel_version) > 40:
             raise RuntimeError("Celeste installer channel identity is invalid")
         release_sha256 = _required("CELESTE_RELEASE_SHA256").lower()
@@ -129,4 +134,6 @@ class Settings:
             loader_four_id=_required("CELESTE_LOADER_FOUR_ID"),
             loader_four_sha256=loader_four_sha256,
             loader_four_filename=os.getenv("CELESTE_LOADER_FOUR_FILENAME", "stage-four.bin"),
+            plus_enabled=plus_enabled in {"true", "1"},
+            beta_release_dir=os.getenv("CELESTE_BETA_RELEASE_DIR", "").strip(),
         )

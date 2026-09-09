@@ -48,7 +48,7 @@ public final class MaceSwapFeature extends CombatFeature {
         }
         if (!ownsStunTransaction(context.client())
             || !validStunTarget(context.client(), stunTarget)
-            || CombatLoadout.immediateWeaponSlot(context.client(), CombatLoadout.Weapon.MACE) < 0) {
+            || CombatLoadout.immediateWeaponSlot(context.client(), stunTarget, CombatLoadout.Weapon.MACE) < 0) {
             clearStunTransaction(context.client(), true);
             releaseIntent();
             return;
@@ -75,7 +75,7 @@ public final class MaceSwapFeature extends CombatFeature {
             }
             CombatLoadout.Weapon weapon = stunStage == StunStage.AXE
                 ? CombatLoadout.Weapon.AXE : CombatLoadout.Weapon.MACE;
-            int slot = CombatLoadout.immediateWeaponSlot(actionClient, weapon);
+            int slot = CombatLoadout.immediateWeaponSlot(actionClient, stunTarget, weapon);
             if (slot < 0 || !VanillaCombatReach.canAttack(
                 actionClient, stunTarget, slot, STUN_RANGE, true)
                 || !selectStunSlot(actionClient, slot)) {
@@ -104,7 +104,7 @@ public final class MaceSwapFeature extends CombatFeature {
             return false;
         }
         int axe = CombatLoadout.immediateWeaponSlot(client, CombatLoadout.Weapon.AXE);
-        int mace = CombatLoadout.immediateWeaponSlot(client, CombatLoadout.Weapon.MACE);
+        int mace = CombatLoadout.immediateWeaponSlot(client, target, CombatLoadout.Weapon.MACE);
         if (axe < 0 || mace < 0
             || target.getBoundingBox().squaredMagnitude(client.player.getEyePos()) > STUN_RANGE * STUN_RANGE) {
             return false;
@@ -128,7 +128,7 @@ public final class MaceSwapFeature extends CombatFeature {
         }
         LivingEntity target = resolvePhysicalTarget(client);
         int visible = client.player.getInventory().getSelectedSlot();
-        int maceSlot = CombatLoadout.immediateWeaponSlot(client, CombatLoadout.Weapon.MACE);
+        int maceSlot = CombatLoadout.immediateWeaponSlot(client, target, CombatLoadout.Weapon.MACE);
         if (maceSlot < 0 || target == null
             || !VanillaCombatReach.canAttack(client, target, maceSlot, STUN_RANGE, true)) {
             return null;
@@ -273,7 +273,7 @@ public final class MaceSwapFeature extends CombatFeature {
 
     private boolean attackWithStunSlot(MinecraftClient client, LivingEntity target,
                                        CombatLoadout.Weapon weapon) {
-        int slot = CombatLoadout.immediateWeaponSlot(client, weapon);
+        int slot = CombatLoadout.immediateWeaponSlot(client, target, weapon);
         if (client.player == null || !validStunTarget(client, target)
             || slot < 0 || !VanillaCombatReach.canAttack(client, target, slot, STUN_RANGE, true)) {
             return false;

@@ -1,10 +1,9 @@
 package dev.c4lam.celeste.mixin.module;
 
 import dev.c4lam.celeste.module.impl.visual.expansion.FakeGambleFeature;
+import dev.c4lam.celeste.compat.FakeGambleHooks;
 import net.minecraft.entity.ItemEntity;
 import net.minecraft.entity.player.PlayerEntity;
-import net.minecraft.util.math.MathHelper;
-import net.minecraft.world.World;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -27,14 +26,9 @@ public abstract class FakeGambleItemEntityMixin {
     @Inject(method = "tick", at = @At("TAIL"))
     private void celeste$fakeGambleClientPhysics(CallbackInfo ci) {
         ItemEntity self = (ItemEntity) (Object) this;
-        World world = self.getEntityWorld();
-        if (!world.isClient() || !FakeGambleFeature.isFakeDrop(self) || self.isRemoved()) {
-            return;
-        }
-        boolean moved = MathHelper.floor(self.lastX) != MathHelper.floor(self.getX())
-            || MathHelper.floor(self.lastY) != MathHelper.floor(self.getY())
-            || MathHelper.floor(self.lastZ) != MathHelper.floor(self.getZ());
-        if (self.age % (moved ? 2 : 40) == 0) {
+        int action = FakeGambleHooks.itemTickAction(self);
+        if (action == FakeGambleHooks.SKIP) return;
+        if (action == FakeGambleHooks.MERGE_AND_TICK) {
             this.tryMerge();
         }
         FakeGambleFeature.clientItemTick(self);

@@ -80,6 +80,37 @@ vec3 nebula(vec3 d, float phase, out float cloudCover) {
     return velvet + pigment * mist * 1.02 + vec3(0.20,0.24,0.45) * luminous * belt * 0.58;
 }
 
+float annularBand(float radius, float inner, float outer, float aa) {
+    return smoothstep(inner-aa,inner+aa,radius)
+        * (1.0-smoothstep(outer-aa,outer+aa,radius));
+}
+
+float safeAzimuth(vec2 point) {
+    // GLSL leaves atan(0,0) undefined; an invisible annulus must not spread NaN
+    // through later alpha composites at the exact celestial center.
+    return dot(point,point) > 0.000000000001 ? atan(point.y,point.x) : 0.0;
+}
+
+float ringDustBands(float radius, float angle, float phase, float aa) {
+    // Separate translucent populations, with genuine dark gaps between them.
+    // Each angular pattern advects in the plane: a uniform spinning disc would
+    // appear motionless. Integer phase speeds retain the exact 240-second loop.
+    float first = annularBand(radius,.139,.153,aa);
+    float second = annularBand(radius,.162,.183,aa);
+    float third = annularBand(radius,.191,.211,aa);
+    float a = angle-phase*12.0;
+    float b = angle-phase*14.0;
+    float c = angle-phase*16.0;
+    float clumpA = .5+.5*sin(a*3.0+.65*sin(a));
+    float clumpB = .5+.5*sin(b*2.0+.85*sin(b+1.4));
+    float clumpC = .5+.5*sin(c*4.0+.55*sin(c-1.0));
+    // Fine structure is filtered out at small angular sizes instead of shimmering.
+    float detailVisibility = 1.0-smoothstep(.001,.0045,aa);
+    float grain = mix(1.0,.80+.20*sin(radius*1750.0+sin(b*5.0)),detailVisibility);
+    return clamp((first*(.16+.30*clumpA)+second*(.22+.37*clumpB)
+        +third*(.12+.32*clumpC))*grain,0.0,.62);
+}
+
 vec3 nebulaCelestial(vec3 d, float phase, vec3 background, vec3 cloudSky, float cover) {
     // A real sphere and tilted annulus in world-direction space: neither camera
     // position nor screen coordinates enter the geometry. Angular radii ~6/12deg.
@@ -89,7 +120,11 @@ vec3 nebulaCelestial(vec3 d, float phase, vec3 background, vec3 cloudSky, float 
     float radius = 0.104528;
     float facing = dot(d,center);
     float impact = length(cross(d,center));
-    float rayAA = clamp(length(fwidth(d)) * 0.65,0.00008,0.006);
+    vec3 rayDx = dFdx(d), rayDy = dFdy(d);
+    float rayAA = clamp(length(abs(rayDx)+abs(rayDy)) * 0.65,0.00008,0.006);
+    // The previous planet material evaluated three noise octaves over the whole
+    // screen. All celestial work now stays inside this generous angular bound.
+    if (facing <= 0.0 || impact > .285) return background;
     float sphereMask = (1.0-smoothstep(radius-rayAA,radius+rayAA,impact))
         * step(0.0,facing);
     float sphereT = facing-sqrt(max(radius*radius-impact*impact,0.0));
@@ -100,22 +135,30 @@ vec3 nebulaCelestial(vec3 d, float phase, vec3 background, vec3 cloudSky, float 
     float ringT = dot(center,ringNormal)/safeDenominator;
     vec3 ringPoint = d*ringT-center;
     float ringRadius = length(ringPoint);
-    float ringAA = clamp(length(fwidth(ringPoint)) * 0.65,0.0001,0.006);
-    float ringMask = smoothstep(0.134-ringAA,0.134+ringAA,ringRadius)
-        * (1.0-smoothstep(0.214-ringAA,0.214+ringAA,ringRadius))
-        * step(0.02,denominator);
+    // Differentiate the plane intersection analytically from derivatives read
+    // BEFORE the angular branch; no undefined fwidth inside divergent control flow.
+    vec3 ringDx = ringT*(rayDx-d*dot(rayDx,ringNormal)/safeDenominator);
+    vec3 ringDy = ringT*(rayDy-d*dot(rayDy,ringNormal)/safeDenominator);
+    float ringAA = clamp(length(abs(ringDx)+abs(ringDy)) * 0.65,0.0001,0.006);
+    vec3 ringU = normalize(cross(ringNormal,center));
+    vec3 ringV = cross(ringNormal,ringU);
+    float ringAngle = safeAzimuth(vec2(dot(ringPoint,ringU),dot(ringPoint,ringV)));
+    float ringAlpha = ringDustBands(ringRadius,ringAngle,phase,ringAA)*step(0.02,denominator);
 
     // Broad gas bands and a soft terminator supply volume without contour lines.
-    vec3 drift = vec3(sin(phase),cos(phase),sin(phase*2.0)) * 0.10;
-    float gas = cloudNoise(normal*3.4+drift+vec3(4,12,7));
-    float latitude = dot(normal,ringNormal)+(gas-0.5)*0.18;
-    float band = exp(-pow((latitude+0.10)/0.28,2.0));
-    vec3 surface = mix(vec3(0.35,0.39,0.62),vec3(0.70,0.59,0.76),gas);
-    surface = mix(surface,vec3(0.34,0.24,0.48),band*0.48);
-    float diffuse = pow(max(dot(normal,light),0.0),0.82);
-    vec3 sphereColor = surface*(0.12+diffuse*0.96);
-    float glancing = pow(1.0-clamp(dot(normal,-d),0.0,1.0),2.0);
-    sphereColor += vec3(0.11,0.16,0.28)*glancing*(0.20+diffuse*0.42);
+    vec3 sphereColor = cloudSky;
+    if (sphereMask > 0.0) {
+        vec3 drift = vec3(sin(phase),cos(phase),sin(phase*2.0)) * 0.10;
+        float gas = cloudNoise(normal*3.4+drift+vec3(4,12,7));
+        float latitude = dot(normal,ringNormal)+(gas-0.5)*0.18;
+        float band = exp(-pow((latitude+0.10)/0.28,2.0));
+        vec3 surface = mix(vec3(0.35,0.39,0.62),vec3(0.70,0.59,0.76),gas);
+        surface = mix(surface,vec3(0.34,0.24,0.48),band*0.48);
+        float diffuse = pow(max(dot(normal,light),0.0),0.82);
+        sphereColor = surface*(0.12+diffuse*0.96);
+        float glancing = pow(1.0-clamp(dot(normal,-d),0.0,1.0),2.0);
+        sphereColor += vec3(0.11,0.16,0.28)*glancing*(0.20+diffuse*0.42);
+    }
 
     float radial = clamp((ringRadius-0.134)/0.080,0.0,1.0);
     vec3 ringColor = mix(vec3(0.46,0.40,0.65),vec3(0.77,0.63,0.76),radial);
@@ -132,7 +175,7 @@ vec3 nebulaCelestial(vec3 d, float phase, vec3 background, vec3 cloudSky, float 
     float veil = clamp(cover*1.35,0.0,0.76);
     sphereColor = mix(sphereColor,cloudSky,veil);
     ringColor = mix(ringColor,cloudSky,veil);
-    float ringAlpha = ringMask*(0.72-veil*0.12);
+    ringAlpha *= 1.0-veil*.32;
     float nearRing = step(ringT,sphereT);
     float halo = exp(-pow(max(impact-radius,0.0)/0.038,2.0))
         * (1.0-sphereMask)*step(0.0,facing)*(1.0-veil);
@@ -140,6 +183,76 @@ vec3 nebulaCelestial(vec3 d, float phase, vec3 background, vec3 cloudSky, float 
     sky = mix(sky,ringColor,ringAlpha*(1.0-nearRing));
     sky = mix(sky,sphereColor,sphereMask);
     return mix(sky,ringColor,ringAlpha*nearRing);
+}
+
+vec3 blackHoleBackground(vec3 d, float phase, out float cloudCover) {
+    // One broad noise octave is sufficient behind the focal accretion effect.
+    float mist = skyNoise3(d*3.0+vec3(sin(phase),cos(phase),0.0)*.16+vec3(7,4,11));
+    float belt = exp(-pow(dot(d,normalize(vec3(.2,.9,.3)))*2.8,2.0));
+    cloudCover = mist*belt*.32;
+    return mix(vec3(.009,.012,.034),vec3(.032,.026,.067),max(d.y,0.0))
+        +vec3(.10,.066,.095)*mist*mist*belt;
+}
+
+vec3 blackHoleCelestial(vec3 d, float phase, vec3 background) {
+    vec3 center = normalize(vec3(.40,.44,-.80));
+    vec3 discNormal = normalize(vec3(.20,.96,.16));
+    float facing = dot(d,center);
+    float impact = length(cross(d,center));
+    vec3 rayDx = dFdx(d), rayDy = dFdy(d);
+    float aa = clamp(length(abs(rayDx)+abs(rayDy))*.70,.00008,.006);
+    if (facing <= 0.0 || impact > .32) return background;
+    float radius = .077;
+    float core = 1.0-smoothstep(radius-aa,radius+aa,impact);
+    float coreT = facing-sqrt(max(radius*radius-impact*impact,0.0));
+
+    vec3 discU = normalize(cross(discNormal,center));
+    vec3 discV = cross(discNormal,discU);
+    float denominator = dot(d,discNormal);
+    float safeDenominator = (denominator < 0.0 ? -1.0 : 1.0)*max(abs(denominator),.015);
+    float discT = dot(center,discNormal)/safeDenominator;
+    vec3 discPoint = d*discT-center;
+    float r = length(discPoint);
+    vec3 discDx = discT*(rayDx-d*dot(rayDx,discNormal)/safeDenominator);
+    vec3 discDy = discT*(rayDy-d*dot(rayDy,discNormal)/safeDenominator);
+    float radialAA = clamp(length(abs(discDx)+abs(discDy))*.70,.0001,.007);
+    float disc = annularBand(r,.105,.255,radialAA)*step(.015,denominator);
+    float angle = safeAzimuth(vec2(dot(discPoint,discU),dot(discPoint,discV)));
+    float orbit = angle-phase*16.0;
+    float arc = .5+.5*sin(orbit*3.0+.9*sin(orbit)+r*32.0);
+    float structure = .63+.37*arc;
+    float filament = .5+.5*sin(r*660.0+sin(orbit*4.0)*1.2);
+    structure *= mix(1.0,.76+.24*filament,1.0-smoothstep(.001,.005,radialAA));
+    float heat = clamp((.255-r)/.15,0.0,1.0);
+    vec3 discColor = mix(vec3(.50,.12,.038),vec3(1.45,.95,.43),heat);
+    // An asymmetric bright approaching side supplies volume rather than a flat orange ring.
+    float approaching = .72+.28*cos(angle-.50);
+    discColor *= (.62+structure*.73)*approaching;
+    float discAlpha = disc*(.36+.46*structure);
+
+    // Analytic lensing-inspired far-disk arcs: no ray marching, recursive samples,
+    // or physics claim. The wide upper curl and faint lower curl frame a black core.
+    vec3 viewU = normalize(cross(center,vec3(0,1,0)));
+    vec3 viewV = cross(viewU,center);
+    vec2 q = vec2(dot(d,viewU),dot(d,viewV))/max(facing,.01);
+    float arcRadius = length(vec2(q.x,q.y*.90));
+    float polar = safeAzimuth(q);
+    float arcWidth = .007+aa;
+    float lens = exp(-pow((arcRadius-.099)/arcWidth,2.0));
+    lens *= mix(.26,1.0,smoothstep(-.018,.022,q.y));
+    float arcDust = .70+.30*sin(polar*3.0-phase*48.0+.55*sin(polar));
+    vec3 lensColor = mix(vec3(.70,.19,.045),vec3(1.40,.89,.38),arcDust);
+    float photon = exp(-pow((impact-(radius+.0035))/(.0018+aa),2.0));
+    float bloom = exp(-pow(max(impact-radius,0.0)/.045,2.0))*(1.0-core);
+    vec3 sky = background+vec3(.16,.068,.023)*bloom;
+    // Far gas and the curved far image sit behind the opaque shadow; the near
+    // projected plane passes in front, just as in the existing planet renderer.
+    float nearDisc = step(discT,coreT);
+    sky = mix(sky,discColor,discAlpha*(1.0-nearDisc));
+    sky += lensColor*lens*.88;
+    sky = mix(sky,vec3(.0006,.0008,.002),core);
+    sky += vec3(.74,.42,.14)*photon*(1.0-core*.90);
+    return mix(sky,discColor,discAlpha*nearDisc);
 }
 
 vec3 sunset(vec3 d, float phase, out float cloudCover) {
@@ -160,6 +273,22 @@ vec3 sunset(vec3 d, float phase, out float cloudCover) {
     return sky;
 }
 
+vec3 abyss(vec3 d, float phase, out float cloudCover) {
+    // Broad, deep-water-inspired strata and luminous currents: continuous volume,
+    // not wire rings or a screen-space overlay. Coordinates stay celestial/world-fixed.
+    vec3 drift = vec3(sin(phase*2.0),-sin(phase*3.0),cos(phase*2.0))*.24;
+    float currents = cloudNoise(d*3.3 + drift + vec3(5,11,3));
+    float veil = cloudNoise(d*5.0 - drift*.6 + vec3(12,3,6));
+    float depth = smoothstep(0.0,.95,max(d.y,0.0));
+    vec3 sky = mix(vec3(.045,.16,.22),vec3(.007,.017,.06),depth);
+    float broad = exp(-pow((d.y-.34-(currents-.5)*.35)/.28,2.0));
+    float light = pow(max(dot(d,normalize(vec3(-.38,.55,-.74))),0.0),6.0);
+    sky += mix(vec3(.016,.10,.17),vec3(.025,.31,.33),veil)*broad*(.35+currents*.65);
+    sky += vec3(.035,.13,.18)*light*(.40+veil*.65);
+    cloudCover = clamp(broad*.58+light*.20,0.0,.82);
+    return sky;
+}
+
 void main() {
     vec3 d = normalize(worldDirection);
     float phase = ColorModulator.z;
@@ -167,13 +296,17 @@ void main() {
     vec3 sky;
     if (ColorModulator.x < 0.5) sky = aurora(d, phase, cover);
     else if (ColorModulator.x < 1.5) sky = nebula(d, phase, cover);
-    else sky = sunset(d, phase, cover);
+    else if (ColorModulator.x < 2.5) sky = sunset(d, phase, cover);
+    else if (ColorModulator.x < 3.5) sky = abyss(d, phase, cover);
+    else sky = blackHoleBackground(d, phase, cover);
     vec3 cloudSky = sky;
     float starAmount = clamp(ColorModulator.w,0.0,1.0) * (1.0-cover*0.72);
-    if (ColorModulator.x > 1.5) starAmount *= 0.15 * smoothstep(0.35,0.85,d.y);
+    if (ColorModulator.x > 1.5 && ColorModulator.x < 2.5) starAmount *= 0.15 * smoothstep(0.35,0.85,d.y);
+    if (ColorModulator.x >= 2.5) starAmount *= .42;
     sky += vec3(0.72,0.82,1.0) * stars(d,phase) * starAmount;
     if (ColorModulator.x >= 0.5 && ColorModulator.x < 1.5)
         sky = nebulaCelestial(d,phase,sky,cloudSky,cover);
+    if (ColorModulator.x >= 3.5) sky = blackHoleCelestial(d,phase,sky);
     sky = max(sky,vec3(0.0)) * clamp(ColorModulator.y,0.35,1.4);
     sky = sky / (vec3(1.0) + sky * 0.22);
     float rain = clamp(ModelOffset.x,0.0,1.0);

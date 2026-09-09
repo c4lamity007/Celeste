@@ -18,22 +18,25 @@ import net.minecraft.util.math.Vec3d;
 
 import java.util.List;
 
-/** Two cached depth-tested batches: closed convex 3D cores, then soft supporting bloom. */
+/** Two cached depth-tested batches: closed 3D cores/blades, then optional supporting bloom. */
 public final class AmbientEffectsRenderer {
     public record Particle(Vec3d position, double radius, double yaw, double pitch, float opacity, int color) { }
-    public record Frame(List<Particle> particles, AmbientField.Style style, Vec3d right, Vec3d up) {
-        public static final Frame EMPTY = new Frame(List.of(), AmbientField.Style.FIREFLIES, Vec3d.ZERO, Vec3d.ZERO);
+    public record Frame(List<Particle> particles, AmbientField.Style style, Vec3d right, Vec3d up,
+                        SkyLinesRenderer.Frame skyLines) {
+        public static final Frame EMPTY = new Frame(List.of(), AmbientField.Style.FIREFLIES,
+            Vec3d.ZERO, Vec3d.ZERO, SkyLinesRenderer.Frame.EMPTY);
+        public boolean isEmpty() { return particles.isEmpty() && skyLines.isEmpty(); }
     }
     private static final RenderLayer MESH = layer(false);
     private static final RenderLayer GLOW = layer(true);
     private static final int[][] FACES = {{0,3,2},{0,4,3},{0,5,4},{0,2,5},
         {1,2,3},{1,3,4},{1,4,5},{1,5,2}};
     private AmbientEffectsRenderer() { }
-    public static void initialize() { }
+    public static void initialize() { SkyLinesRenderer.initialize(); }
 
     private static RenderLayer layer(boolean glow) {
         String name = glow ? "ambient_glow" : "ambient_mesh";
-        RenderPipeline pipeline = RenderPipelines.register(RenderPipeline.builder(RenderPipelines.TRANSFORMS_PROJECTION_FOG_SNIPPET)
+        RenderPipeline pipeline = dev.c4lam.celeste.compat.BetaRenderPipelines.register(RenderPipeline.builder(RenderPipelines.TRANSFORMS_PROJECTION_FOG_SNIPPET)
             .withLocation(Identifier.of(CelesteClient.MOD_ID, "pipeline/" + name))
             .withVertexShader(Identifier.of(CelesteClient.MOD_ID, "core/ambient_mesh"))
             .withFragmentShader(Identifier.of(CelesteClient.MOD_ID, "core/" + name))
@@ -45,50 +48,82 @@ public final class AmbientEffectsRenderer {
     }
 
     public static void draw(WorldRenderContext context, Frame frame) {
-        if (frame == null || frame.particles().isEmpty() || context.matrices() == null || context.consumers() == null
+        if (frame == null || frame.isEmpty() || context.matrices() == null || context.consumers() == null
             || context.worldState() == null || context.worldState().cameraRenderState == null) return;
         Vec3d camera = context.worldState().cameraRenderState.pos;
         if (camera == null) return;
+        SkyLinesRenderer.draw(context, frame.skyLines());
+        if (frame.particles().isEmpty()) return;
         MatrixStack.Entry matrix = context.matrices().peek();
         VertexConsumer mesh = context.consumers().getBuffer(MESH);
+        double stretch = frame.style() == AmbientField.Style.CRYSTALS ? 2.2 : frame.style() == AmbientField.Style.SNOW ? .35 : 1;
+        double[] geometry = new double[AmbientGeometry.SCRATCH_SIZE];
         for (Particle p : frame.particles()) {
-            double stretch = frame.style() == AmbientField.Style.CRYSTALS ? 2.2 : frame.style() == AmbientField.Style.SNOW ? .35 : 1;
-            double radius = p.radius(), sy = Math.sin(p.yaw()), cy = Math.cos(p.yaw());
-            double sp = Math.sin(p.pitch()), cp = Math.cos(p.pitch());
-            Vec3d[] vertices = {new Vec3d(0, radius * stretch, 0), new Vec3d(0, -radius * stretch, 0),
-                new Vec3d(radius,0,0), new Vec3d(0,0,radius), new Vec3d(-radius,0,0), new Vec3d(0,0,-radius)};
-            for (int i = 0; i < vertices.length; i++) {
-                Vec3d v = vertices[i];
-                double y = v.y * cp - v.z * sp, z = v.y * sp + v.z * cp;
-                vertices[i] = new Vec3d(v.x * cy - z * sy, y, v.x * sy + z * cy).add(p.position());
+            if (frame.style() == AmbientField.Style.LEAVES) {
+                AmbientGeometry.leaf(geometry, p.position().x, p.position().y, p.position().z,
+                    p.radius(), p.yaw(), p.pitch());
+                int color = VisualExpansionRenderer.argb(p.opacity() * .96F, p.color());
+                // Two closed folded surfaces: culling shows only the facing side as a leaf tumbles.
+                for (int edge = 0; edge < AmbientGeometry.LEAF_EDGE_VERTICES; edge++) {
+                    int next = (edge + 1) % AmbientGeometry.LEAF_EDGE_VERTICES;
+                    leafFace(mesh, matrix, geometry, 8, next, edge, camera, color);
+                    leafFace(mesh, matrix, geometry, 9, edge, next, camera, color);
+                }
+                continue;
             }
+            AmbientGeometry.core(geometry, p.position().x, p.position().y, p.position().z,
+                p.radius(), stretch, p.yaw(), p.pitch());
             int color = VisualExpansionRenderer.argb(p.opacity() * .88F, p.color());
             for (int[] face : FACES) {
-                Vec3d a = vertices[face[0]], b = vertices[face[1]], c = vertices[face[2]];
-                Vec3d normal = b.subtract(a).crossProduct(c.subtract(a)).normalize();
-                vertex(mesh, matrix, a, camera, 0, 0, normal, color);
-                vertex(mesh, matrix, b, camera, 1, 0, normal, color);
-                vertex(mesh, matrix, c, camera, .5F, 1, normal, color);
+                AmbientGeometry.normal(geometry, face[0], face[1], face[2]);
+                coreVertex(mesh, matrix, geometry, face[0], camera, 0, 0, color);
+                coreVertex(mesh, matrix, geometry, face[1], camera, 1, 0, color);
+                coreVertex(mesh, matrix, geometry, face[2], camera, .5F, 1, color);
             }
         }
         if (context.consumers() instanceof VertexConsumerProvider.Immediate immediate) immediate.draw(MESH);
-        if (frame.style() == AmbientField.Style.SNOW) return;
+        if (frame.style() == AmbientField.Style.SNOW || frame.style() == AmbientField.Style.LEAVES) return;
         VertexConsumer glow = context.consumers().getBuffer(GLOW);
         for (Particle p : frame.particles()) {
             double radius = p.radius() * (frame.style() == AmbientField.Style.CRYSTALS ? 2.8 : 5.5);
-            Vec3d u = frame.right().multiply(radius), v = frame.up().multiply(radius), center = p.position();
+            double ux = frame.right().x * radius, uy = frame.right().y * radius, uz = frame.right().z * radius;
+            double vx = frame.up().x * radius, vy = frame.up().y * radius, vz = frame.up().z * radius;
+            Vec3d center = p.position();
             int color = VisualExpansionRenderer.argb(p.opacity() * (frame.style() == AmbientField.Style.CRYSTALS ? .15F : .48F), p.color());
-            vertex(glow,matrix,center.subtract(u).subtract(v),camera,0,0,Vec3d.ZERO,color);
-            vertex(glow,matrix,center.add(u).subtract(v),camera,1,0,Vec3d.ZERO,color);
-            vertex(glow,matrix,center.add(u).add(v),camera,1,1,Vec3d.ZERO,color);
-            vertex(glow,matrix,center.subtract(u).add(v),camera,0,1,Vec3d.ZERO,color);
+            vertex(glow,matrix,(center.x-ux)-vx,(center.y-uy)-vy,(center.z-uz)-vz,camera,0,0,0,0,0,color);
+            vertex(glow,matrix,(center.x+ux)-vx,(center.y+uy)-vy,(center.z+uz)-vz,camera,1,0,0,0,0,color);
+            vertex(glow,matrix,(center.x+ux)+vx,(center.y+uy)+vy,(center.z+uz)+vz,camera,1,1,0,0,0,color);
+            vertex(glow,matrix,(center.x-ux)+vx,(center.y-uy)+vy,(center.z-uz)+vz,camera,0,1,0,0,0,color);
         }
         if (context.consumers() instanceof VertexConsumerProvider.Immediate immediate) immediate.draw(GLOW);
     }
 
-    private static void vertex(VertexConsumer consumer, MatrixStack.Entry matrix, Vec3d point, Vec3d camera,
-                               float u, float v, Vec3d normal, int color) {
-        consumer.vertex(matrix, (float)(point.x-camera.x), (float)(point.y-camera.y), (float)(point.z-camera.z))
-            .texture(u,v).color(color).normal((float)normal.x,(float)normal.y,(float)normal.z);
+    private static void coreVertex(VertexConsumer consumer, MatrixStack.Entry matrix, double[] geometry, int index,
+                                   Vec3d camera, float u, float v, int color) {
+        int offset = index * 3;
+        vertex(consumer, matrix, geometry[offset], geometry[offset + 1], geometry[offset + 2], camera,
+            u, v, geometry[18], geometry[19], geometry[20], color);
+    }
+
+    private static void leafFace(VertexConsumer consumer, MatrixStack.Entry matrix, double[] geometry,
+                                 int a, int b, int c, Vec3d camera, int color) {
+        AmbientGeometry.leafNormal(geometry, a, b, c);
+        leafVertex(consumer, matrix, geometry, a, camera, color);
+        leafVertex(consumer, matrix, geometry, b, camera, color);
+        leafVertex(consumer, matrix, geometry, c, camera, color);
+    }
+
+    private static void leafVertex(VertexConsumer consumer, MatrixStack.Entry matrix, double[] geometry,
+                                   int index, Vec3d camera, int color) {
+        int offset = index * 3, normal = AmbientGeometry.LEAF_NORMAL_OFFSET;
+        vertex(consumer, matrix, geometry[offset], geometry[offset + 1], geometry[offset + 2], camera,
+            AmbientGeometry.leafU(index), AmbientGeometry.leafV(index),
+            geometry[normal], geometry[normal + 1], geometry[normal + 2], color);
+    }
+
+    private static void vertex(VertexConsumer consumer, MatrixStack.Entry matrix, double x, double y, double z,
+                               Vec3d camera, float u, float v, double nx, double ny, double nz, int color) {
+        consumer.vertex(matrix, (float)(x-camera.x), (float)(y-camera.y), (float)(z-camera.z))
+            .texture(u,v).color(color).normal((float)nx,(float)ny,(float)nz);
     }
 }

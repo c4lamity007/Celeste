@@ -9,7 +9,7 @@ public final class GuiCatalog {
     private static final List<GuiModule> MODULES = List.of(
         // Sword
         new GuiModule("Sword Aura", "Silent-aims and hits players in range", CelestePage.SWORD, false,
-            slider("Range", "How far to lock a player", 6, 2, 6, .1),
+            slider("Range", "Aim acquisition distance; swings still use vanilla weapon reach", 6, 2, 6, .1),
             mode("Mode", "Locked tracks. Flick snaps on the hit then back", "Locked", "Locked", "Flick"),
             slider("FOV", "Lock cone from your camera. 180 is all around", 180, 10, 180, 5),
             slider("Speed Min", "Lower bound of silent turn speed", 116, 0, 200, 1),
@@ -103,6 +103,11 @@ public final class GuiCatalog {
             range("Charge delay", "Milliseconds between the pearl and charge", 200, 300, 50, 750, 10),
             range("Return delay", "Milliseconds before restoring the visible slot", 50, 100, 0, 500, 10),
             toggle("Return slot", "Restore the slot held before the catch", true),
+            silentSwap()),
+        new GuiModule("Horizontal Pearl Catch", "Predicts a wind-charge catch along your pearl throw", CelestePage.MACE, false,
+            actionKey(GLFW.GLFW_KEY_UNKNOWN),
+            toggle("Silent aim", "Keep the camera unchanged while aiming the charge", false),
+            toggle("Return slot", "Restore the slot held before a visible catch swap", true),
             silentSwap()),
         new GuiModule("Mace Swap", "Swaps to mace for one hit", CelestePage.MACE, false,
             silentSwap(),
@@ -223,18 +228,32 @@ public final class GuiCatalog {
             slider("Range", "Warning scan radius", 5, 2, 8, 1)),
 
         // Visuals
+        playerModels(),
         new GuiModule("Custom Sky", "Seamless celestial skies with luminous atmospheric depth", CelestePage.VISUALS, false,
-            mode("Mode", "Sky atmosphere", "Aurora", "Aurora", "Nebula", "Sunset"),
+            mode("Mode", "Sky atmosphere", "Aurora", "Aurora", "Nebula", "Sunset", "Abyss", "Black Hole"),
             slider("Brightness", "Sky illumination", .85, .35, 1.4, .05),
             slider("Stars", "Celestial detail", .7, 0, 1, .05)),
-        new GuiModule("Custom Fog", "Soft atmospheric distance without clouding nearby blocks", CelestePage.VISUALS, false,
-            mode("Style", "Fog palette", "Mist", "Mist", "Dusk", "Frost"),
+        new GuiModule("Custom Fog", "Depth-aware shader atmospheres that match your custom sky", CelestePage.VISUALS, false,
+            mode("Rendering", "Shader atmosphere or classic distance fog", "Shader", "Shader", "Native"),
+            mode("Shader", "Match Custom Sky automatically, or choose a fog shader", "Match Sky", "Match Sky", "Aurora", "Nebula", "Sunset", "Abyss", "Black Hole"),
+            mode("Style", "Palette when Rendering is Native", "Mist", "Mist", "Dusk", "Frost"),
             slider("Density", "Atmospheric depth", .45, 0, 1, .05),
             slider("Distance", "Fog distance in blocks", 160, 32, 512, 16)),
-        new GuiModule("Ambient Effects", "World-anchored 3D motes with soft depth-tested light", CelestePage.VISUALS, false,
-            mode("Style", "Ambient geometry", "Fireflies", "Fireflies", "Crystal Motes", "Snowfall"),
+        new GuiModule("Ambient Effects", "Falling leaves, soft motes and luminous sky rails", CelestePage.VISUALS, false,
+            mode("Style", "Ambient geometry", "Fireflies", "Fireflies", "Crystal Motes", "Snowfall", "Falling Leaves"),
             slider("Density", "Amount of ambient detail", .6, 0, 1, .05),
-            slider("Size", "Mote size", 1, .5, 2, .1)),
+            slider("Size", "Ambient element size", 1, .5, 2, .1),
+            toggle("Sky Lines", "Slow luminous arcs above the horizon", true),
+            mode("Sky Pattern", "Sky line design", "Orbital Ribbons", "Orbital Ribbons", "Constellation Arcs", "Light Rails"),
+            slider("Sky Intensity", "Sky line brightness", .65, 0, 1, .05),
+            slider("Sky Speed", "Sky line motion", .6, 0, 2, .1)),
+        new GuiModule("Sky Lyrics", "One floating lyric line that dissolves into light as the song advances", CelestePage.VISUALS, false,
+            colorPick("Color", "Lyric text color", 244, 240, 255),
+            mode("Gradient", "Blend across the fixed lyric line", "Solid", "Solid", "Horizontal", "Vertical"),
+            colorPick("End Color", "Second gradient color", 156, 229, 242),
+            slider("Distance", "Blocks from your view; applies when the next phrase begins", 18, 2, 64, 1),
+            slider("Size", "Lyric scale", 1, .5, 2, .1),
+            slider("Opacity", "Text visibility", .9, .1, 1, .05)),
         new GuiModule("Block Highlight", "Animated glass fill on the block you are looking at", CelestePage.VISUALS, false,
             colorPick("Color", "Highlight color", 116, 223, 255),
             slider("Opacity", "Unified block fill visibility", .35, .05, 1, .05)),
@@ -274,11 +293,11 @@ public final class GuiCatalog {
             mode("Mode", "Brightness technique", "Gamma", "Gamma", "Night Vision"),
             slider("Strength", "Amount of additional light", 1, 0, 1, .05),
             slider("Transition", "Brightness fade duration in milliseconds", 300, 0, 1500, 25)),
-        new GuiModule("Trajectories", "Draws projectile paths", CelestePage.VISUALS, false,
+        new GuiModule("Trajectories", "Bright image-bloom projectile paths with precise impact markers", CelestePage.VISUALS, false,
             toggle("Pearls", "Predict thrown pearls", true), toggle("Bows", "Predict bow shots", true),
             toggle("Landing", "Mark the predicted landing", true), slider("Steps", "Simulation budget", 80, 40, 160, 10),
             visualTheme(), colorPick("Color", "Custom path color", 255, 79, 163),
-            slider("Glow", "Soft halo around the predicted path", .55, 0, 1, .05),
+            slider("Glow", "Overlapping image glow along the predicted path", .55, 0, 1, .05),
             slider("Opacity", "Path visibility", .9, .1, 1, .05),
             toggle("Trail fade", "Taper the path toward its landing", true)),
         new GuiModule("Ore ESP", "Highlights nearby ores", CelestePage.VISUALS, false,
@@ -351,6 +370,23 @@ public final class GuiCatalog {
         );
     private GuiCatalog() { }
     public static List<GuiModule> modules() { return MODULES; }
+
+    private static GuiModule playerModels() {
+        var settings = new java.util.ArrayList<GuiSetting>();
+        if (dev.c4lam.celeste.render.model.BundledPlayerModel.available()) {
+            settings.add(new GuiSetting.Action("Load Sahur", "Use Sahur with walking and post-kill celebrations",
+                dev.c4lam.celeste.module.impl.visual.PlayerModelsFeature::loadSahur));
+        }
+        settings.add(new GuiSetting.Action("Load model", "Choose a local .glb with embedded textures and animations",
+            dev.c4lam.celeste.gui.ModelImportScreen::open));
+        settings.add(mode("Apply to", "Players whose appearance is replaced", "Self", "Self", "Others", "Everyone"));
+        settings.add(slider("Size", "Model height relative to a player", 1, .25, 3, .05));
+        settings.add(toggle("Secondary motion", "Movement physics on supported paired secondary bones", true));
+        settings.add(slider("Motion strength", "Secondary bone motion strength", .5, 0, 1, .05));
+        settings.add(toggle("Kill animations", "Play a random clip after a recent target dies while you stand still", true));
+        return new GuiModule("Player Models", "Rigged models and animated player appearances", CelestePage.VISUALS,
+            false, settings.toArray(GuiSetting[]::new));
+    }
 
     private static GuiSetting.Toggle toggle(String label, String description, boolean value) {
         return new GuiSetting.Toggle(label, description, value);

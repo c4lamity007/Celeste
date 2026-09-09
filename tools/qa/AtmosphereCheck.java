@@ -96,8 +96,8 @@ public final class AtmosphereCheck extends ImpactCheck {
         float[] result=pixels();bounded(result,true,1.00001f);depth(.63f);return result;
     }
     static void skyChecks() {
-        float[] view=rotation(.2,-.40),proj=perspective();float[][] modes=new float[3][];
-        for(int mode=0;mode<3;mode++) {
+        float[] view=rotation(.2,-.40),proj=perspective();float[][] modes=new float[5][];
+        for(int mode=0;mode<5;mode++) {
             modes[mode]=skyFrame(mode,.7,.7f,0,view,proj);
             float[] fractional=skyFrame(mode,.7+TAU/240/60,.7f,0,view,proj),later=skyFrame(mode,.7+TAU/240*.5,.7f,0,view,proj);
             Delta shortStep=delta(modes[mode],fractional),longStep=delta(modes[mode],later);
@@ -116,7 +116,7 @@ public final class AtmosphereCheck extends ImpactCheck {
             require(delta(modes[mode],skyFrame(mode,.7,.7f,1,view,proj)).mean>.003,"Rain coverage does not affect sky");
             System.out.printf(Locale.ROOT,"PASS sky mode=%d changed(1/60s)=%d mean=%.8g changed(0.5s)=%d mean=%.8g%n",mode,shortStep.changed,shortStep.mean,longStep.changed,longStep.mean);
         }
-        for(int a=0;a<3;a++)for(int b=a+1;b<3;b++)require(delta(modes[a],modes[b]).mean>.01,"Sky modes are visually identical");
+        for(int a=0;a<modes.length;a++)for(int b=a+1;b<modes.length;b++)require(delta(modes[a],modes[b]).mean>.01,"Sky modes are visually identical");
     }
     static void vertex(FloatBuffer b,double x,double y,double z,float u,float v,float[] color,double nx,double ny,double nz) {
         b.put((float)x).put((float)y).put((float)z).put(u).put(v);for(float c:color)b.put(c);b.put((float)nx).put((float)ny).put((float)nz);

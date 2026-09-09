@@ -15,7 +15,7 @@ import java.util.Objects;
  * callback before Minecraft advances the player/world tick.
  */
 public final class ActionScheduler {
-    private static final Logger LOGGER = LoggerFactory.getLogger("Celeste/ActionScheduler");
+    private static final Logger LOGGER = dev.c4lam.celeste.compat.RuntimeLogging.getLogger("Celeste/ActionScheduler");
     private static final ActionScheduler INSTANCE = new ActionScheduler();
 
     private final Map<Object, PendingAction> pending = new LinkedHashMap<>();

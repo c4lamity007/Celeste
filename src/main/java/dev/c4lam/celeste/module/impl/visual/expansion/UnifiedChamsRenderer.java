@@ -1,5 +1,7 @@
 package dev.c4lam.celeste.module.impl.visual.expansion;
 
+import dev.c4lam.celeste.beta.lifecycle.BetaSubscriptions;
+
 import com.mojang.blaze3d.buffers.GpuBuffer;
 import com.mojang.blaze3d.buffers.GpuBufferSlice;
 import com.mojang.blaze3d.pipeline.BlendFunction;
@@ -49,7 +51,7 @@ public final class UnifiedChamsRenderer {
     private static final int MAX_VERTEX_BYTES = MAX_ECHOES * PlayerModelSnapshot.MAX_VERTICES
         * VertexFormats.POSITION_TEXTURE_COLOR_NORMAL.getVertexSize();
 
-    private static final RenderPipeline SILHOUETTE = RenderPipelines.register(
+    private static final RenderPipeline SILHOUETTE = dev.c4lam.celeste.compat.BetaRenderPipelines.register(
         RenderPipeline.builder(RenderPipelines.TRANSFORMS_AND_PROJECTION_SNIPPET)
             .withLocation(id("pipeline/unified_chams_fill"))
             .withVertexShader(id("core/unified_chams_fill"))
@@ -59,7 +61,7 @@ public final class UnifiedChamsRenderer {
             .withDepthTestFunction(DepthTestFunction.LEQUAL_DEPTH_TEST)
             .withDepthWrite(true).withColorWrite(true).withCull(false).build());
 
-    private static final RenderPipeline COMPOSITE = RenderPipelines.register(
+    private static final RenderPipeline COMPOSITE = dev.c4lam.celeste.compat.BetaRenderPipelines.register(
         RenderPipeline.builder(RenderPipelines.GLOBALS_SNIPPET)
             .withLocation(id("pipeline/unified_chams_composite"))
             .withVertexShader(id("core/unified_chams_composite"))
@@ -83,10 +85,13 @@ public final class UnifiedChamsRenderer {
     public static void initialize() {
         if (initialized) return;
         initialized = true;
-        ClientLifecycleEvents.CLIENT_STOPPING.register(client -> requestRelease());
-        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> requestRelease());
-        ResourceLoader.get(ResourceType.CLIENT_RESOURCES).registerReloader(
-            id("unified_chams"), (SynchronousResourceReloader) manager -> requestRelease());
+        BetaSubscriptions.register(ClientLifecycleEvents.CLIENT_STOPPING, "celeste:unified_chams/stopping",
+            ClientLifecycleEvents.ClientStopping.class, client -> requestRelease(), ClientLifecycleEvents.CLIENT_STOPPING::register);
+        BetaSubscriptions.register(ClientPlayConnectionEvents.DISCONNECT, "celeste:unified_chams/disconnect",
+            ClientPlayConnectionEvents.Disconnect.class, (handler, client) -> requestRelease(), ClientPlayConnectionEvents.DISCONNECT::register);
+        ResourceLoader resources = ResourceLoader.get(ResourceType.CLIENT_RESOURCES);
+        BetaSubscriptions.register(resources, "celeste:unified_chams", SynchronousResourceReloader.class,
+            manager -> requestRelease(), proxy -> resources.registerReloader(id("unified_chams"), proxy));
     }
 
     /**
@@ -230,19 +235,23 @@ public final class UnifiedChamsRenderer {
 
     /** Idempotent render-thread cleanup; the next nonempty draw recreates storage lazily. */
     public static void releaseResources() {
-        if (silhouette != null) {
-            silhouette.delete();
-            silhouette = null;
-        }
-        if (vertices != null) {
-            vertices.close();
-            vertices = null;
-        }
-        if (allocator != null) {
-            allocator.close();
-            allocator = null;
-        }
+        RenderSystem.assertOnRenderThread();
+        SimpleFramebuffer previousSilhouette = silhouette;
+        GpuBuffer previousVertices = vertices;
+        BufferAllocator previousAllocator = allocator;
+        silhouette = null;
+        vertices = null;
+        allocator = null;
         loadedModels = null;
+        try {
+            if (previousSilhouette != null) previousSilhouette.delete();
+        } finally {
+            try {
+                if (previousVertices != null) previousVertices.close();
+            } finally {
+                if (previousAllocator != null) previousAllocator.close();
+            }
+        }
     }
 
     private static void requestRelease() {

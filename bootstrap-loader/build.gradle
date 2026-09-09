@@ -9,10 +9,6 @@ base {
     archivesName = 'celeste-bootstrap'
 }
 
-configurations {
-    embeddedMixinExtras
-}
-
 repositories {
     mavenCentral()
     maven {
@@ -25,9 +21,8 @@ dependencies {
     mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
     modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
     modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-    // Merge MixinExtras into this jar so the public mod identity and the
-    // runtime classes remain a single Fabric mod rather than duplicate IDs.
-    embeddedMixinExtras "io.github.llamalad7:mixinextras-fabric:0.5.4"
+    // Fabric Loader 0.19.3 supplies MixinExtras 0.5.4 as a nested dependency.
+    // Keep Celeste's identity separate and use that canonical implementation.
     implementation include("com.github.oshi:oshi-core:7.6.0")
     implementation include("com.github.oshi:oshi-common:7.6.0")
     implementation include("net.java.dev.jna:jna:5.19.0")
@@ -62,21 +57,28 @@ processResources {
     }
 }
 
-jar {
-    from {
-        configurations.embeddedMixinExtras.collect { dependency ->
-            dependency.isDirectory() ? dependency : zipTree(dependency)
-        }
-    } {
-        // The outer metadata owns the single exposed `mixinextras` identity.
-        // Keep the library classes, mixin config, and service resources.
-        exclude 'fabric.mod.json'
-        exclude 'META-INF/jars/**'
-        exclude 'META-INF/MANIFEST.MF'
-    }
-}
-
 tasks.withType(JavaCompile).configureEach {
     options.release = 21
     options.encoding = 'UTF-8'
 }
+
+// Validate the distributable with Fabric's real directory discovery and metadata parser.
+// This does not initialize Minecraft, contact auth, or modify a launcher instance.
+def bootstrapDiscoveryCheck = tasks.register('checkBootstrapMod', JavaExec) {
+    dependsOn tasks.named('remapJar'), tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'dev.c4lam.celeste.bootstrap.qa.CelesteBootstrapCheck'
+    enableAssertions = true
+    doFirst {
+        def fixtureRoot = layout.buildDirectory.dir('bootstrap-discovery-check').get().asFile
+        fixtureRoot.mkdirs()
+        def loaderJar = configurations.compileClasspath.files.find { it.name.startsWith('fabric-loader-') && it.name.endsWith('.jar') }
+        if (loaderJar == null) throw new GradleException('Fabric Loader dependency is unavailable')
+        args = [tasks.named('remapJar').get().archiveFile.get().asFile.absolutePath, loaderJar.absolutePath, fixtureRoot.absolutePath]
+    }
+}
+tasks.named('check') { dependsOn bootstrapDiscoveryCheck }
+
+// These fixtures are JavaExec assertions, not JUnit tests. Keep the real
+// discovery check above mandatory while allowing Gradle 9's empty Test task.
+tasks.named('test', Test) { failOnNoDiscoveredTests = false }

@@ -1,0 +1,39 @@
+// Explicit opt-in contract check against this checkout's mapped Minecraft jars.
+// Does not alter the production source sets, dependencies, launcher, or packaging.
+allprojects { project ->
+    project.afterEvaluate {
+        if (project.plugins.hasPlugin('java') && project == project.rootProject) {
+            def checkOutput = project.layout.buildDirectory.dir('module-qa/resource-provider/classes')
+            def compileCheck = project.tasks.register('compileBetaInternalResourceCheck', JavaCompile) {
+                dependsOn project.tasks.named('compileJava')
+                source project.fileTree('beta-lab/resource-provider/src') { include '**/*.java' }
+                classpath = project.sourceSets.main.compileClasspath + project.sourceSets.main.output.classesDirs
+                destinationDirectory = checkOutput
+                options.release = 21
+                options.encoding = 'UTF-8'
+                options.compilerArgs += ['-Xlint:all', '-Werror']
+            }
+            project.tasks.register('betaInternalResourceStorageCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(checkOutput) + project.sourceSets.main.output.classesDirs + project.sourceSets.main.runtimeClasspath
+                mainClass = 'dev.c4lam.celeste.beta.resources.MemoryResourcePackStorageCheck'
+                enableAssertions = true
+                workingDir = project.layout.buildDirectory.dir('module-qa/resource-provider').get().asFile
+                doFirst { workingDir.mkdirs() }
+            }
+            // Requires Minecraft's normal runtime access transformations and
+            // registry bootstrap. Kept separate from the plain-JVM storage check.
+            project.tasks.register('betaInternalResourceIntegrationCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(checkOutput) + project.sourceSets.main.output.classesDirs + project.sourceSets.main.runtimeClasspath
+                mainClass = 'dev.c4lam.celeste.beta.fixture.NamedMinecraftContractLauncher'
+                def mappingId = '1.21.11-net.fabricmc.yarn.1_21_11.1.21.11+build.6-v2'
+                args new File(project.gradle.gradleUserHomeDir,
+                    "caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged-intermediary/${mappingId}/minecraft-merged-intermediary-${mappingId}.jar").absolutePath
+                enableAssertions = true
+                workingDir = project.layout.buildDirectory.dir('module-qa/resource-provider').get().asFile
+                doFirst { workingDir.mkdirs() }
+            }
+        }
+    }
+}

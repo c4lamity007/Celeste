@@ -20,7 +20,14 @@ final class CredentialStore {
     private final Path path;
 
     CredentialStore() {
-        this.path = FabricLoader.getInstance().getConfigDir().resolve("celeste").resolve("auth").resolve("device.bin");
+        this("celeste");
+    }
+
+    CredentialStore(String product) {
+        Path auth = FabricLoader.getInstance().getConfigDir().resolve("celeste").resolve("auth");
+        if ("celeste_plus".equals(product)) auth = auth.resolve("celeste_plus");
+        else if (!"celeste".equals(product)) throw new IllegalArgumentException("Unknown license product");
+        this.path = auth.resolve("device.bin");
     }
 
     boolean exists() {

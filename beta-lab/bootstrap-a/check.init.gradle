@@ -1,0 +1,63 @@
+allprojects { project ->
+    project.afterEvaluate {
+        if (project == project.rootProject) {
+            def output = project.layout.buildDirectory.dir('module-qa/bootstrap-a/classes')
+            def inlineMe = project.fileTree(new File(project.gradle.gradleUserHomeDir,
+                'caches/modules-2/files-2.1/com.google.errorprone/error_prone_annotations/2.48.0')) {
+                include '**/error_prone_annotations-2.48.0.jar'
+            }
+            def compile = project.tasks.register('compileBetaBootstrapA', JavaCompile) {
+                source project.fileTree('beta-lab/bootstrap-a/src') { include '**/*.java' }
+                source project.fileTree('beta-lab/delivery-client/src') { include '**/*.java' }
+                source project.fileTree('beta-lab/memory-runtime/src/main/java') { include '**/*.java' }
+                ['combined-hooks', 'reload-hooks', 'interaction-hooks', 'rotation-hooks', 'fake-gamble-hooks',
+                 'gameplay-callbacks', 'visual-hooks', 'atmosphere-hooks'].each { family ->
+                    source project.fileTree("beta-lab/${family}/src/main/java") { include '**/*.java' }
+                }
+                classpath = project.sourceSets.main.compileClasspath + inlineMe
+                destinationDirectory = output
+                options.release = 21
+                options.encoding = 'UTF-8'
+                options.compilerArgs += ['-Xlint:all', '-Werror', '--add-modules', 'jdk.attach']
+            }
+            def checkOutput = project.layout.buildDirectory.dir('module-qa/bootstrap-a/checks')
+            def checkCompile = project.tasks.register('compileBetaBootstrapACheck', JavaCompile) {
+                dependsOn compile
+                source project.fileTree('beta-lab/bootstrap-a/test') { include '**/*.java' }
+                classpath = project.files(output) + project.sourceSets.main.compileClasspath + inlineMe
+                destinationDirectory = checkOutput
+                options.release = 21
+                options.encoding = 'UTF-8'
+                options.compilerArgs += ['-Xlint:all', '-Werror']
+            }
+            project.tasks.register('betaBootstrapACheck', JavaExec) {
+                dependsOn checkCompile
+                classpath = project.files(checkOutput, output) + project.sourceSets.main.runtimeClasspath + inlineMe
+                mainClass = 'dev.celestebeta.bootstrap.external.BootstrapACheck'
+                args project.layout.buildDirectory.dir('module-qa/bootstrap-a/fixtures').get().asFile.absolutePath
+                enableAssertions = true
+            }
+            project.tasks.register('betaBootstrapAJar', Jar) {
+                dependsOn compile
+                from(output)
+                from({ project.sourceSets.main.compileClasspath.findAll {
+                    it.name.startsWith('gson-') || it.name.startsWith('asm-')
+                }.collect { project.zipTree(it) } }) {
+                    exclude 'META-INF/**', 'module-info.class'
+                }
+                if (project.hasProperty('betaPackageDirectory')) {
+                    def prepared = project.file(project.property('betaPackageDirectory'))
+                    from(new File(prepared, 'host-support')) { into 'META-INF/celeste-beta/host-jars'; include '*.jar' }
+                    from(new File(prepared, 'bootstrap-trust.json')) { into 'META-INF/celeste-beta' }
+                }
+                archiveFileName = 'bootstrap-a.jar'
+                destinationDirectory = project.layout.buildDirectory.dir('module-qa/bootstrap-a')
+                preserveFileTimestamps = false
+                reproducibleFileOrder = true
+                manifest { attributes('Implementation-Title': 'Celeste Owner beta host',
+                    'Celeste-Beta-Bootstrap': 'A', 'Agent-Class': 'dev.celestebeta.attach.AgentMain',
+                    'Main-Class': 'dev.celestebeta.attach.AttachCli', 'Can-Retransform-Classes': 'true') }
+            }
+        }
+    }
+}

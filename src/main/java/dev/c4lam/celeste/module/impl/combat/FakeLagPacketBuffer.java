@@ -27,6 +27,8 @@ class FakeLagPacketBuffer extends ChannelDuplexHandler {
     private ScheduledFuture<?> wakeup;
     private volatile boolean holding;
     private boolean stopped;
+    private final java.util.concurrent.atomic.AtomicBoolean retirementRequested = new java.util.concurrent.atomic.AtomicBoolean();
+    private final java.util.concurrent.CompletableFuture<Void> retirement = new java.util.concurrent.CompletableFuture<>();
     private long delayNanos;
 
     record Pending(Object packet, ChannelPromise promise, long enqueuedNanos, long dueNanos) { }
@@ -76,17 +78,30 @@ class FakeLagPacketBuffer extends ChannelDuplexHandler {
     }
 
     final void stop(boolean send) {
-        execute(() -> {
-            if (stopped) return;
-            stopped = true;
-            holding = false;
-            cancelWakeup();
-            if (send && channel.isActive()) drainAll();
-            else discardAll();
-            if (context != null && context.pipeline().context(this) != null) {
-                context.pipeline().remove(this);
-            }
-        });
+        if (!retirementRequested.compareAndSet(false, true)) return;
+        dev.c4lam.celeste.beta.lifecycle.BetaNetworkRetirement.track(retirement);
+        try {
+            execute(() -> {
+                try {
+                    if (!stopped) {
+                        stopped = true;
+                        holding = false;
+                        cancelWakeup();
+                        if (send && channel.isActive()) drainAll();
+                        else discardAll();
+                    }
+                    if (context != null && context.pipeline().context(this) != null) {
+                        context.pipeline().remove(this);
+                    }
+                    // Leave removal and any handler callbacks before retiring payload bytes.
+                    channel.eventLoop().execute(() -> retirement.complete(null));
+                } catch (RuntimeException | LinkageError failure) {
+                    retirement.completeExceptionally(failure);
+                }
+            });
+        } catch (RuntimeException | LinkageError failure) {
+            retirement.completeExceptionally(failure);
+        }
     }
 
     @Override

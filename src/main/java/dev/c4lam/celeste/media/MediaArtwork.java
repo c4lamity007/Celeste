@@ -14,6 +14,8 @@ import java.io.IOException;
 import java.util.Base64;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -24,8 +26,9 @@ import java.util.concurrent.TimeUnit;
  * and destruction are scheduled onto Minecraft's render/client executor.
  */
 public final class MediaArtwork implements AutoCloseable {
-    private static final Logger LOGGER = LoggerFactory.getLogger("Celeste/MediaArtwork");
+    private static final Logger LOGGER = dev.c4lam.celeste.compat.RuntimeLogging.getLogger("Celeste/MediaArtwork");
     private static final MediaArtwork INSTANCE = new MediaArtwork();
+    private CompletableFuture<Void> stopCompletion;
     private static final Identifier TEXTURE_ID = Identifier.of(CelesteClient.MOD_ID, "dynamic/media_artwork");
     private static final int MAX_ENCODED_CHARS = 7_000_000;
     private static final int MAX_BYTES = 5 * 1024 * 1024;
@@ -41,6 +44,7 @@ public final class MediaArtwork implements AutoCloseable {
         runnable -> {
             Thread thread = new Thread(runnable, "Celeste Media Artwork");
             thread.setDaemon(true);
+            thread.setContextClassLoader(ClassLoader.getPlatformClassLoader());
             return thread;
         },
         new ThreadPoolExecutor.DiscardOldestPolicy()
@@ -278,6 +282,30 @@ public final class MediaArtwork implements AutoCloseable {
         }
     }
 
+    /** The render barrier follows decoder exit, so no delayed install can survive successful Stop. */
+    public synchronized CompletionStage<Void> stopped() {
+        if (!closed) return CompletableFuture.failedFuture(new IllegalStateException("Media artwork is not closed"));
+        if (stopCompletion == null) {
+            MinecraftClient client = MinecraftClient.getInstance();
+            stopCompletion = CompletableFuture.runAsync(() -> {
+                try {
+                    if (!decoder.awaitTermination(30L, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("Media artwork decoder did not finish stopping within 30 seconds");
+                    }
+                    CompletableFuture<Void> drained = new CompletableFuture<>();
+                    client.execute(() -> drained.complete(null));
+                    // Do not start the JVM-global timeout scheduler from a disposable payload domain.
+                    drained.get(30L, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("Media artwork shutdown observation was interrupted", interrupted);
+                } catch (java.util.concurrent.ExecutionException | java.util.concurrent.TimeoutException failure) {
+                    throw new IllegalStateException("Media artwork render cleanup did not finish within 30 seconds", failure);
+                }
+            });
+        }
+        return stopCompletion.minimalCompletionStage();
+    }
     private static int readIntBigEndian(byte[] bytes, int offset) {
         return unsigned(bytes[offset]) << 24 | unsigned(bytes[offset + 1]) << 16
             | unsigned(bytes[offset + 2]) << 8 | unsigned(bytes[offset + 3]);

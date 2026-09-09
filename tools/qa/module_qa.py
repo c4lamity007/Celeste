@@ -179,7 +179,7 @@ def check(args):
     project = args.project.resolve()
     if not (project / "gradlew.bat").is_file():
         raise ValueError("Project must be the Celeste source root containing gradlew.bat")
-    if args.suite in ("player-visuals", "crystal-visuals", "atmosphere", "fog-compatibility") and not args.java_home:
+    if args.suite in ("combat", "trajectories", "ambient-vfx", "sky-lyrics", "sky-lyrics-sword", "player-visuals", "crystal-visuals", "atmosphere", "fog-compatibility") and not args.java_home:
         raise ValueError(f"The {args.suite} suite requires --java-home pointing to JDK 21")
     root = args.output.resolve() if args.output else project / "build/module-qa"
     run = root / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid4().hex[:8])
@@ -212,7 +212,23 @@ def check(args):
         if args.suite == "fog-compatibility":
             compatibility_args = ["-SodiumJar", str(args.sodium_jar.resolve())] if args.sodium_jar else []
             plan = [("atmosphere", "run-atmosphere.ps1", []),
-                    ("fog-compatibility", "run-fog-compatibility.ps1", compatibility_args)]
+                    ("fog-compatibility", "run-fog-compatibility.ps1", compatibility_args),
+                    ("shader-fog", "run-shader-fog.ps1", [])]
+        if args.suite == "combat":
+            plan = [("auras", "check_auras.ps1", []),
+                    ("horizontal-pearl", "check_horizontal_pearl.ps1", [])]
+        if args.suite == "trajectories":
+            plan = [("trajectories", "run-trajectories.ps1", [])]
+        if args.suite in ("sky-lyrics", "sky-lyrics-sword"):
+            plan = [("sky-lyrics-timeline", "run-sky-lyrics.ps1", []),
+                    ("sky-lyrics-shader", "run-sky-lyrics-shader.ps1", [])]
+            if args.suite == "sky-lyrics-sword":
+                plan.append(("sword-aura-range", "run-sword-aura-range.ps1", []))
+        if args.suite == "ambient-vfx":
+            plan = [("trajectories", "run-trajectories.ps1", []),
+                    ("falling-leaves", "run-falling-leaves.ps1", ["-Gpu"]),
+                    ("sky-lines", "run-sky-lines.ps1", []),
+                    ("atmosphere-rules", "run-atmosphere.ps1", ["-Suite", "Math"])]
         for name, script, extra in plan:
             if data["checks"][-1]["status"] != "pass":
                 break
@@ -296,7 +312,7 @@ def parser():
     p = sub.add_parser("check", help="Incremental build plus relevant regression suite; full logs stay local")
     p.add_argument("--project", type=Path, default=Path(__file__).resolve().parents[2])
     p.add_argument("--module", action="append", required=True, help="Repeat for several changed modules")
-    p.add_argument("--suite", choices=("build", "jump", "visuals", "player-visuals", "crystal-visuals", "atmosphere", "fog-compatibility"), default="build")
+    p.add_argument("--suite", choices=("build", "combat", "trajectories", "ambient-vfx", "sky-lyrics", "sky-lyrics-sword", "jump", "visuals", "player-visuals", "crystal-visuals", "atmosphere", "fog-compatibility"), default="build")
     p.add_argument("--output", type=Path)
     p.add_argument("--java-home", type=Path)
     p.add_argument("--sodium-jar", type=Path, help="Installed Sodium artifact for the fog-compatibility regression suite")

@@ -1,5 +1,7 @@
 package dev.c4lam.celeste.module;
 
+import dev.c4lam.celeste.beta.lifecycle.BetaSubscriptions;
+
 import dev.c4lam.celeste.action.GameplayFoundation;
 import dev.c4lam.celeste.gui.model.GuiCatalog;
 import dev.c4lam.celeste.gui.model.GuiModule;
@@ -30,7 +32,7 @@ import java.util.Properties;
 
 /** Deterministic client-thread module lifecycle, keybind edges, and persistence. */
 public final class ModuleManager implements AutoCloseable {
-    private static final Logger LOGGER = LoggerFactory.getLogger("Celeste/Modules");
+    private static final Logger LOGGER = dev.c4lam.celeste.compat.RuntimeLogging.getLogger("Celeste/Modules");
     private static final ModuleManager INSTANCE = new ModuleManager();
 
     private final Map<String, ModuleFeature> features = new LinkedHashMap<>();
@@ -58,9 +60,12 @@ public final class ModuleManager implements AutoCloseable {
         initialized = true;
         load();
         lastSnapshot = snapshot();
-        ClientTickEvents.START_CLIENT_TICK.register(this::startTick);
-        ClientTickEvents.END_CLIENT_TICK.register(this::endTick);
-        WorldRenderEvents.START_MAIN.register(context -> onRenderFrame());
+        BetaSubscriptions.register(ClientTickEvents.START_CLIENT_TICK, "celeste:modules/start_tick",
+            ClientTickEvents.StartTick.class, this::startTick, ClientTickEvents.START_CLIENT_TICK::register);
+        BetaSubscriptions.register(ClientTickEvents.END_CLIENT_TICK, "celeste:modules/end_tick",
+            ClientTickEvents.EndTick.class, this::endTick, ClientTickEvents.END_CLIENT_TICK::register);
+        BetaSubscriptions.register(WorldRenderEvents.START_MAIN, "celeste:modules/render_frame",
+            WorldRenderEvents.StartMain.class, context -> onRenderFrame(), WorldRenderEvents.START_MAIN::register);
     }
 
     public synchronized void register(ModuleFeature feature) {
@@ -108,7 +113,7 @@ public final class ModuleManager implements AutoCloseable {
     }
 
     private void startTick(MinecraftClient client) {
-        if (!initialized) {
+        if (!initialized || !dev.c4lam.celeste.CelesteClient.active()) {
             return;
         }
         GameplayFoundation.beginTick(client);
@@ -135,7 +140,7 @@ public final class ModuleManager implements AutoCloseable {
     }
 
     private void onRenderFrame() {
-        if (!initialized) {
+        if (!initialized || !dev.c4lam.celeste.CelesteClient.active()) {
             return;
         }
         MinecraftClient client = MinecraftClient.getInstance();
@@ -156,7 +161,7 @@ public final class ModuleManager implements AutoCloseable {
     }
 
     private void endTick(MinecraftClient client) {
-        if (!initialized) {
+        if (!initialized || !dev.c4lam.celeste.CelesteClient.active()) {
             return;
         }
         tick(client, false);
@@ -325,6 +330,7 @@ public final class ModuleManager implements AutoCloseable {
             String prefix = "module." + key(module.name());
             properties.setProperty(prefix + ".enabled", Boolean.toString(module.enabled()));
             for (GuiSetting setting : module.settings()) {
+                if (setting instanceof GuiSetting.Action) continue;
                 properties.setProperty(prefix + ".setting." + key(setting.label()), value(setting));
             }
         }
@@ -336,6 +342,7 @@ public final class ModuleManager implements AutoCloseable {
         for (GuiModule module : GuiCatalog.modules()) {
             builder.append(key(module.name())).append('=').append(module.enabled()).append(';');
             for (GuiSetting setting : module.settings()) {
+                if (setting instanceof GuiSetting.Action) continue;
                 builder.append(key(setting.label())).append('=').append(value(setting)).append(';');
             }
         }
@@ -398,8 +405,8 @@ public final class ModuleManager implements AutoCloseable {
         if (!initialized) {
             return;
         }
+        initialized = false;
         deactivateAll(MinecraftClient.getInstance());
         save(snapshot());
-        initialized = false;
     }
 }

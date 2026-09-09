@@ -34,7 +34,7 @@ class FogCompatibilityWorkflowTest(unittest.TestCase):
     def test_focused_checks_never_infer_runtime_pass(self):
         code, calls, data = self.planned()
         self.assertEqual(code, 0)
-        self.assertEqual([call.args[1] for call in calls], ["build", "atmosphere", "fog-compatibility"])
+        self.assertEqual([call.args[1] for call in calls], ["build", "atmosphere", "fog-compatibility", "shader-fog"])
         self.assertEqual(data["status"], "checks-passed")
         self.assertEqual(data["runtime"]["status"], "pending")
         self.assertEqual(data["evidence"], [])
@@ -47,12 +47,13 @@ class FogCompatibilityWorkflowTest(unittest.TestCase):
         code, calls, _ = self.planned(extra=["--sodium-jar", str(artifact)])
         self.assertEqual(code, 0)
         self.assertNotIn("-SodiumJar", calls[1].args[2])
-        command = calls[-1].args[2]
+        self.assertNotIn("-SodiumJar", calls[-1].args[2])
+        command = calls[2].args[2]
         self.assertEqual(Path(command[command.index("-File") + 1]).name, "run-fog-compatibility.ps1")
         self.assertEqual(command[command.index("-SodiumJar") + 1], str(artifact.resolve()))
 
     def test_failure_stops_checks_and_reports_failure(self):
-        names = ["build", "atmosphere", "fog-compatibility"]
+        names = ["build", "atmosphere", "fog-compatibility", "shader-fog"]
         for failed in names:
             with self.subTest(failed=failed):
                 code, calls, data = self.planned(failed)

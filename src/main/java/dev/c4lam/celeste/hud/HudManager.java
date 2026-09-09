@@ -1,5 +1,7 @@
 package dev.c4lam.celeste.hud;
 
+import dev.c4lam.celeste.beta.lifecycle.BetaSubscriptions;
+
 import dev.c4lam.celeste.CelesteClient;
 import dev.c4lam.celeste.module.expansion.inventory.SilentInventoryScreen;
 import dev.c4lam.celeste.config.InterfaceConfig;
@@ -16,6 +18,7 @@ import dev.c4lam.celeste.render.RenderUtil;
 import dev.c4lam.celeste.render.font.Font;
 import dev.c4lam.celeste.render.font.Fonts;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
+import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElement;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
@@ -93,6 +96,7 @@ public final class HudManager {
     private List<String> frameModuleNames = List.of();
     private long lastPresentationUpdate;
     private boolean initialized;
+    private boolean closed;
     private TargetPlacement targetPlacement = TargetPlacement.HUD;
     // HUD selection state
     private boolean isSelecting;
@@ -123,12 +127,15 @@ public final class HudManager {
 
     /** Call during client initialization. Repeated calls are harmless. */
     public synchronized void initialize() {
-        if (initialized) {
+        if (initialized || closed) {
             return;
         }
         loadLayout();
         initialized = true;
-        HudElementRegistry.addLast(LAYER_ID, (context, tickCounter) -> {
+        BetaSubscriptions.register(HudElementRegistry.class, LAYER_ID.toString(), HudElement.class, (context, tickCounter) -> {
+            if (closed || !CelesteClient.active()) {
+                return;
+            }
             MinecraftClient client = MinecraftClient.getInstance();
             if (client.currentScreen == null || client.currentScreen instanceof SilentInventoryScreen) {
                 render(context, -1, -1, false, null, false);
@@ -139,7 +146,18 @@ public final class HudManager {
                     * client.getWindow().getScaledHeight() / Math.max(1, client.getWindow().getHeight())));
                 render(context, mouseX, mouseY, false, null, true);
             }
-        });
+        }, proxy -> HudElementRegistry.addLast(LAYER_ID, proxy));
+    }
+
+    public synchronized void close() {
+        closed = true;
+        isSelecting = false;
+        for (HudElementState element : selectedElements) {
+            element.setSelected(false);
+        }
+        selectedElements.clear();
+        moduleEntrance.clear();
+        frameModuleNames = List.of();
     }
 
     public List<HudElementState> elements() {
@@ -1069,6 +1087,11 @@ public final class HudManager {
         Fonts.semibold().drawCenteredText(matrices, trimToWidth(title, width - 62.0f, 8.0f), metadataCenter, y + 10, 8.0f,
             withAlpha(TEXT, metadataOpacity));
         String subtitle = artist.isBlank() ? snapshot.source() : artist;
+        // The native session is the only lyric source. Unsupported songs keep the normal artist row.
+        if (!snapshot.lyrics().lines().isEmpty()) {
+            String lyric = snapshot.lyrics().cue(snapshot.estimatedProgressMs(), snapshot.durationMs()).current();
+            if (!lyric.isBlank()) subtitle = lyric;
+        }
         Fonts.regular().drawCenteredText(matrices, trimToWidth(subtitle, width - 62.0f, 6.1f, Fonts.regular()), metadataCenter, y + 25, 6.1f,
             withAlpha(MUTED, metadataOpacity));
         if (snapshot.available() && snapshot.durationMs() > 0) {

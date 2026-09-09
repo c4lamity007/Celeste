@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Isolate bundled MixinExtras while Celeste's bootstrap/auth classes are obfuscated."""
+"""Protect bootstrap/auth classes; preserve flattened MixinExtras in legacy inputs only.
+
+Current Celeste bootstraps use the Fabric Loader dependency and contain no
+flattened MixinExtras classes, so this remains a compatible pass-through boundary.
+"""
 
 from __future__ import annotations
 

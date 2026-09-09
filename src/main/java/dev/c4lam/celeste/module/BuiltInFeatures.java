@@ -8,6 +8,7 @@ import dev.c4lam.celeste.module.impl.combat.AutoCrystalFeature;
 import dev.c4lam.celeste.module.impl.combat.AutoHitCrystalFeature;
 import dev.c4lam.celeste.module.impl.combat.AutoSwordFeature;
 import dev.c4lam.celeste.module.impl.combat.CatchFeature;
+import dev.c4lam.celeste.module.impl.combat.HorizontalPearlCatchFeature;
 import dev.c4lam.celeste.module.impl.combat.CombatOverlayRenderer;
 import dev.c4lam.celeste.module.impl.combat.DamageRenderFeature;
 import dev.c4lam.celeste.module.impl.combat.FakeLagFeature;
@@ -53,6 +54,7 @@ public final class BuiltInFeatures {
         modules.register(new MaceAuraFeature());
         modules.register(new WindChargeFeature());
         modules.register(new CatchFeature());
+        modules.register(new HorizontalPearlCatchFeature());
         MaceSwapFeature maceSwap = new MaceSwapFeature();
         modules.register(maceSwap);
         SwordAttackCoordinator.installMaceSwap(maceSwap);
@@ -72,6 +74,7 @@ public final class BuiltInFeatures {
         modules.register(new SafeWalkFeature());
         modules.register(new ElytraFeature());
         modules.register(new FullbrightFeature());
+        modules.register(new dev.c4lam.celeste.module.impl.visual.PlayerModelsFeature());
         
         EntityEspFeature entityEsp = new EntityEspFeature();
         HoleEspFeature holeEsp = new HoleEspFeature();

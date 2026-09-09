@@ -21,8 +21,8 @@ import java.util.OptionalInt;
 
 /** Three shader-generated vertices, no textures, persistent buffers, or depth writes. */
 public final class SkyboxRenderer {
-    private static final Logger LOGGER = LoggerFactory.getLogger("Celeste/CustomSky");
-    private static final RenderPipeline PIPELINE = RenderPipelines.register(
+    private static final Logger LOGGER = dev.c4lam.celeste.compat.RuntimeLogging.getLogger("Celeste/CustomSky");
+    private static final RenderPipeline PIPELINE = dev.c4lam.celeste.compat.BetaRenderPipelines.register(
         RenderPipeline.builder(RenderPipelines.TRANSFORMS_AND_PROJECTION_SNIPPET, RenderPipelines.FOG_SNIPPET)
             .withLocation(Identifier.of("celeste", "pipeline/skybox"))
             .withVertexShader(Identifier.of("celeste", "core/skybox"))

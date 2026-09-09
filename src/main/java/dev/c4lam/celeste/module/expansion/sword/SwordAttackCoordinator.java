@@ -215,6 +215,7 @@ public final class SwordAttackCoordinator {
 
     /** Called only when vanilla's interaction manager is actually attacking an entity. */
     public static void onVanillaEntityAttack(MinecraftClient client, Entity entity) {
+        dev.c4lam.celeste.module.impl.visual.PlayerModelsFeature.recordAttack(client, entity);
         HudTargetTracker.getInstance().markAttacked(client, entity);
         if (maceSwap != null && entity instanceof LivingEntity living) {
             maceSwap.onVanillaEntityAttack(client, living);

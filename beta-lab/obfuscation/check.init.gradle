@@ -1,0 +1,38 @@
+allprojects { project ->
+    project.afterEvaluate {
+        if (project == project.rootProject) {
+            // Supply bootstrap-a/check.init.gradle first; do not duplicate its implementation compilation.
+            def output = project.layout.buildDirectory.dir('module-qa/obfuscation/checks')
+            def host = project.layout.buildDirectory.dir('module-qa/bootstrap-a/classes')
+            def compileCheck = project.tasks.register('compileBetaObfuscationCompatibilityCheck', JavaCompile) {
+                dependsOn project.tasks.named('compileBetaBootstrapA')
+                source project.fileTree('beta-lab/obfuscation/src/test/java') { include '**/*.java' }
+                classpath = project.files(host) + project.sourceSets.main.compileClasspath
+                destinationDirectory = output
+                options.release = 21
+                options.encoding = 'UTF-8'
+                options.compilerArgs += ['-Xlint:all', '-Werror']
+            }
+            project.tasks.register('betaObfuscationCompatibilityCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(output, host) + project.sourceSets.main.runtimeClasspath
+                mainClass = 'dev.celestebeta.bootstrap.external.BootstrapHelperCompatibilityCheck'
+                enableAssertions = true
+            }
+            project.tasks.register('betaProtectedBootstrapArtifactsCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(output, host) + project.sourceSets.main.runtimeClasspath
+                mainClass = 'dev.celestebeta.bootstrap.external.ProtectedBootstrapArtifactCheck'
+                enableAssertions = true
+                jvmArgs '--add-modules', 'jdk.attach'
+                doFirst {
+                    if (!project.hasProperty('betaProtectedA') || !project.hasProperty('betaProtectedB')) {
+                        throw new GradleException('Supply -PbetaProtectedA=<merged A> and -PbetaProtectedB=<protected B>')
+                    }
+                    args project.file(project.property('betaProtectedA')).absolutePath,
+                        project.file(project.property('betaProtectedB')).absolutePath
+                }
+            }
+        }
+    }
+}

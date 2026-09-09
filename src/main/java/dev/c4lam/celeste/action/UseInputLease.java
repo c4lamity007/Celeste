@@ -1,6 +1,6 @@
 package dev.c4lam.celeste.action;
 
-import dev.c4lam.celeste.mixin.module.KeyBindingAccessor;
+import dev.c4lam.celeste.compat.MinecraftAccess;
 import dev.c4lam.celeste.module.ModuleFeature;
 import dev.c4lam.celeste.rotation.RotationManager;
 import net.minecraft.client.MinecraftClient;
@@ -95,7 +95,7 @@ public final class UseInputLease {
         if (window == null) {
             return false;
         }
-        InputUtil.Key key = ((KeyBindingAccessor) (Object) binding).celeste$getBoundKey();
+        InputUtil.Key key = MinecraftAccess.boundKey(binding);
         if (key.getCode() < 0) {
             return false;
         }

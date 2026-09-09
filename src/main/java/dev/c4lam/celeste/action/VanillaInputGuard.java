@@ -1,6 +1,6 @@
 package dev.c4lam.celeste.action;
 
-import dev.c4lam.celeste.mixin.module.KeyBindingAccessor;
+import dev.c4lam.celeste.compat.MinecraftAccess;
 import dev.c4lam.celeste.silent.SilentSlotManager;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
@@ -50,6 +50,6 @@ public final class VanillaInputGuard {
 
     private static boolean activeOrQueued(KeyBinding binding) {
         return binding.isPressed()
-            || ((KeyBindingAccessor) (Object) binding).celeste$getTimesPressed() > 0;
+            || MinecraftAccess.queuedPresses(binding) > 0;
     }
 }

@@ -23,6 +23,8 @@ public final class WorldVfxRenderer {
     private static final RenderLayer DROPLET = material("droplet", false, "textures/visual/fake_lag/soft.png", true);
     private static final RenderLayer PRISM = material("prism", false, "textures/visual/plasma_flow.png");
     private static final RenderLayer WATER = material("water", false, "textures/visual/plasma_flow.png", true);
+    private static final RenderLayer TRAJECTORY = material("trajectory", false, "textures/visual/fake_lag/soft.png");
+    private static final RenderLayer TRAJECTORY_IMPACT = material("trajectory_impact", false, "textures/visual/fake_lag/soft.png");
 
     private WorldVfxRenderer() { }
 
@@ -34,13 +36,15 @@ public final class WorldVfxRenderer {
     public static RenderLayer dropletLayer() { return DROPLET; }
     public static RenderLayer prismLayer() { return PRISM; }
     public static RenderLayer waterLayer() { return WATER; }
+    public static RenderLayer trajectoryLayer() { return TRAJECTORY; }
+    public static RenderLayer trajectoryImpactLayer() { return TRAJECTORY_IMPACT; }
 
     private static RenderLayer material(String name, boolean normals, String texture) {
         return material(name, normals, texture, false);
     }
 
     private static RenderLayer material(String name, boolean normals, String texture, boolean depthTest) {
-        RenderPipeline pipeline = RenderPipelines.register(RenderPipeline.builder(
+        RenderPipeline pipeline = dev.c4lam.celeste.compat.BetaRenderPipelines.register(RenderPipeline.builder(
                 RenderPipelines.TRANSFORMS_AND_PROJECTION_SNIPPET, RenderPipelines.GLOBALS_SNIPPET)
             .withLocation(Identifier.of(CelesteClient.MOD_ID, "pipeline/world_vfx_" + name))
             .withVertexShader(Identifier.of(CelesteClient.MOD_ID,

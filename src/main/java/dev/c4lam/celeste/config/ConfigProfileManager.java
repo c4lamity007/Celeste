@@ -23,7 +23,7 @@ import java.util.Properties;
 
 /** Every saved config is a PNG; published copies are served by the licensed cloud host. */
 public final class ConfigProfileManager {
-    private static final Logger LOGGER = LoggerFactory.getLogger("Celeste/Configs");
+    private static final Logger LOGGER = dev.c4lam.celeste.compat.RuntimeLogging.getLogger("Celeste/Configs");
     private static final ConfigProfileManager INSTANCE = new ConfigProfileManager();
     private static final String DEFAULT_PROFILE = "default";
 

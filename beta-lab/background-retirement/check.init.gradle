@@ -1,0 +1,33 @@
+allprojects { project ->
+    project.afterEvaluate {
+        if (project == project.rootProject) {
+            def output = project.layout.buildDirectory.dir('module-qa/background-retirement/classes')
+            def compileCheck = project.tasks.register('compileBetaBackgroundRetirementCheck', JavaCompile) {
+                source project.files('src/main/java/dev/c4lam/celeste/beta/lifecycle/BetaModelImports.java',
+                    'src/main/java/dev/c4lam/celeste/beta/lifecycle/BetaNetworkRetirement.java',
+                    'src/main/java/dev/c4lam/celeste/module/impl/combat/FakeLagPacketBuffer.java')
+                source project.fileTree('beta-lab/background-retirement/src/test/java') { include '**/*.java' }
+                classpath = project.sourceSets.main.compileClasspath
+                destinationDirectory = output
+                options.release = 21
+                options.encoding = 'UTF-8'
+                options.compilerArgs += ['-Xlint:all', '-Werror']
+            }
+            def checks = [
+                betaModelImportRetirementCheck: ['dev.c4lam.celeste.beta.lifecycle.fixture.ModelImportRetirementCheck', []],
+                betaModelImportRejectionCheck: ['dev.c4lam.celeste.beta.lifecycle.fixture.ModelImportRetirementCheck', ['rejection']],
+                betaNetworkRetirementCheck: ['dev.c4lam.celeste.module.impl.combat.NetworkRetirementCheck', []]
+            ]
+            checks.each { name, config ->
+                project.tasks.register(name, JavaExec) {
+                    dependsOn compileCheck
+                    classpath = project.files(output) + project.sourceSets.main.compileClasspath
+                    mainClass = config[0]
+                    args config[1]
+                    jvmArgs '-Xverify:all'
+                }
+            }
+            project.tasks.register('betaBackgroundRetirementCheck') { dependsOn checks.keySet() }
+        }
+    }
+}

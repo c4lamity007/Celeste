@@ -25,6 +25,7 @@ import java.util.jar.JarFile;
 public final class FogCompatibilityCheck implements Opcodes {
     private static final String BASE = "dev/c4lam/celeste/module/impl/visual/expansion/";
     private static final String MIXIN = "dev/c4lam/celeste/mixin/module/CustomFogMixin";
+    private static final String HOOKS = "dev/c4lam/celeste/compat/AtmosphereHooks";
     private static final String FOG = "net/minecraft/client/render/fog/FogRenderer";
     private static final String DATA = "net/minecraft/client/render/fog/FogData";
     private static final String SODIUM = "net/caffeinemc/mods/sodium/mixin/core/render/world/FogRendererMixin";
@@ -187,6 +188,9 @@ public final class FogCompatibilityCheck implements Opcodes {
         require(List.of(sodiumWorld).equals(value(sodiumInjection, "method")), "Installed Sodium capture method changed");
         require(("L" + sodiumOwner + ";" + sodiumWriter + WRITER).equals(value(sodiumAt, "target")), "Installed Sodium capture point changed");
         require(Type.getArgumentTypes(capture.desc).length == 8, "Installed Sodium local capture descriptor changed");
+        require(java.util.stream.StreamSupport.stream(late.instructions.spliterator(), false)
+            .noneMatch(i -> i.getOpcode() == NEWARRAY || i.getOpcode() == ANEWARRAY),
+            "Startup fog callback reintroduced per-frame array allocation");
         require(celeste.methods.stream().filter(m -> injectionKind(m) != null).count() == 2,
             "Unexpected extra world/GUI fog hooks require explicit coverage");
         String targetInternal = ((Type) ((List<?>) value(annotation(celeste.invisibleAnnotations, "Lorg/spongepowered/asm/mixin/Mixin;"), "value")).getFirst()).getInternalName();
@@ -277,6 +281,7 @@ public final class FogCompatibilityCheck implements Opcodes {
     static Map<String, byte[]> definitions(Path compiled, Path mcJar, Path sodiumJar, Tiny tiny, ClassNode mc, ClassNode celeste, ClassNode sodium) throws Exception {
         Map<String, String> replacements = new HashMap<>();
         replacements.put(MIXIN, "FixtureCelesteFogMixin");
+        replacements.put(HOOKS, "FixtureAtmosphereHooks");
         replacements.put(BASE + "CustomFogCompatibility", "FixtureFogCompatibility");
         replacements.put(BASE + "CustomFogRenderer", "FogCompatibilityCheck$AdjustmentProbe");
         replacements.put("net/fabricmc/loader/api/FabricLoader", "FogCompatibilityCheck$LoaderProbe");
@@ -291,6 +296,9 @@ public final class FogCompatibilityCheck implements Opcodes {
         replacements.put("net/minecraft/util/math/MathHelper", "FixtureAlignMath");
         Map<String, byte[]> result = new HashMap<>();
         result.put("FixtureCelesteFogMixin", remap(celeste, tiny, replacements, false));
+        ClassNode hooks = node(Files.readAllBytes(compiled.resolve(HOOKS + ".class")));
+        hooks.methods.removeIf(m -> !(m.name.equals("<init>") || m.name.equals("sharedFog") || m.name.equals("vanillaFog")));
+        result.put("FixtureAtmosphereHooks", remap(hooks, tiny, replacements, false));
         ClassNode compatibility = node(Files.readAllBytes(compiled.resolve(BASE + "CustomFogCompatibility.class")));
         result.put("FixtureFogCompatibility", remap(compatibility, tiny, replacements, false));
         result.put("FixtureSodiumCapture", remap(sodium, tiny, replacements, true));

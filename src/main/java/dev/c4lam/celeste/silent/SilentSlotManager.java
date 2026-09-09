@@ -1,6 +1,6 @@
 package dev.c4lam.celeste.silent;
 
-import dev.c4lam.celeste.mixin.ClientPlayerInteractionManagerAccessor;
+import dev.c4lam.celeste.compat.MinecraftAccess;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.player.PlayerInventory;
@@ -233,8 +233,7 @@ public final class SilentSlotManager {
         if (owner != null) {
             return observedVisibleSlot >= 0 && visible != observedVisibleSlot;
         }
-        return client.interactionManager instanceof ClientPlayerInteractionManagerAccessor accessor
-            && accessor.celeste$getLastSelectedSlot() != visible;
+        return MinecraftAccess.lastSelectedSlot(client.interactionManager) != visible;
     }
 
     /**
@@ -357,14 +356,14 @@ public final class SilentSlotManager {
         if (slot == assumedServerSlot || client.player == null) {
             return;
         }
-        if (client.interactionManager instanceof ClientPlayerInteractionManagerAccessor accessor) {
+        if (client.interactionManager != null) {
             // Project the requested server slot only while invoking Minecraft's
             // own synchronizer. Vanilla constructs and sends its ordinary slot
             // update and advances its private lastSelectedSlot cache itself.
             int previousRequest = requestedSlot;
             requestedSlot = slot;
             try {
-                accessor.celeste$syncSelectedSlot();
+                MinecraftAccess.syncSelectedSlot(client.interactionManager);
             } finally {
                 requestedSlot = previousRequest;
             }
@@ -399,8 +398,8 @@ public final class SilentSlotManager {
     }
 
     private static void syncSelectedSlot(MinecraftClient client) {
-        if (client.interactionManager instanceof ClientPlayerInteractionManagerAccessor accessor) {
-            accessor.celeste$syncSelectedSlot();
+        if (client.interactionManager != null) {
+            MinecraftAccess.syncSelectedSlot(client.interactionManager);
         }
     }
 

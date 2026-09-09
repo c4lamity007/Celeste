@@ -1,5 +1,8 @@
 package dev.c4lam.celeste.module.impl.combat;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
+
 /** Pure decisions shared by the explosive auras and their deterministic tests. */
 public final class AuraRules {
     private AuraRules() { }
@@ -9,9 +12,15 @@ public final class AuraRules {
     public static CrystalAction crystalAction(double selfFeet, double targetFeet, boolean crystal,
                                                boolean swordReady) {
         if (!Double.isFinite(selfFeet) || !Double.isFinite(targetFeet)) return CrystalAction.NONE;
-        if (targetFeet > selfFeet + 0.18D) return crystal ? CrystalAction.BREAK : CrystalAction.PLACE;
+        // Height is useful for sword pressure, not a prerequisite for every
+        // crystal action. A grounded target can still have a safe crystal by it.
+        if (crystal) return CrystalAction.BREAK;
         return Math.abs(targetFeet - selfFeet) <= 0.18D && swordReady
-            ? CrystalAction.SWORD : CrystalAction.NONE;
+            ? CrystalAction.SWORD : CrystalAction.PLACE;
+    }
+
+    public static boolean swordPressure(double selfFeet, double targetFeet, boolean ready, boolean sequenceActive) {
+        return !sequenceActive && crystalAction(selfFeet, targetFeet, false, ready) == CrystalAction.SWORD;
     }
 
     /** Vanilla-style distance/exposure and armor/toughness estimate; no enchantment credit. */
@@ -51,6 +60,92 @@ public final class AuraRules {
 
     public enum ConfirmationResult { WAITING, CONFIRMED, TIMED_OUT }
 
+    public static boolean endsSequence(boolean swordObservation, boolean detonation, ConfirmationResult result) {
+        // No lift after a sword is not a rejected block/entity update. Give the
+        // same sequence one independently safe crystal follow-up before yielding.
+        return result != ConfirmationResult.WAITING
+            && (detonation || result == ConfirmationResult.TIMED_OUT && !swordObservation);
+    }
+
+    /**
+     * One shared target and one complete explosive sequence, rather than two
+     * independently competing aura priorities. All offers are finalized during
+     * START before the shared rotation/action resolver runs. A completed or
+     * abandoned sequence gives the other ready aura first choice; unavailable
+     * equipment/placement never reserves a turn.
+     */
+    public static final class SequenceCoordinator {
+        private final Map<Object, Offer> offers = new LinkedHashMap<>();
+        private Object sequenceOwner;
+        private Object lastOwner;
+        private int target = -1;
+        private long lastActionTick = Long.MIN_VALUE;
+
+        private static final class Offer {
+            final boolean anchor;
+            long tick = Long.MIN_VALUE;
+            double range;
+            Offer(boolean anchor) { this.anchor = anchor; }
+        }
+
+        public void register(Object owner, boolean anchor, double range) {
+            if (owner == null) return;
+            Offer offer = offers.computeIfAbsent(owner, ignored -> new Offer(anchor));
+            offer.range = Double.isFinite(range) ? Math.max(0, range) : 0;
+        }
+
+        public void offer(Object owner, long tick, boolean ready) {
+            Offer offer = offers.get(owner);
+            if (offer != null) offer.tick = ready ? tick : Long.MIN_VALUE;
+        }
+
+        public Object winner(long tick) {
+            if (tick == lastActionTick) return null;
+            if (sequenceOwner != null) {
+                Offer offer = offers.get(sequenceOwner);
+                return offer != null && offer.tick == tick ? sequenceOwner : null;
+            }
+            Object best = null;
+            for (Map.Entry<Object, Offer> candidate : offers.entrySet()) {
+                if (candidate.getValue().tick != tick) continue;
+                if (best == null || rank(candidate.getKey()) < rank(best)) best = candidate.getKey();
+            }
+            return best;
+        }
+
+        private int rank(Object owner) {
+            return (owner == lastOwner ? 2 : 0) + (offers.get(owner).anchor ? 1 : 0);
+        }
+
+        public boolean begin(Object owner, long tick) {
+            if (owner == null || winner(tick) != owner) return false;
+            sequenceOwner = owner;
+            lastActionTick = tick;
+            return true;
+        }
+
+        public boolean owns(Object owner) { return owner != null && sequenceOwner == owner; }
+        public boolean available(Object owner) { return sequenceOwner == null || sequenceOwner == owner; }
+        public int target() { return target; }
+        public void target(int id) { target = id; }
+        public double maximumRange() {
+            return offers.values().stream().mapToDouble(offer -> offer.range).max().orElse(0);
+        }
+
+        public void finish(Object owner) {
+            if (sequenceOwner != owner) return;
+            sequenceOwner = null;
+            lastOwner = owner;
+        }
+
+        public void remove(Object owner) {
+            finish(owner);
+            offers.remove(owner);
+            if (lastOwner == owner) lastOwner = null;
+            if (offers.isEmpty()) { target = -1; sequenceOwner = null; lastOwner = null; }
+        }
+    }
+
     /** Shared by both auras: only one server-unconfirmed sequence may be active. */
     public static final class PendingLease {
         private Object owner;
@@ -67,11 +162,17 @@ public final class AuraRules {
     public static final class Confirmation {
         private long revision;
         private long sentTick;
+        private int timeoutTicks = 24;
         private boolean active;
 
         public void begin(long currentRevision, long tick) {
+            begin(currentRevision, tick, 24);
+        }
+
+        public void begin(long currentRevision, long tick, int timeout) {
             revision = currentRevision;
             sentTick = tick;
+            timeoutTicks = Math.max(1, timeout);
             active = true;
         }
 
@@ -79,7 +180,7 @@ public final class AuraRules {
 
         public ConfirmationResult observe(long observedRevision, long tick, boolean expectedState) {
             if (!active) return ConfirmationResult.CONFIRMED;
-            if (tick < sentTick || tick - sentTick >= 24) {
+            if (tick < sentTick || tick - sentTick >= timeoutTicks) {
                 clear();
                 return ConfirmationResult.TIMED_OUT;
             }

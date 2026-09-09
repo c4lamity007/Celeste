@@ -2,12 +2,14 @@ package dev.c4lam.celeste.module.impl.combat;
 
 import dev.c4lam.celeste.CelesteClient;
 import dev.c4lam.celeste.auth.AuthBootstrap;
+import dev.c4lam.celeste.beta.lifecycle.BetaSubscriptions;
 import dev.c4lam.celeste.config.InterfaceConfig;
 import dev.c4lam.celeste.module.expansion.inventory.SilentInventoryScreen;
 import dev.c4lam.celeste.render.GuiRenderer;
 import dev.c4lam.celeste.render.RenderUtil;
 import dev.c4lam.celeste.render.font.Fonts;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
+import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElement;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.render.RenderTickCounter;
@@ -50,7 +52,8 @@ public final class CombatOverlayRenderer {
             return;
         }
         initialized = true;
-        HudElementRegistry.addLast(LAYER_ID, CombatOverlayRenderer::render);
+        BetaSubscriptions.register(HudElementRegistry.class, LAYER_ID.toString(), HudElement.class,
+            CombatOverlayRenderer::render, proxy -> HudElementRegistry.addLast(LAYER_ID, proxy));
     }
 
     private static void render(DrawContext context, RenderTickCounter tickCounter) {

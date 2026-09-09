@@ -1,6 +1,6 @@
 package dev.c4lam.celeste.module.impl.movement;
 
-import dev.c4lam.celeste.mixin.module.KeyBindingAccessor;
+import dev.c4lam.celeste.compat.MinecraftAccess;
 import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.module.ModuleFeature;
 import net.minecraft.client.MinecraftClient;
@@ -57,7 +57,7 @@ public final class SprintFeature implements ModuleFeature {
             return;
         }
 
-        InputUtil.Key boundKey = ((KeyBindingAccessor) (Object) binding).celeste$getBoundKey();
+        InputUtil.Key boundKey = MinecraftAccess.boundKey(binding);
         if (boundKey.getCategory() == InputUtil.Type.SCANCODE) {
             // GLFW cannot safely poll an arbitrary scan-code through InputUtil's key API.
             return;
@@ -85,7 +85,7 @@ public final class SprintFeature implements ModuleFeature {
             return false;
         }
 
-        InputUtil.Key key = ((KeyBindingAccessor) (Object) binding).celeste$getBoundKey();
+        InputUtil.Key key = MinecraftAccess.boundKey(binding);
         if (key.getCode() < 0) {
             return false;
         }

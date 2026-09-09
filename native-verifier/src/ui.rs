@@ -1,8 +1,9 @@
-use crate::launchers::{self, DetectedLauncher, GameInstance};
+use crate::launchers::{self, InstallTarget};
 use eframe::egui::{
-    self, Align, Align2, Color32, FontId, Frame, Id, LayerId, Layout, Margin, RichText, Stroke,
-    TextEdit, Vec2, Visuals,
+    self, Align, Align2, Color32, FontId, Frame, Layout, Margin, RichText, Stroke, TextEdit, Vec2,
+    Visuals,
 };
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::Duration;
@@ -18,72 +19,72 @@ pub const ACCENT: Color32 = Color32::from_rgb(255, 79, 163);
 pub const SUCCESS: Color32 = Color32::from_rgb(110, 200, 140);
 pub const FAILURE: Color32 = Color32::from_rgb(255, 110, 120);
 
-const BASE_WIDTH: f32 = 520.0;
-const BASE_HEIGHT: f32 = 380.0;
-const BASE_CARD_WIDTH: f32 = 340.0;
-
 pub enum UiEvent {
     Status(String),
     Success,
-    Failure(String),
+    Failure(String, bool),
+    ActivationVerified(crate::InstallCredential),
+    ActivationRequired(String),
+    ActivationRetry(String),
+    Instances(Vec<InstallTarget>),
+    Folder(Option<PathBuf>),
 }
 
-enum Stage {
-    Main,
-    Launchers,
-    Instances {
-        launcher: DetectedLauncher,
-        instances: Vec<GameInstance>,
-    },
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SetupState {
+    Checking,
+    Activating,
+    NeedsKey,
+    Retry,
+    Ready,
 }
 
-#[derive(Clone, Copy)]
-struct UiMetrics {
-    factor: f32,
-    card_width: f32,
-    title_size: f32,
-    heading_size: f32,
-    body_size: f32,
-    status_size: f32,
-    button_h: f32,
-    row_h: f32,
-}
+impl SetupState {
+    fn allows_instances(self) -> bool {
+        self == Self::Ready
+    }
 
-impl UiMetrics {
-    fn from_screen(rect: egui::Rect) -> Self {
-        let width = rect.width().max(1.0);
-        let height = rect.height().max(1.0);
-        // 1.0 at the default 520x380 window. Title uses factor^1.4 so "Celeste"
-        // grows faster than the card when the window is maximized.
-        let factor = (width / BASE_WIDTH)
-            .min(height / BASE_HEIGHT)
-            .clamp(0.9, 4.5);
-        let card_width = (BASE_CARD_WIDTH * factor).min(width * 0.56).max(280.0);
-        Self {
-            factor,
-            card_width,
-            title_size: 28.0 * factor.powf(1.4),
-            heading_size: 22.0 * factor,
-            body_size: 14.0 * factor,
-            status_size: 12.5 * factor,
-            button_h: 38.0 * factor,
-            row_h: 34.0 * factor,
+    fn primary_label(self, busy: bool) -> &'static str {
+        match self {
+            Self::Checking => "Checking activation...",
+            Self::Activating => "Activating...",
+            Self::NeedsKey => "Activate Celeste",
+            Self::Retry => "Retry verification",
+            Self::Ready if busy => "Installing...",
+            Self::Ready => "Install Celeste",
         }
     }
 
-    fn i8(self, base: f32) -> i8 {
-        (base * self.factor).round().clamp(1.0, 127.0) as i8
+    fn primary_enabled(
+        self,
+        busy: bool,
+        discovering: bool,
+        valid_key: bool,
+        selected: bool,
+    ) -> bool {
+        if busy || discovering {
+            return false;
+        }
+        match self {
+            Self::NeedsKey => valid_key,
+            Self::Retry => true,
+            Self::Ready => selected,
+            Self::Checking | Self::Activating => false,
+        }
     }
 }
 
 pub struct LauncherApp {
     license: String,
-    ask_license: bool,
+    setup: SetupState,
+    credential: Option<crate::InstallCredential>,
     status: String,
     status_color: Color32,
     busy: bool,
-    stage: Stage,
-    launchers: Vec<DetectedLauncher>,
+    discovering: bool,
+    instances: Vec<InstallTarget>,
+    selected: Option<usize>,
+    folder: String,
     events: Receiver<UiEvent>,
     event_tx: mpsc::Sender<UiEvent>,
 }
@@ -92,17 +93,82 @@ impl LauncherApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         apply_theme(&cc.egui_ctx);
         let (event_tx, events) = mpsc::channel();
-        Self {
+        let mut app = Self {
             license: String::new(),
-            ask_license: !crate::any_saved_binding(),
+            setup: SetupState::Checking,
+            credential: None,
             status: String::new(),
             status_color: MUTED,
             busy: false,
-            stage: Stage::Main,
-            launchers: Vec::new(),
+            discovering: false,
+            instances: Vec::new(),
+            selected: None,
+            folder: String::new(),
             events,
             event_tx,
+        };
+        app.start_verification(None);
+        app
+    }
+
+    fn refresh(&mut self) {
+        if !self.setup.allows_instances() || self.busy || self.discovering {
+            return;
         }
+        self.discovering = true;
+        let tx = self.event_tx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(UiEvent::Instances(launchers::discover_install_targets()));
+        });
+    }
+
+    fn inspect_folder(&mut self, folder: PathBuf) {
+        if !self.setup.allows_instances() || self.busy || self.discovering {
+            return;
+        }
+        self.folder = folder.display().to_string();
+        self.discovering = true;
+        let tx = self.event_tx.clone();
+        thread::spawn(move || {
+            let event = match launchers::inspect_folder(&folder) {
+                Ok(instances) => UiEvent::Instances(instances),
+                Err(e) => UiEvent::Failure(format!("{e:#}"), false),
+            };
+            let _ = tx.send(event);
+        });
+    }
+
+    fn start_verification(&mut self, license: Option<String>) {
+        if self.busy || self.discovering {
+            return;
+        }
+        self.setup = if license.is_some() {
+            SetupState::Activating
+        } else {
+            SetupState::Checking
+        };
+        self.credential = None;
+        self.busy = true;
+        self.status = if license.is_some() {
+            "Verifying your Celeste license and saving activation...".into()
+        } else {
+            "Checking for a saved activation...".into()
+        };
+        self.status_color = TEXT;
+        let tx = self.event_tx.clone();
+        thread::spawn(move || {
+            let event = match crate::verify_activation(license) {
+                Ok(Some(credential)) => UiEvent::ActivationVerified(credential),
+                Ok(None) => UiEvent::ActivationRequired(
+                    "Enter your Celeste or Both license to activate this PC.".into(),
+                ),
+                Err(error) if crate::activation_key_required(&error) => {
+                    UiEvent::ActivationRequired(format!("{error:#}"))
+                }
+                Err(error) => UiEvent::ActivationRetry(format!("{error:#}")),
+            };
+            let _ = tx.send(event);
+        });
     }
 
     fn pump_events(&mut self) {
@@ -114,367 +180,364 @@ impl LauncherApp {
                 }
                 UiEvent::Success => {
                     self.busy = false;
-                    self.ask_license = false;
                     self.license.clear();
-                    self.stage = Stage::Main;
-                    self.status = "Launched.".to_owned();
+                    self.status = "Installed. Open this instance in your launcher.".into();
                     self.status_color = SUCCESS;
                 }
-                UiEvent::Failure(error) => {
+                UiEvent::Failure(error, activation_required) => {
                     self.busy = false;
-                    self.status = error.clone();
+                    self.discovering = false;
+                    if activation_required {
+                        self.setup = SetupState::NeedsKey;
+                        self.credential = None;
+                    }
+                    self.status = error;
                     self.status_color = FAILURE;
-                    if license_prompt_required(&error) {
-                        self.ask_license = true;
-                        self.stage = Stage::Main;
+                }
+                UiEvent::ActivationVerified(credential) => {
+                    self.busy = false;
+                    self.setup = SetupState::Ready;
+                    self.credential = Some(credential);
+                    self.license.clear();
+                    self.status = "Activation verified. Choose your Minecraft instance.".into();
+                    self.status_color = SUCCESS;
+                    self.refresh();
+                }
+                UiEvent::ActivationRequired(message) => {
+                    self.busy = false;
+                    self.setup = SetupState::NeedsKey;
+                    self.credential = None;
+                    self.status = message;
+                    self.status_color = MUTED;
+                }
+                UiEvent::ActivationRetry(message) => {
+                    self.busy = false;
+                    self.setup = SetupState::Retry;
+                    self.credential = None;
+                    self.status = message;
+                    self.status_color = FAILURE;
+                }
+                UiEvent::Instances(instances) => {
+                    let previous = self
+                        .selected
+                        .and_then(|i| self.instances.get(i))
+                        .map(|t| t.instance.game_dir.clone());
+                    self.selected = previous
+                        .and_then(|p| instances.iter().position(|t| t.instance.game_dir == p));
+                    self.instances = instances;
+                    self.discovering = false;
+                    self.status = if self.instances.is_empty() {
+                        "No Fabric 1.21.11 instances found. Choose a folder below.".into()
+                    } else {
+                        String::new()
+                    };
+                    self.status_color = MUTED;
+                }
+                UiEvent::Folder(folder) => {
+                    self.discovering = false;
+                    if let Some(folder) = folder {
+                        self.inspect_folder(folder);
                     }
                 }
             }
         }
     }
 
-    fn request_launch(&mut self) {
-        if self.ask_license && self.license.trim().len() < 20 {
-            self.status = "Enter a valid Celeste license.".to_owned();
-            self.status_color = FAILURE;
+    fn start_install(&mut self) {
+        if !self.setup.allows_instances() || self.busy || self.discovering {
             return;
         }
-        self.open_launchers();
-    }
-
-    fn open_launchers(&mut self) {
-        if self.busy {
+        let Some(target) = self.selected.and_then(|i| self.instances.get(i)).cloned() else {
             return;
-        }
-        self.launchers = launchers::detect_installed();
-        if self.launchers.is_empty() {
-            self.status = "No launchers found.".to_owned();
-            self.status_color = FAILURE;
-            return;
-        }
-        self.stage = Stage::Launchers;
-        self.status = String::new();
-        self.status_color = MUTED;
-    }
-
-    fn pick_launcher(&mut self, launcher: DetectedLauncher) {
-        if !launcher.supported() {
-            self.status = format!("{} is unsupported.", launcher.label());
-            self.status_color = FAILURE;
-            return;
-        }
-        let all = launchers::list_instances(&launcher);
-        let preferred = launchers::preferred_instances(&all);
-        if preferred.is_empty() {
-            self.status = format!("No Fabric 1.21.11 instance in {}.", launcher.label());
-            self.status_color = FAILURE;
-            self.stage = Stage::Main;
-            return;
-        }
-        if preferred.len() == 1 {
-            self.start_install(launcher, preferred.into_iter().next().unwrap());
-            return;
-        }
-        self.stage = Stage::Instances {
-            launcher,
-            instances: preferred,
         };
-    }
-
-    fn start_install(&mut self, launcher: DetectedLauncher, instance: GameInstance) {
-        if self.busy {
+        let Some(credential) = self.credential.clone() else {
+            self.setup = SetupState::NeedsKey;
             return;
-        }
-        if !crate::saved_binding_exists(&instance.game_dir) && self.license.trim().len() < 20 {
-            self.ask_license = true;
-            self.stage = Stage::Main;
-            self.status = "Enter a valid Celeste license to bind this instance.".to_owned();
-            self.status_color = FAILURE;
-            return;
-        }
-        let license = self.license.trim().to_owned();
+        };
         self.busy = true;
-        self.stage = Stage::Main;
-        self.status = "Working...".to_owned();
+        self.status = "Checking this instance...".into();
         self.status_color = TEXT;
         let tx = self.event_tx.clone();
-        thread::spawn(
-            move || match crate::verify_and_install(license, launcher, instance, &tx) {
-                Ok(()) => {
-                    let _ = tx.send(UiEvent::Success);
-                }
-                Err(error) => {
-                    let _ = tx.send(UiEvent::Failure(format!("{error:#}")));
-                }
-            },
-        );
+        thread::spawn(move || {
+            let event = match crate::verify_and_install(
+                credential,
+                target.launcher,
+                target.instance,
+                &tx,
+            ) {
+                Ok(()) => UiEvent::Success,
+                Err(e) => UiEvent::Failure(format!("{e:#}"), crate::activation_key_required(&e)),
+            };
+            let _ = tx.send(event);
+        });
     }
 
-    fn paint_background(&self, ctx: &egui::Context) {
-        let rect = ctx.screen_rect();
-        let painter = ctx.layer_painter(LayerId::background());
-        painter.rect_filled(rect, 0.0, BG);
+    fn body(&mut self, ui: &mut egui::Ui) {
+        if !self.setup.allows_instances() {
+            self.activation_body(ui);
+            return;
+        }
+        let width = ui.available_width();
+        ui.label(RichText::new("Minecraft instance").color(MUTED).size(12.0));
+        let selected_text = self
+            .selected
+            .and_then(|i| self.instances.get(i))
+            .map(|t| format!("{} · {}", t.launcher.label(), t.instance.name))
+            .unwrap_or_else(|| {
+                if self.discovering {
+                    "Finding instances...".into()
+                } else {
+                    "Choose your instance".into()
+                }
+            });
+        ui.add_enabled_ui(!self.busy && !self.discovering, |ui| {
+            egui::ComboBox::from_id_salt("celeste-instance")
+                .width(width)
+                .truncate()
+                .selected_text(RichText::new(selected_text).size(13.0))
+                .show_ui(ui, |ui| {
+                    ui.set_width(width - 16.0);
+                    for (i, target) in self.instances.iter().enumerate() {
+                        let label =
+                            format!("{} · {}", target.launcher.label(), target.instance.name);
+                        let response = ui.add(
+                            egui::Button::selectable(
+                                self.selected == Some(i),
+                                RichText::new(label).size(13.0),
+                            )
+                            .wrap(),
+                        );
+                        if response.clicked() {
+                            self.selected = Some(i);
+                            self.status.clear();
+                        }
+                        response.on_hover_text(target.instance.game_dir.display().to_string());
+                    }
+                });
+        });
+        if let Some(target) = self.selected.and_then(|i| self.instances.get(i)) {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(target.instance.game_dir.display().to_string())
+                        .size(11.5)
+                        .color(MUTED),
+                )
+                .wrap(),
+            );
+        }
+        ui.add_space(2.0);
+        egui::CollapsingHeader::new("Other folder / details")
+            .id_salt("celeste-details")
+            .show(ui, |ui| {
+                ui.set_width(width - 18.0);
+                ui.label(
+                    RichText::new("Fabric · Minecraft 1.21.11")
+                        .size(12.0)
+                        .color(MUTED),
+                );
+                ui.add_enabled_ui(!self.busy && !self.discovering, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.button("Browse...").clicked() {
+                            self.discovering = true;
+                            let tx = self.event_tx.clone();
+                            thread::spawn(move || {
+                                let picked = rfd::FileDialog::new()
+                                    .set_title("Choose your Minecraft instance folder")
+                                    .pick_folder();
+                                let _ = tx.send(UiEvent::Folder(picked));
+                            });
+                        }
+                        if ui.button("Refresh").clicked() {
+                            self.refresh();
+                        }
+                    });
+                    ui.add(
+                        TextEdit::singleline(&mut self.folder)
+                            .desired_width(ui.available_width())
+                            .hint_text("Full path to instance or .minecraft"),
+                    );
+                    if ui.button("Use this folder").clicked() {
+                        self.inspect_folder(PathBuf::from(self.folder.trim()));
+                    }
+                });
+                ui.label(
+                    RichText::new("Celeste activation verified for this Windows account.")
+                        .size(11.5)
+                        .color(SUCCESS),
+                );
+                if ui
+                    .add_enabled(
+                        !self.busy && !self.discovering,
+                        egui::Button::new("Change license"),
+                    )
+                    .clicked()
+                {
+                    self.setup = SetupState::NeedsKey;
+                    self.credential = None;
+                    self.status = "Enter the Celeste or Both license you want to use.".into();
+                    self.status_color = MUTED;
+                }
+            });
+        self.status_label(ui);
+    }
+
+    fn activation_body(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("Activate this PC").size(18.0).color(TEXT));
+        ui.label(RichText::new("Verify your license before choosing a Minecraft instance. Your activation is encrypted for this Windows account; the license key is not saved.").size(12.0).color(MUTED));
+        if self.setup == SetupState::Retry {
+            ui.label(RichText::new("Verification could not finish. Retry checks your saved activation without enrolling again.").size(12.0).color(MUTED));
+            if ui.button("Use a different license").clicked() {
+                self.setup = SetupState::NeedsKey;
+                self.status = "Enter your Celeste or Both license.".into();
+                self.status_color = MUTED;
+            }
+        } else {
+            ui.label(RichText::new("License key").size(12.0).color(MUTED));
+            let response = ui.add_enabled(
+                self.setup == SetupState::NeedsKey && !self.busy,
+                TextEdit::singleline(&mut self.license)
+                    .password(true)
+                    .hint_text("Celeste or Both license")
+                    .desired_width(ui.available_width()),
+            );
+            if response.lost_focus()
+                && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                && self.setup == SetupState::NeedsKey
+                && crate::license_looks_valid(self.license.trim())
+            {
+                self.start_verification(Some(self.license.trim().to_owned()));
+            }
+        }
+        if self.busy {
+            ui.spinner();
+        }
+        self.status_label(ui);
+    }
+
+    fn status_label(&self, ui: &mut egui::Ui) {
+        if !self.status.is_empty() {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(&self.status)
+                        .size(12.0)
+                        .color(self.status_color),
+                )
+                .wrap(),
+            );
+            if self.status_color == FAILURE {
+                ui.horizontal(|ui| {
+                    if ui.small_button("Copy error").clicked() {
+                        ui.ctx().copy_text(format!("Celeste setup build {}\n{}", crate::SETUP_BUILD, self.status));
+                    }
+                    ui.label(RichText::new(crate::SETUP_BUILD).size(10.0).color(MUTED));
+                });
+            }
+        }
     }
 }
 
 impl eframe::App for LauncherApp {
-    fn clear_color(&self, _visuals: &Visuals) -> [f32; 4] {
+    fn clear_color(&self, _: &Visuals) -> [f32; 4] {
         BG.to_normalized_gamma_f32()
     }
-
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        apply_theme(ctx);
+    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.pump_events();
-        self.paint_background(ctx);
-
-        // Keep the static OpenGL surface fresh when Windows exposes or restores
-        // the window. This is intentionally slow while idle; it is not an
-        // animation loop.
-        ctx.request_repaint_after(Duration::from_millis(if self.busy { 50 } else { 500 }));
-
+        ctx.request_repaint_after(Duration::from_millis(if self.busy || self.discovering {
+            80
+        } else {
+            500
+        }));
         egui::CentralPanel::default()
-            .frame(
-                Frame::new()
-                    .fill(Color32::TRANSPARENT)
-                    .inner_margin(Margin::ZERO),
-            )
+            .frame(Frame::new().fill(BG))
             .show(ctx, |ui| {
-                ui.visuals_mut().extreme_bg_color = INPUT_BG;
-                ui.visuals_mut().text_edit_bg_color = Some(INPUT_BG);
-                match &self.stage {
-                    Stage::Main => self.show_main(ui),
-                    Stage::Launchers | Stage::Instances { .. } => self.show_picker(ui),
-                }
-            });
-    }
-}
-
-impl LauncherApp {
-    fn show_main(&mut self, ui: &mut egui::Ui) {
-        let metrics = UiMetrics::from_screen(ui.ctx().screen_rect());
-        let ctx = ui.ctx().clone();
-        egui::Area::new(Id::new("celeste_main_card"))
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(&ctx, |ui| {
-                ui.spacing_mut().item_spacing =
-                    Vec2::new(10.0 * metrics.factor, 10.0 * metrics.factor);
-                show_card(ui, &metrics, |ui| {
-                    ui.with_layout(Layout::top_down(Align::Center), |ui| {
-                        ui.label(
-                            RichText::new("Celeste")
-                                .color(ACCENT)
-                                .font(FontId::proportional(metrics.title_size))
-                                .strong(),
-                        );
-                        ui.add_space(if self.ask_license { 18.0 } else { 10.0 } * metrics.factor);
-                        if self.ask_license {
-                            ui.add_enabled_ui(!self.busy, |ui| {
-                                ui.add(
-                                    TextEdit::singleline(&mut self.license)
-                                        .password(true)
-                                        .hint_text(
-                                            RichText::new("CST-XXXXX-XXXXX-XXXXX-XXXXX")
-                                                .color(MUTED)
-                                                .size(metrics.body_size),
-                                        )
-                                        .font(FontId::proportional(metrics.body_size))
-                                        .desired_width(ui.available_width())
-                                        .background_color(INPUT_BG)
-                                        .text_color(TEXT)
-                                        .margin(Margin::symmetric(
-                                            metrics.i8(12.0),
-                                            metrics.i8(10.0),
-                                        )),
+                let outer = ui.max_rect();
+                let card_width = (outer.width() - 36.0).clamp(300.0, 420.0);
+                let card_height = (outer.height() - 36.0).clamp(260.0, 460.0);
+                let rect = egui::Rect::from_center_size(
+                    outer.center(),
+                    Vec2::new(card_width, card_height),
+                );
+                ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                    Frame::new()
+                        .fill(CARD)
+                        .corner_radius(16.0)
+                        .inner_margin(Margin::same(22))
+                        .show(ui, |ui| {
+                            ui.set_width(card_width - 44.0);
+                            ui.set_height(card_height - 44.0);
+                            ui.vertical_centered(|ui| {
+                                ui.label(
+                                    RichText::new("Celeste").size(29.0).strong().color(ACCENT),
+                                );
+                                ui.label(
+                                    RichText::new(if self.setup.allows_instances() {
+                                        "Install once. Launch normally."
+                                    } else {
+                                        "Activate once. Launch normally."
+                                    })
+                                    .size(12.0)
+                                    .color(MUTED),
                                 );
                             });
-                            ui.add_space(6.0 * metrics.factor);
-                        }
-                        let fill = if self.busy {
-                            Color32::from_rgb(70, 70, 82)
-                        } else {
-                            ACCENT
-                        };
-                        let label = if self.busy { "Working..." } else { "Launch" };
-                        let button = ui.add_enabled(
-                            !self.busy,
-                            egui::Button::new(
-                                RichText::new(label)
-                                    .color(Color32::WHITE)
-                                    .size(15.0 * metrics.factor)
-                                    .strong(),
-                            )
-                            .fill(fill)
-                            .stroke(Stroke::NONE)
-                            .corner_radius(8.0 * metrics.factor)
-                            .min_size(Vec2::new(ui.available_width(), metrics.button_h)),
-                        );
-                        if button.clicked() {
-                            self.request_launch();
-                        }
-                        if !self.busy && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
-                            self.request_launch();
-                        }
-                        if !self.status.is_empty() {
-                            ui.add_space(4.0 * metrics.factor);
-                            ui.label(
-                                RichText::new(&self.status)
-                                    .color(self.status_color)
-                                    .size(metrics.status_size),
-                            );
-                        }
-                    });
-                });
-            });
-    }
-
-    fn show_picker(&mut self, ui: &mut egui::Ui) {
-        let metrics = UiMetrics::from_screen(ui.ctx().screen_rect());
-        let ctx = ui.ctx().clone();
-        egui::Area::new(Id::new("celeste_picker_card"))
-            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
-            .show(&ctx, |ui| {
-                ui.spacing_mut().item_spacing =
-                    Vec2::new(10.0 * metrics.factor, 10.0 * metrics.factor);
-                show_card(ui, &metrics, |ui| {
-                    ui.with_layout(Layout::top_down(Align::Center), |ui| {
-                        let title = match &self.stage {
-                            Stage::Instances { .. } => "Instances",
-                            _ => "Launchers",
-                        };
-                        ui.label(
-                            RichText::new(title)
-                                .color(ACCENT)
-                                .font(FontId::proportional(metrics.heading_size))
-                                .strong(),
-                        );
-                        ui.add_space(8.0 * metrics.factor);
-
-                        let mut picked_launcher: Option<DetectedLauncher> = None;
-                        let mut picked_instance: Option<(DetectedLauncher, GameInstance)> = None;
-                        let mut back = false;
-
-                        egui::ScrollArea::vertical()
-                            .max_height(180.0 * metrics.factor)
-                            .auto_shrink([false, true])
-                            .show(ui, |ui| {
-                                ui.set_width(metrics.card_width);
-                                match &self.stage {
-                                    Stage::Launchers => {
-                                        for launcher in &self.launchers {
-                                            let supported = launcher.supported();
-                                            let text = if supported {
-                                                launcher.label().to_owned()
-                                            } else {
-                                                format!("{} (unsupported)", launcher.label())
-                                            };
-                                            let color = if supported { TEXT } else { MUTED };
-                                            let button = ui.add_enabled(
-                                                supported && !self.busy,
-                                                row_button(
-                                                    RichText::new(text)
-                                                        .color(color)
-                                                        .size(metrics.body_size),
-                                                    &metrics,
-                                                ),
-                                            );
-                                            if button.clicked() {
-                                                picked_launcher = Some(launcher.clone());
-                                            }
-                                        }
+                            ui.add_space(10.0);
+                            let footer_h = 67.0;
+                            let body_h = (ui.available_height() - footer_h - 8.0).max(60.0);
+                            egui::ScrollArea::vertical()
+                                .id_salt("celeste-install-body")
+                                .auto_shrink([false, false])
+                                .max_height(body_h)
+                                .show(ui, |ui| self.body(ui));
+                            ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
+                                ui.label(
+                                    RichText::new(if self.setup.allows_instances() {
+                                        "Fabric 1.21.11 · mods/Celeste.jar"
+                                    } else {
+                                        "Celeste / Both license required"
+                                    })
+                                    .size(11.0)
+                                    .color(MUTED),
+                                );
+                                let enabled = self.setup.primary_enabled(
+                                    self.busy,
+                                    self.discovering,
+                                    crate::license_looks_valid(self.license.trim()),
+                                    self.selected.is_some(),
+                                );
+                                let label = self.setup.primary_label(self.busy);
+                                let response = ui.add_enabled(
+                                    enabled,
+                                    egui::Button::new("")
+                                        .fill(ACCENT)
+                                        .stroke(Stroke::NONE)
+                                        .corner_radius(9.0)
+                                        .min_size(Vec2::new(ui.available_width(), 38.0)),
+                                );
+                                ui.painter().text(
+                                    response.rect.center(),
+                                    Align2::CENTER_CENTER,
+                                    label,
+                                    FontId::proportional(14.0),
+                                    if enabled {
+                                        Color32::WHITE
+                                    } else {
+                                        Color32::from_gray(190)
+                                    },
+                                );
+                                if response.clicked() {
+                                    match self.setup {
+                                        SetupState::NeedsKey => self.start_verification(Some(
+                                            self.license.trim().to_owned(),
+                                        )),
+                                        SetupState::Retry => self.start_verification(None),
+                                        SetupState::Ready => self.start_install(),
+                                        SetupState::Checking | SetupState::Activating => {}
                                     }
-                                    Stage::Instances {
-                                        launcher,
-                                        instances,
-                                    } => {
-                                        for instance in instances {
-                                            let label = if instance.version.is_empty() {
-                                                instance.name.clone()
-                                            } else {
-                                                format!("{}  {}", instance.name, instance.version)
-                                            };
-                                            if ui
-                                                .add_enabled(
-                                                    !self.busy,
-                                                    row_button(
-                                                        RichText::new(label)
-                                                            .color(TEXT)
-                                                            .size(metrics.body_size),
-                                                        &metrics,
-                                                    ),
-                                                )
-                                                .clicked()
-                                            {
-                                                picked_instance =
-                                                    Some((launcher.clone(), instance.clone()));
-                                            }
-                                        }
-                                    }
-                                    Stage::Main => {}
                                 }
                             });
-
-                        ui.add_space(8.0 * metrics.factor);
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    RichText::new("Back").color(TEXT).size(metrics.body_size),
-                                )
-                                .fill(ROW)
-                                .stroke(Stroke::NONE)
-                                .corner_radius(8.0 * metrics.factor)
-                                .min_size(Vec2::new(120.0 * metrics.factor, 30.0 * metrics.factor)),
-                            )
-                            .clicked()
-                        {
-                            back = true;
-                        }
-
-                        if back {
-                            self.stage = match &self.stage {
-                                Stage::Instances { .. } => Stage::Launchers,
-                                _ => Stage::Main,
-                            };
-                        } else if let Some(launcher) = picked_launcher {
-                            self.pick_launcher(launcher);
-                        } else if let Some((launcher, instance)) = picked_instance {
-                            self.start_install(launcher, instance);
-                        }
-                    });
+                        });
                 });
             });
     }
-}
-
-fn license_prompt_required(error: &str) -> bool {
-    let lower = error.to_lowercase();
-    lower.contains("license")
-        || lower.contains("enroll")
-        || lower.contains("credential")
-        || lower.contains("unauthorized")
-        || lower.contains("(401)")
-        || lower.contains("authentication denied")
-        || lower.contains("bind")
-}
-
-fn show_card(ui: &mut egui::Ui, metrics: &UiMetrics, add_contents: impl FnOnce(&mut egui::Ui)) {
-    Frame::new()
-        .fill(CARD)
-        .stroke(Stroke::NONE)
-        .corner_radius(16.0 * metrics.factor)
-        .inner_margin(Margin::symmetric(metrics.i8(24.0), metrics.i8(26.0)))
-        .shadow(egui::Shadow::NONE)
-        .show(ui, |ui| {
-            ui.set_width(metrics.card_width);
-            add_contents(ui);
-        });
-}
-
-fn row_button<'a>(text: impl Into<egui::WidgetText>, metrics: &UiMetrics) -> egui::Button<'a> {
-    egui::Button::new(text)
-        .fill(ROW)
-        .stroke(Stroke::NONE)
-        .corner_radius(8.0 * metrics.factor)
-        .min_size(Vec2::new(metrics.card_width, metrics.row_h))
 }
 
 fn paint_widget(
@@ -550,9 +613,9 @@ pub fn apply_theme(ctx: &egui::Context) {
 
 pub fn launch_gui() -> anyhow::Result<()> {
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("Celeste Launcher")
-        .with_inner_size([520.0, 380.0])
-        .with_min_inner_size([480.0, 340.0])
+        .with_title("Celeste")
+        .with_inner_size([480.0, 440.0])
+        .with_min_inner_size([400.0, 380.0])
         .with_resizable(true);
     if let Ok(source) = image::load_from_memory(include_bytes!(
         "../../src/main/resources/assets/celeste/textures/gui/celeste-logo.png"
@@ -571,9 +634,60 @@ pub fn launch_gui() -> anyhow::Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "Celeste Launcher",
+        "Celeste",
         options,
         Box::new(|cc| Ok(Box::new(LauncherApp::new(cc)))),
     )
-    .map_err(|error| anyhow::anyhow!("Could not open Celeste Launcher: {error}"))
+    .map_err(|error| anyhow::anyhow!("Could not open Celeste: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_unverified_states_hide_instances_and_installation() {
+        for state in [
+            SetupState::Checking,
+            SetupState::Activating,
+            SetupState::NeedsKey,
+            SetupState::Retry,
+        ] {
+            assert!(!state.allows_instances());
+            assert!(!state.primary_label(false).starts_with("Install"));
+        }
+        assert!(SetupState::Ready.allows_instances());
+    }
+
+    #[test]
+    fn first_activation_requires_a_key_but_never_an_instance() {
+        assert_eq!(
+            SetupState::NeedsKey.primary_label(false),
+            "Activate Celeste"
+        );
+        assert!(!SetupState::NeedsKey.primary_enabled(false, false, false, true));
+        assert!(SetupState::NeedsKey.primary_enabled(false, false, true, false));
+    }
+
+    #[test]
+    fn saved_activation_retry_does_not_require_a_key_or_instance() {
+        assert_eq!(SetupState::Retry.primary_label(false), "Retry verification");
+        assert!(SetupState::Retry.primary_enabled(false, false, false, false));
+    }
+
+    #[test]
+    fn in_flight_activation_never_enables_a_second_action() {
+        for state in [SetupState::Checking, SetupState::Activating] {
+            assert!(!state.primary_enabled(false, false, true, true));
+        }
+        assert!(!SetupState::NeedsKey.primary_enabled(true, false, true, false));
+        assert!(!SetupState::Retry.primary_enabled(true, false, false, false));
+    }
+
+    #[test]
+    fn verified_installation_needs_an_instance_but_not_a_key() {
+        assert!(!SetupState::Ready.primary_enabled(false, false, false, false));
+        assert!(SetupState::Ready.primary_enabled(false, false, false, true));
+        assert!(!SetupState::Ready.primary_enabled(false, true, false, true));
+    }
 }

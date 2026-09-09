@@ -1,6 +1,6 @@
 package dev.c4lam.celeste.module.expansion.inventory;
 
-import dev.c4lam.celeste.mixin.expansion.inventory.InventoryExpansionHandledScreenAccessor;
+import dev.c4lam.celeste.compat.MinecraftAccess;
 import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.rotation.MoveFixMode;
 import dev.c4lam.celeste.rotation.Rotation;
@@ -293,8 +293,7 @@ public static boolean executeClick(MinecraftClient client, ClickIntent intent, i
         if (!(client.currentScreen instanceof HandledScreen<?> handled)) {
             return null;
         }
-        return ((InventoryExpansionHandledScreenAccessor) (Object) handled)
-            .celeste$inventoryExpansion$getFocusedSlot();
+        return MinecraftAccess.focusedSlot(handled);
     }
 
     record ClickIntent(ClientWorld world, ScreenHandler handler, int syncId, int slotId,

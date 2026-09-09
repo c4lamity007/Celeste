@@ -1,6 +1,6 @@
 package dev.c4lam.celeste.mixin;
 
-import dev.c4lam.celeste.silent.SilentSlotManager;
+import dev.c4lam.celeste.compat.RotationHooks;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
 import org.spongepowered.asm.mixin.Mixin;
@@ -17,21 +17,15 @@ public abstract class PlayerInventorySlotMixin {
     @Inject(method = "getSelectedStack", at = @At("HEAD"), cancellable = true)
     private void celeste$getServerSelectedStack(CallbackInfoReturnable<ItemStack> cir) {
         PlayerInventory inventory = (PlayerInventory)(Object)this;
-        int slot = SilentSlotManager.getInstance().localProjectionSlot(inventory);
-        if (slot >= 0) {
-            cir.setReturnValue(inventory.getStack(slot));
-        }
+        Object[] result = RotationHooks.selectedStack(inventory, null, false);
+        if (result != null) cir.setReturnValue((ItemStack) result[0]);
     }
 
     @Inject(method = "setSelectedStack", at = @At("HEAD"), cancellable = true)
     private void celeste$setServerSelectedStack(ItemStack stack,
                                                  CallbackInfoReturnable<ItemStack> cir) {
         PlayerInventory inventory = (PlayerInventory)(Object)this;
-        int slot = SilentSlotManager.getInstance().localProjectionSlot(inventory);
-        if (slot >= 0) {
-            ItemStack previous = inventory.getStack(slot);
-            inventory.setStack(slot, stack);
-            cir.setReturnValue(previous);
-        }
+        Object[] result = RotationHooks.selectedStack(inventory, stack, true);
+        if (result != null) cir.setReturnValue((ItemStack) result[0]);
     }
 }

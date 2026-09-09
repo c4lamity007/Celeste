@@ -2,7 +2,7 @@ package dev.c4lam.celeste.module.impl.combat;
 
 import dev.c4lam.celeste.action.ActionScheduler;
 import dev.c4lam.celeste.action.GameplayFoundation;
-import dev.c4lam.celeste.mixin.module.KeyBindingAccessor;
+import dev.c4lam.celeste.compat.MinecraftAccess;
 import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.module.ModuleFeature;
 import dev.c4lam.celeste.rotation.MoveFixMode;
@@ -191,7 +191,7 @@ public final class WindChargeFeature implements ModuleFeature {
         if (window == null) {
             return false;
         }
-        InputUtil.Key key = ((KeyBindingAccessor) (Object) binding).celeste$getBoundKey();
+        InputUtil.Key key = MinecraftAccess.boundKey(binding);
         if (key.getCode() < 0) {
             return false;
         }

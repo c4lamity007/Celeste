@@ -1,5 +1,26 @@
 # Focused visual QA
 
+For the image-glow trajectory and ambient additions, use `module_qa.py check --module Trajectories --module "Ambient Effects" --suite ambient-vfx --java-home <JDK21>`.
+This builds once, then tests trajectory core/stamp budgets and actual materials, folded falling-leaf geometry/shading,
+all three sky-line patterns, and existing atmosphere math. In the GUI choose Ambient Effects → Style → Falling Leaves
+and/or Sky Pattern → Light Rails. Trajectories uses its existing Glow slider: zero keeps the core and suppresses image stamps.
+The halo reuses the cached soft PNG, with up to 64 camera-facing arc-length stamps and normalized overlap brightness.
+Leaves remain world-cell anchored, with invisible recycling; sky rails keep their angular anchors fixed while their light travels.
+All contact sheets are offscreen GPU fixtures, not proof of game FPS, renderer integration, or a published release.
+
+For Trajectories, use `module_qa.py check --module Trajectories --suite trajectories --java-home <JDK21>`.
+This builds incrementally and runs `run-trajectories.ps1`: production ribbon/budget/fade geometry tests with
+value-only vector/render-record adapters, then real trajectory/impact GLSL GPU tests (static material,
+segment seams, Glow=0, themes, zero opacity, preserved depth). The shader preview is a posed offscreen
+fixture, not Minecraft gameplay. Bow/pearl hand selection, real surface placement, camera movement,
+disable/reset and the edited build's identity still need a local-world check through the normal launcher.
+
+For Custom Sky and Custom Fog, run `module_qa.py check --module "Custom Sky" --module "Custom Fog" --suite fog-compatibility --java-home <JDK21>`. This includes an incremental build, actual sky/fog GLSL checks, native/Sodium compatibility fixtures, and shader-fog policy/lifecycle checks. Sky and shader-fog presets are Aurora, Nebula, Sunset, Abyss, and Black Hole; `Match Sky` selects the active sky's palette. Native fog remains a separate rendering option.
+
+Nebula's three translucent dust bands have actual radial gaps and asymmetric material that orbits within a fixed ring plane. Black Hole uses an analytic shadow, accretion disk, and lensing-inspired arcs, not a physical gravity simulation. Both effects remain in the existing sky draw; no new mesh, texture, particle system, or ray-marching pass is added. Detail is filtered by pixel footprint, and costly celestial material work is restricted to its angular bounds. Offscreen GPU previews and isolated draw timings do not establish in-game appearance or FPS on other systems. Actual runtime enable/disable, loaded-build identity, camera motion, and local-world behavior still need game verification.
+
+`run-celestial-shader.ps1 -ProjectRoot <project> -OutputRoot <artifacts> -JdkHome <JDK21>` runs the focused Nebula/Black Hole material checks and creates a side-by-side PNG plus a five-second animated GIF from the production shaders. It accepts `-Width` (default 576) and an optional `-BaselineJar` containing the previous sky shader for an isolated old/new GPU draw-time comparison. No recorded gameplay, post-production glow, or downloaded artwork is substituted.
+
 For Player ESP, Chams, or the client-estimated Target HUD, run `module_qa.py check --module "Player ESP" --module Chams --module "Target HUD" --suite player-visuals --java-home <JDK21>`. This records one incremental build, the existing world-effect checks, real chams/prism GPU tests, unified-volume GPU checks and the pure local-damage regression checks in a single compact report. The unified-volume step runs after prism and before local damage. New shader-only changes should use this suite, not just the older `visuals` suite.
 
 The chams/prism/unified-volume PNGs are offscreen GPU fixtures, not Minecraft screenshots. The runtime step still needs the tested client loaded in-game. Local target health is an estimate from a 20-HP baseline and local outgoing melee attacks; it does not confirm accepted hits, healing, absorption, other players' damage or server-specific rules.

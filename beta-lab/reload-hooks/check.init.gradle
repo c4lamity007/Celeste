@@ -1,0 +1,32 @@
+// Opt-in offline hook preparation/verification; never installs a transformer.
+allprojects { project ->
+    project.afterEvaluate {
+        if (project.plugins.hasPlugin('java') && project == project.rootProject) {
+            def output = project.layout.buildDirectory.dir('module-qa/reload-hooks/classes')
+            def compileCheck = project.tasks.register('compileBetaReloadHooksCheck', JavaCompile) {
+                dependsOn project.tasks.named('compileJava')
+                source project.fileTree('beta-lab/reload-hooks/src') { include '**/*.java' }
+                classpath = project.sourceSets.main.compileClasspath + project.sourceSets.main.output.classesDirs
+                destinationDirectory = output
+                options.release = 21
+                options.encoding = 'UTF-8'
+                options.compilerArgs += ['-Xlint:all', '-Werror']
+            }
+            project.tasks.register('betaReloadHooksCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(output) + project.sourceSets.main.output.classesDirs + project.sourceSets.main.runtimeClasspath
+                mainClass = 'dev.celestebeta.host.fixture.ReloadHooksCheck'
+                enableAssertions = true
+                workingDir = project.layout.buildDirectory.dir('module-qa/reload-hooks').get().asFile
+                def tag = "${project.minecraft_version}-net.fabricmc.yarn.${project.minecraft_version.replace('.', '_')}.${project.yarn_mappings}-v2"
+                def cachedIntermediary = new File(project.gradle.gradleUserHomeDir,
+                        "caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged-intermediary/${tag}/minecraft-merged-intermediary-${tag}.jar")
+                args cachedIntermediary.absolutePath
+                doFirst {
+                    workingDir.mkdirs()
+                    if (!cachedIntermediary.isFile()) throw new GradleException('Expected cached mapped intermediary Minecraft JAR; no download fallback')
+                }
+            }
+        }
+    }
+}

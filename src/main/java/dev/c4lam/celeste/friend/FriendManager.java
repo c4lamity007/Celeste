@@ -1,5 +1,8 @@
 package dev.c4lam.celeste.friend;
 
+import dev.c4lam.celeste.beta.lifecycle.BetaSubscriptions;
+
+import dev.c4lam.celeste.CelesteClient;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import dev.c4lam.celeste.config.ConfigImageCodec;
@@ -41,7 +44,7 @@ import java.util.UUID;
  * label, so name changes cannot create duplicate or stale friend identities.</p>
  */
 public final class FriendManager implements AutoCloseable {
-    private static final Logger LOGGER = LoggerFactory.getLogger("Celeste/Friends");
+    private static final Logger LOGGER = dev.c4lam.celeste.compat.RuntimeLogging.getLogger("Celeste/Friends");
     private static final FriendManager INSTANCE = new FriendManager();
     private static final String FRIEND_KEY_PREFIX = "friend.";
 
@@ -54,6 +57,7 @@ public final class FriendManager implements AutoCloseable {
     private final Map<UUID, Friend> friends = new LinkedHashMap<>();
 
     private boolean initialized;
+    private volatile boolean closed;
     private boolean dirty;
     private boolean middleMouseDown;
     private UUID sessionUuid;
@@ -67,12 +71,13 @@ public final class FriendManager implements AutoCloseable {
 
     /** Loads the saved list and installs the client-tick input listener once. */
     public synchronized void initialize() {
-        if (initialized) {
+        if (initialized || closed) {
             return;
         }
 
         load();
-        ClientTickEvents.END_CLIENT_TICK.register(this::onEndClientTick);
+        BetaSubscriptions.register(ClientTickEvents.END_CLIENT_TICK, "celeste:friends/end_tick",
+            ClientTickEvents.EndTick.class, this::onEndClientTick, ClientTickEvents.END_CLIENT_TICK::register);
         initialized = true;
     }
 
@@ -200,6 +205,7 @@ public final class FriendManager implements AutoCloseable {
 
     @Override
     public synchronized void close() {
+        closed = true;
         if (dirty) {
             save();
         }
@@ -207,6 +213,10 @@ public final class FriendManager implements AutoCloseable {
     }
 
     private void onEndClientTick(MinecraftClient client) {
+        if (closed || !CelesteClient.active()) {
+            middleMouseDown = false;
+            return;
+        }
         syncSession(client);
         boolean down = GLFW.glfwGetMouseButton(client.getWindow().getHandle(), GLFW.GLFW_MOUSE_BUTTON_MIDDLE)
             == GLFW.GLFW_PRESS;

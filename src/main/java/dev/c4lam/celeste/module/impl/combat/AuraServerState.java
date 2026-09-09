@@ -1,5 +1,7 @@
 package dev.c4lam.celeste.module.impl.combat;
 
+import dev.c4lam.celeste.beta.lifecycle.BetaSubscriptions;
+
 import net.minecraft.block.BlockState;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
 import net.minecraft.client.world.ClientWorld;
@@ -16,7 +18,10 @@ public final class AuraServerState {
     private static final Map<BlockPos, Long> UNCONFIRMED = new LinkedHashMap<>();
     private static ClientWorld world;
     private static long revision;
-    static { ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> clear()); }
+    static {
+        BetaSubscriptions.register(ClientPlayConnectionEvents.DISCONNECT, "celeste:aura/disconnect",
+            ClientPlayConnectionEvents.Disconnect.class, (handler, client) -> clear(), ClientPlayConnectionEvents.DISCONNECT::register);
+    }
 
     private AuraServerState() { }
     public record BlockObservation(long revision, BlockState state) { }

@@ -4,6 +4,7 @@ import com.mojang.blaze3d.pipeline.BlendFunction;
 import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.platform.DepthTestFunction;
 import dev.c4lam.celeste.CelesteClient;
+import dev.c4lam.celeste.beta.lifecycle.BetaSubscriptions;
 import dev.c4lam.celeste.auth.AuthBootstrap;
 import dev.c4lam.celeste.module.impl.visual.expansion.PlayerEchoRenderer;
 import dev.c4lam.celeste.module.impl.visual.expansion.WorldGlowRenderer;
@@ -28,7 +29,7 @@ import java.util.List;
 public final class VisualWorldRenderer {
     private static final RenderLayer FILLS = RenderLayer.of(
         "celeste_visual_fills",
-        RenderSetup.builder(RenderPipelines.register(
+        RenderSetup.builder(dev.c4lam.celeste.compat.BetaRenderPipelines.register(
             RenderPipeline.builder(RenderPipelines.POSITION_COLOR_SNIPPET)
                 .withLocation(Identifier.of(CelesteClient.MOD_ID, "pipeline/visual_fills"))
                 .withBlend(BlendFunction.TRANSLUCENT)
@@ -40,7 +41,7 @@ public final class VisualWorldRenderer {
     );
     private static final RenderLayer LINES = RenderLayer.of(
         "celeste_visual_lines",
-        RenderSetup.builder(RenderPipelines.register(
+        RenderSetup.builder(dev.c4lam.celeste.compat.BetaRenderPipelines.register(
             RenderPipeline.builder(RenderPipelines.RENDERTYPE_LINES_SNIPPET)
                 .withLocation(Identifier.of(CelesteClient.MOD_ID, "pipeline/visual_lines"))
                 .withBlend(BlendFunction.TRANSLUCENT)
@@ -64,8 +65,9 @@ public final class VisualWorldRenderer {
         initialized = true;
         UnifiedChamsRenderer.initialize();
 
-        WorldRenderEvents.END_EXTRACTION.register(context -> {
-            if (!AuthBootstrap.authorized()) {
+        BetaSubscriptions.register(WorldRenderEvents.END_EXTRACTION, "celeste:world_visuals/extract",
+            WorldRenderEvents.EndExtraction.class, context -> {
+            if (!AuthBootstrap.authorized() || dev.c4lam.celeste.compat.RenderCompatibility.isShadowPass()) {
                 return;
             }
             var worldState = context.worldState();
@@ -80,10 +82,11 @@ public final class VisualWorldRenderer {
             holes.extract(context, boxes, glows);
             worldState.setData(FRAME_KEY, boxes.isEmpty() && glows.isEmpty() && chams.isEmpty() ? Frame.EMPTY
                 : new Frame(List.copyOf(boxes), List.copyOf(glows), new PlayerEchoRenderer.Frame(chams)));
-        });
+        }, WorldRenderEvents.END_EXTRACTION::register);
         // Fabric 16.2.x invokes BEFORE_DEBUG_RENDER from the outer extraction method,
         // before WorldRenderContextImpl is prepared for the frame-graph draw pass.
-        WorldRenderEvents.AFTER_ENTITIES.register(VisualWorldRenderer::draw);
+        BetaSubscriptions.register(WorldRenderEvents.AFTER_ENTITIES, "celeste:world_visuals/draw",
+            WorldRenderEvents.AfterEntities.class, VisualWorldRenderer::draw, WorldRenderEvents.AFTER_ENTITIES::register);
     }
 
     static int argb(float alpha, int rgb) {
@@ -92,7 +95,7 @@ public final class VisualWorldRenderer {
     }
 
     private static void draw(WorldRenderContext context) {
-        if (!AuthBootstrap.authorized()) {
+        if (!AuthBootstrap.authorized() || dev.c4lam.celeste.compat.RenderCompatibility.isShadowPass()) {
             return;
         }
         var worldState = context.worldState();

@@ -1,0 +1,74 @@
+allprojects { project ->
+    project.afterEvaluate {
+        if (project == project.rootProject) {
+            def output = project.layout.buildDirectory.dir('module-qa/model-import/classes')
+            // Gson's optional InlineMe class-file annotation is not a transitive
+            // Minecraft compile dependency. Reuse the cached annotation JAR as in
+            // the bootstrap fixtures; keep all source AND classfile lint enabled.
+            def inlineMe = project.fileTree(new File(project.gradle.gradleUserHomeDir,
+                'caches/modules-2/files-2.1/com.google.errorprone/error_prone_annotations/2.48.0')) {
+                include '**/error_prone_annotations-2.48.0.jar'
+            }
+            def compileCheck = project.tasks.register('compileBetaGlbImportCheck', JavaCompile) {
+                source project.fileTree('src/main/java/dev/c4lam/celeste/render/model') {
+                    include 'Glb*.java', 'ModelAnimations.java', 'ModelSecondaryMotion.java', 'BundledPlayerModel.java',
+                        'SahurLocomotion.java', 'PlayerModelMotion.java', 'ModelKillTracker.java'
+                }
+                source project.fileTree('beta-lab/model-import/src/test/java') { include '**/*.java' }
+                classpath = project.sourceSets.main.compileClasspath + inlineMe
+                destinationDirectory = output
+                options.release = 21
+                options.encoding = 'UTF-8'
+                options.compilerArgs += ['-Xlint:all', '-Werror']
+            }
+            project.tasks.register('betaGlbImportCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(output) + project.sourceSets.main.compileClasspath
+                mainClass = 'dev.c4lam.celeste.render.model.GlbImporterCheck'
+                enableAssertions = true
+                jvmArgs '-Djava.awt.headless=true'
+            }
+            project.tasks.register('betaGlbPoseCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(output) + project.sourceSets.main.compileClasspath
+                mainClass = 'dev.c4lam.celeste.render.model.GlbPoseCheck'
+                enableAssertions = true
+            }
+            project.tasks.register('betaModelAnimationsCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(output) + project.sourceSets.main.compileClasspath
+                mainClass = 'dev.c4lam.celeste.render.model.ModelAnimationsCheck'
+                enableAssertions = true
+            }
+            project.tasks.register('betaModelSecondaryMotionCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(output) + project.sourceSets.main.compileClasspath
+                mainClass = 'dev.c4lam.celeste.render.model.ModelSecondaryMotionCheck'
+                enableAssertions = true
+            }
+            project.tasks.register('betaPlayerModelMotionCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(output) + project.sourceSets.main.compileClasspath
+                mainClass = 'dev.c4lam.celeste.render.model.PlayerModelMotionCheck'
+                enableAssertions = true
+            }
+            project.tasks.register('betaSahurAssetCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(output) + project.sourceSets.main.compileClasspath
+                if (project.hasProperty('betaSahurResources')) {
+                    classpath += project.files(project.property('betaSahurResources'))
+                }
+                mainClass = 'dev.c4lam.celeste.render.model.SahurAssetCheck'
+                enableAssertions = true
+                jvmArgs '-Djava.awt.headless=true'
+                doFirst {
+                    if (!project.hasProperty('betaSahurModel')) {
+                        throw new GradleException('Provide -PbetaSahurModel=<converted sahur.glb path>')
+                    }
+                    args project.file(project.property('betaSahurModel')).absolutePath
+                    if (project.hasProperty('betaSahurResources')) args '--bundled'
+                }
+            }
+        }
+    }
+}

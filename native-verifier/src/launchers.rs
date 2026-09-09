@@ -1,3 +1,9 @@
+#[path = "instance_install.rs"]
+mod instance_install;
+pub use instance_install::{
+    InstallTarget, discover_install_targets, inspect_folder, install_mod, validate_install_target,
+};
+
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 use std::fs;
@@ -634,7 +640,8 @@ fn modrinth_instances(data: &Path) -> Vec<GameInstance> {
 }
 
 fn modrinth_instances_from_db(db: &Path, data: &Path) -> Result<Vec<GameInstance>> {
-    let connection = rusqlite::Connection::open(db)?;
+    let connection =
+        rusqlite::Connection::open_with_flags(db, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     connection.busy_timeout(Duration::from_secs(5))?;
     let mut statement = connection.prepare(
         "SELECT i.id, i.path, i.name, COALESCE(cs.game_version, ''), COALESCE(cs.loader, '')
@@ -717,20 +724,9 @@ fn prism_game_dir(dir: &Path) -> PathBuf {
     if dotted.is_dir() {
         return dotted;
     }
-    dir.to_path_buf()
-}
-
-fn instance_cfg_path(instance: &GameInstance) -> PathBuf {
-    let parent = instance
-        .game_dir
-        .file_name()
-        .map(|name| name.to_string_lossy().to_ascii_lowercase())
-        .unwrap_or_default();
-    if parent == "minecraft" || parent == ".minecraft" {
-        instance.game_dir.join("..").join("instance.cfg")
-    } else {
-        instance.game_dir.join("instance.cfg")
-    }
+    // Prism creates this directory on first launch. Its absence must not
+    // change where we store the activation, loader, or launch handoff.
+    minecraft
 }
 
 fn prism_meta(dir: &Path, fallback: &str) -> (String, String, String) {
@@ -746,11 +742,17 @@ fn prism_meta(dir: &Path, fallback: &str) -> (String, String, String) {
                         .get("version")
                         .and_then(Value::as_str)
                         .unwrap_or("");
+                    if component.get("disabled").and_then(Value::as_bool) == Some(true) {
+                        continue;
+                    }
                     if uid == "net.minecraft" {
                         version = ver.to_owned();
                     }
-                    if uid.contains("fabric") {
+                    if uid == "net.fabricmc.fabric-loader" && !loader.starts_with("quilt ") {
                         loader = format!("fabric {ver}");
+                    }
+                    if uid == "org.quiltmc.quilt-loader" {
+                        loader = format!("quilt {ver}");
                     }
                 }
             }
@@ -1043,10 +1045,34 @@ fn edit_launcher_files(
 }
 
 fn prism_instance_root(instance: &GameInstance) -> PathBuf {
-    instance_cfg_path(instance)
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| instance.game_dir.clone())
+    let name = instance
+        .game_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    if name.eq_ignore_ascii_case("minecraft") || name.eq_ignore_ascii_case(".minecraft") {
+        instance
+            .game_dir
+            .parent()
+            .unwrap_or(&instance.game_dir)
+            .to_path_buf()
+    } else {
+        instance.game_dir.clone()
+    }
+}
+
+pub(crate) fn legacy_binding_root(
+    launcher: &DetectedLauncher,
+    instance: &GameInstance,
+) -> Option<PathBuf> {
+    if !matches!(
+        launcher.kind,
+        LauncherKind::Prism | LauncherKind::MultiMc | LauncherKind::PolyMc
+    ) {
+        return None;
+    }
+    let root = prism_instance_root(instance);
+    (root != instance.game_dir).then_some(root)
 }
 
 fn edit_prism_component(instance: &GameInstance, hook: &Path) -> Result<()> {
@@ -1066,33 +1092,36 @@ fn edit_prism_component(instance: &GameInstance, hook: &Path) -> Result<()> {
             "MMC-filename": "celeste-hook.jar"
         }]
     });
-    fs::write(
-        patches.join("dev.celeste.loader.json"),
-        serde_json::to_vec_pretty(&patch)?,
-    )?;
     let pack_path = root.join("mmc-pack.json");
     let mut pack: Value = if pack_path.is_file() {
         serde_json::from_str(&fs::read_to_string(&pack_path)?)?
     } else {
         json!({ "components": [], "formatVersion": 1 })
     };
-    if let Some(components) = pack
+    let components = pack
         .as_object_mut()
         .map(|object| object.entry("components").or_insert_with(|| json!([])))
         .and_then(Value::as_array_mut)
-    {
-        let present = components
-            .iter()
-            .any(|item| item.get("uid").and_then(Value::as_str) == Some(HOOK_UID));
-        if !present {
-            components.push(json!({
-                "cachedName": "Celeste",
-                "cachedVersion": "1.0.0",
-                "uid": HOOK_UID
-            }));
-        }
-    }
-    fs::write(&pack_path, serde_json::to_vec_pretty(&pack)?)?;
+        .ok_or_else(|| {
+            anyhow!("Prism instance has an invalid component list; no configuration was replaced")
+        })?;
+    let mut component = components
+        .iter()
+        .find(|item| item.get("uid").and_then(Value::as_str) == Some(HOOK_UID))
+        .cloned()
+        .unwrap_or_else(|| json!({"uid":HOOK_UID}));
+    components.retain(|item| item.get("uid").and_then(Value::as_str) != Some(HOOK_UID));
+    component["cachedName"] = json!("Celeste");
+    component["cachedVersion"] = json!("1.0.0");
+    component["disabled"] = json!(false);
+    // Prism applies mainClass in component order. Reinstalling must repair a
+    // disabled or reordered Celeste component, after Fabric's mainClass.
+    components.push(component);
+    crate::atomic_write(
+        &patches.join("dev.celeste.loader.json"),
+        &serde_json::to_vec_pretty(&patch)?,
+    )?;
+    crate::atomic_write(&pack_path, &serde_json::to_vec_pretty(&pack)?)?;
     Ok(())
 }
 
@@ -1451,6 +1480,125 @@ mod tests {
             "celeste-launcher-{name}-{}-{nonce}",
             std::process::id()
         ))
+    }
+
+    #[test]
+    fn fresh_prism_instance_keeps_game_directory_stable_after_first_start() {
+        let root = fixture("prism-fresh");
+        let instance_root = root.join("instances").join("fresh");
+        fs::create_dir_all(&instance_root).unwrap();
+        fs::write(instance_root.join("mmc-pack.json"), serde_json::to_vec(&json!({
+            "formatVersion":1,
+            "components":[{"uid":"net.minecraft","version":"1.21.11"},{"uid":"net.fabricmc.fabric-loader","version":"0.18.4"}]
+        })).unwrap()).unwrap();
+        let before = prism_like_instances(&root).pop().unwrap();
+        let expected = instance_root.join("minecraft");
+        assert_eq!(
+            before.game_dir, expected,
+            "Prism uses minecraft even before it exists"
+        );
+        fs::create_dir_all(&expected).unwrap();
+        let after = prism_like_instances(&root).pop().unwrap();
+        assert_eq!(
+            before.game_dir, after.game_dir,
+            "activation and loader paths must survive the first launch"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prism_preserves_existing_dotted_minecraft_directory() {
+        let root = fixture("prism-dotted");
+        let dotted = root.join(".minecraft");
+        fs::create_dir_all(&dotted).unwrap();
+        assert_eq!(prism_game_dir(&root), dotted);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prism_legacy_binding_root_is_accessible_before_game_directory_exists() {
+        let root = fixture("prism-legacy-binding");
+        fs::create_dir_all(&root).unwrap();
+        let launcher = DetectedLauncher {
+            kind: LauncherKind::Prism,
+            exe: None,
+            data_dir: root.clone(),
+        };
+        let instance = game_instance(
+            "fixture".into(),
+            "Fabric 1.21.11".into(),
+            root.join("minecraft"),
+            "1.21.11".into(),
+            "fabric".into(),
+        );
+        let recovered = legacy_binding_root(&launcher, &instance).unwrap();
+        assert_eq!(recovered, root);
+        assert!(
+            recovered.is_dir(),
+            "old activation must be discoverable without creating minecraft first"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prism_reinstall_enables_and_applies_celeste_after_fabric() {
+        let root = fixture("prism-repair");
+        let game = root.join("minecraft");
+        fs::create_dir_all(&game).unwrap();
+        let original = json!({
+            "formatVersion":1,
+            "components":[
+                {"uid":HOOK_UID,"disabled":true,"cachedName":"Old Celeste"},
+                {"uid":"net.minecraft","version":"1.21.11"},
+                {"uid":"net.fabricmc.fabric-loader","version":"0.18.4","important":true}
+            ]
+        });
+        fs::write(
+            root.join("mmc-pack.json"),
+            serde_json::to_vec(&original).unwrap(),
+        )
+        .unwrap();
+        let instance = game_instance(
+            "fixture".into(),
+            "Fabric 1.21.11".into(),
+            game,
+            "1.21.11".into(),
+            "fabric".into(),
+        );
+        let hook = root.join("libraries").join("celeste-hook.jar");
+        fs::create_dir_all(hook.parent().unwrap()).unwrap();
+        fs::write(&hook, HOOK_JAR).unwrap();
+        for _ in 0..2 {
+            edit_prism_component(&instance, &hook).unwrap();
+        }
+        let pack: Value =
+            serde_json::from_slice(&fs::read(root.join("mmc-pack.json")).unwrap()).unwrap();
+        let components = pack["components"].as_array().unwrap();
+        assert_eq!(
+            components.len(),
+            3,
+            "repeat install must not duplicate components"
+        );
+        assert_eq!(components[0], original["components"][1]);
+        assert_eq!(components[1], original["components"][2]);
+        assert_eq!(components[2]["uid"], HOOK_UID);
+        assert_eq!(components[2]["disabled"], false);
+        let patch: Value = serde_json::from_slice(
+            &fs::read(root.join("patches").join("dev.celeste.loader.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(patch["mainClass"], HOOK_MAIN);
+        let library = &patch["+libraries"][0];
+        assert_eq!(library["MMC-hint"], "local");
+        assert_eq!(
+            fs::read(
+                root.join("libraries")
+                    .join(library["MMC-filename"].as_str().unwrap())
+            )
+            .unwrap(),
+            HOOK_JAR
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

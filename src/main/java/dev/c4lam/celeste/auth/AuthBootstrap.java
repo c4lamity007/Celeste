@@ -1,13 +1,17 @@
 package dev.c4lam.celeste.auth;
 
 import dev.c4lam.celeste.license.LicenseIdentity;
+import dev.c4lam.celeste.beta.lifecycle.BetaSubscriptions;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.util.Objects;
 import java.util.concurrent.Executors;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Consumer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.minecraft.client.MinecraftClient;
 
@@ -17,29 +21,103 @@ public final class AuthBootstrap {
         thread.setDaemon(true);
         return thread;
     });
-    private static final CredentialStore STORE = new CredentialStore();
+    private static CredentialStore STORE = new CredentialStore();
     private static final AtomicBoolean BUSY = new AtomicBoolean();
     private static final AtomicBoolean AUTHORIZED = new AtomicBoolean();
     private static final AtomicBoolean LOCKED = new AtomicBoolean();
+    private static final AtomicBoolean INSTALLED = new AtomicBoolean();
+    private static final AtomicBoolean STARTED = new AtomicBoolean();
+    private static final AtomicBoolean STOPPED = new AtomicBoolean();
     private static volatile String status = "Waiting for license";
     private static volatile AuthConfig config;
     private static volatile AuthServiceClient service;
+    private static volatile String expectedBetaCatalog;
     private static volatile HardwareFingerprint hardware;
     private static volatile InstallCredential sessionCredential;
     private static volatile String sessionGrant;
     private static volatile long lastHeartbeatSuccessNanos;
     private static Runnable authorizedInitializer;
     private static Runnable authorizedShutdown;
+    private static volatile Consumer<Throwable> lateFailureObserver;
+    private static volatile boolean lateInstallation;
+    private static CompletableFuture<Void> lateStopCompletion;
 
     private AuthBootstrap() {
     }
 
     public static void install(Runnable initializer, Runnable shutdown) {
-        authorizedInitializer = Objects.requireNonNull(initializer, "initializer");
-        authorizedShutdown = Objects.requireNonNull(shutdown, "shutdown");
-        ClientLifecycleEvents.CLIENT_STARTED.register(AuthBootstrap::start);
-        ClientLifecycleEvents.CLIENT_STOPPING.register(client -> WORKER.shutdownNow());
+        install(initializer, shutdown, false);
+    }
+
+    /** Same authentication as normal startup, for a host whose CLIENT_STARTED event already fired. */
+    public static void installAfterClientStarted(Runnable initializer, Runnable shutdown) {
+        install(initializer, shutdown, true);
+    }
+
+    /** Same required authentication, with failure observation for the late runtime host. */
+    public static void installAfterClientStarted(Runnable initializer, Runnable shutdown, Consumer<Throwable> failureObserver) {
+        install(initializer, shutdown, true, Objects.requireNonNull(failureObserver, "failureObserver"));
+    }
+
+    /** Request late-runtime authorization shutdown and observe actual worker termination. */
+    public static synchronized CompletionStage<Void> stopAfterClientStarted() {
+        if (!lateInstallation) return CompletableFuture.<Void>completedFuture(null).minimalCompletionStage();
+        stop(MinecraftClient.getInstance());
+        if (lateStopCompletion == null) {
+            lateStopCompletion = CompletableFuture.runAsync(() -> {
+                try {
+                    if (!WORKER.awaitTermination(30, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("Authorization worker did not finish stopping within 30 seconds");
+                    }
+                } catch (InterruptedException failure) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("Authorization shutdown observation was interrupted", failure);
+                }
+            });
+        }
+        return lateStopCompletion.minimalCompletionStage();
+    }
+
+    /** Called by the beta host after verifying the server-signed artifact catalog, before installation. */
+    public static synchronized void configureBetaRuntime(String catalogSha256) {
+        if (INSTALLED.get() || expectedBetaCatalog != null) {
+            throw new IllegalStateException("Beta runtime context must be selected once before installation");
+        }
+        if (catalogSha256 == null || !catalogSha256.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("Verified beta catalog hash is invalid");
+        }
+        STORE = new CredentialStore("celeste_plus");
+        expectedBetaCatalog = catalogSha256;
+    }
+
+    private static synchronized void install(Runnable initializer, Runnable shutdown, boolean alreadyStarted) {
+        install(initializer, shutdown, alreadyStarted, null);
+    }
+
+    private static synchronized void install(Runnable initializer, Runnable shutdown, boolean alreadyStarted,
+                                             Consumer<Throwable> failureObserver) {
+        Objects.requireNonNull(initializer, "initializer");
+        Objects.requireNonNull(shutdown, "shutdown");
+        if (!INSTALLED.compareAndSet(false, true)) {
+            throw new IllegalStateException("Client authorization is already installed");
+        }
+        authorizedInitializer = initializer;
+        authorizedShutdown = shutdown;
+        lateInstallation = alreadyStarted;
+        lateFailureObserver = failureObserver;
+        if (alreadyStarted) {
+            BetaSubscriptions.register(ClientLifecycleEvents.CLIENT_STOPPING, "celeste:auth/stopping",
+                ClientLifecycleEvents.ClientStopping.class, AuthBootstrap::stop, ClientLifecycleEvents.CLIENT_STOPPING::register);
+        } else {
+            ClientLifecycleEvents.CLIENT_STOPPING.register(AuthBootstrap::stop);
+        }
         WORKER.scheduleWithFixedDelay(AuthBootstrap::heartbeat, 30, 30, TimeUnit.SECONDS);
+        if (alreadyStarted) {
+            MinecraftClient client = MinecraftClient.getInstance();
+            client.execute(() -> start(client));
+        } else {
+            ClientLifecycleEvents.CLIENT_STARTED.register(AuthBootstrap::start);
+        }
     }
 
     public static String status() {
@@ -55,7 +133,7 @@ public final class AuthBootstrap {
     }
 
     public static boolean authorized() {
-        return AUTHORIZED.get() && !LOCKED.get();
+        return AUTHORIZED.get() && !LOCKED.get() && !STOPPED.get();
     }
 
     public static boolean hasLocalCredential() {
@@ -99,7 +177,7 @@ public final class AuthBootstrap {
                 AuthServiceClient.Authenticated authenticated = service.authenticate(enrollment.credential(), hardware);
                 authorize(client, authenticated, enrollment.credential());
             } catch (Exception exception) {
-                fail(client, friendlyMessage(exception));
+                fail(client, friendlyMessage(exception), exception);
             } finally {
                 BUSY.set(false);
             }
@@ -133,6 +211,9 @@ public final class AuthBootstrap {
     }
 
     private static void start(MinecraftClient client) {
+        if (STOPPED.get() || !STARTED.compareAndSet(false, true)) {
+            return;
+        }
         if (STORE.exists()) {
             authenticateStored(client);
         } else {
@@ -141,7 +222,7 @@ public final class AuthBootstrap {
                 try {
                     ensureReady();
                 } catch (Exception exception) {
-                    fail(client, friendlyMessage(exception));
+                    fail(client, friendlyMessage(exception), exception);
                 }
             });
         }
@@ -160,7 +241,7 @@ public final class AuthBootstrap {
                 AuthServiceClient.Authenticated authenticated = service.authenticate(credential, hardware);
                 authorize(client, authenticated, credential);
             } catch (Exception exception) {
-                fail(client, friendlyMessage(exception));
+                fail(client, friendlyMessage(exception), exception);
             } finally {
                 BUSY.set(false);
             }
@@ -172,6 +253,9 @@ public final class AuthBootstrap {
             return;
         }
         AuthConfig loaded = AuthConfig.load();
+        if (expectedBetaCatalog != null && !ArtifactIntegrity.hasRetainedMemorySource()) {
+            throw new SecurityException("Beta initialization requires its retained verified payload");
+        }
         String observedDigest = ArtifactIntegrity.digest();
         if (!loaded.releaseDigest().equals(observedDigest)) {
             reportStartupIntegrityFailure(loaded, observedDigest);
@@ -180,7 +264,7 @@ public final class AuthBootstrap {
         HardwareFingerprint observedHardware = HardwareFingerprint.collect();
         config = loaded;
         hardware = observedHardware;
-        service = new AuthServiceClient(loaded, GameIdentity.collect());
+        service = new AuthServiceClient(loaded, GameIdentity.collect(), expectedBetaCatalog);
     }
 
     private static void reportStartupIntegrityFailure(AuthConfig loaded, String observedDigest) {
@@ -188,7 +272,7 @@ public final class AuthBootstrap {
             return;
         }
         try {
-            AuthServiceClient reporter = new AuthServiceClient(loaded, GameIdentity.collect());
+            AuthServiceClient reporter = new AuthServiceClient(loaded, GameIdentity.collect(), expectedBetaCatalog);
             reporter.checkSession(STORE.load(), observedDigest, true);
         } catch (Exception ignored) {
             // The local client still fails closed even if the signed report cannot be delivered.
@@ -200,21 +284,28 @@ public final class AuthBootstrap {
         AuthServiceClient.Authenticated authenticated,
         InstallCredential credential
     ) {
-        if (!AUTHORIZED.compareAndSet(false, true)) {
-            return;
-        }
-        sessionCredential = credential;
-        sessionGrant = authenticated.grant();
-        lastHeartbeatSuccessNanos = System.nanoTime();
-        status = "Authorized";
         client.execute(() -> {
-            LicenseIdentity.accept(authenticated.uid());
-            authorizedInitializer.run();
+            // A response queued before shutdown/revocation must never reactivate the client.
+            if (STOPPED.get() || LOCKED.get() || !AUTHORIZED.compareAndSet(false, true)) {
+                return;
+            }
+            sessionCredential = credential;
+            sessionGrant = authenticated.grant();
+            lastHeartbeatSuccessNanos = System.nanoTime();
+            try {
+                LicenseIdentity.accept(authenticated.uid());
+                authorizedInitializer.run();
+                if (authorized()) {
+                    status = "Authorized";
+                }
+            } catch (RuntimeException | LinkageError exception) {
+                lockSession("Client initialization failed; restart Minecraft before trying again", exception);
+            }
         });
     }
 
     private static void heartbeat() {
-        if (!AUTHORIZED.get() || LOCKED.get()) {
+        if (!authorized()) {
             return;
         }
         AuthServiceClient currentService = service;
@@ -234,8 +325,11 @@ public final class AuthBootstrap {
                 }
                 return;
             }
-            sessionGrant = currentService.checkSession(credential, observedDigest, false);
-            lastHeartbeatSuccessNanos = System.nanoTime();
+            String refreshedGrant = currentService.checkSession(credential, observedDigest, false);
+            if (authorized()) {
+                sessionGrant = refreshedGrant;
+                lastHeartbeatSuccessNanos = System.nanoTime();
+            }
         } catch (AuthServiceClient.AuthRejectedException exception) {
             if (exception.statusCode() == 401 || exception.statusCode() == 403 || exception.statusCode() == 409) {
                 lockSession("License revoked, expired, or no longer authorized");
@@ -259,6 +353,10 @@ public final class AuthBootstrap {
     }
 
     private static void lockSession(String message) {
+        lockSession(message, new SecurityException(message));
+    }
+
+    private static void lockSession(String message, Throwable failure) {
         if (!AUTHORIZED.compareAndSet(true, false)) {
             return;
         }
@@ -269,6 +367,26 @@ public final class AuthBootstrap {
         MinecraftClient client = MinecraftClient.getInstance();
         client.execute(() -> {
             try {
+                Consumer<Throwable> observer = lateFailureObserver;
+                if (observer != null) observer.accept(failure);
+            } finally {
+                try { authorizedShutdown.run(); }
+                finally { LicenseIdentity.clear(); }
+            }
+        });
+    }
+
+    private static void stop(MinecraftClient client) {
+        if (!STOPPED.compareAndSet(false, true)) {
+            return;
+        }
+        LOCKED.set(true);
+        AUTHORIZED.set(false);
+        sessionCredential = null;
+        sessionGrant = null;
+        WORKER.shutdownNow();
+        client.execute(() -> {
+            try {
                 authorizedShutdown.run();
             } finally {
                 LicenseIdentity.clear();
@@ -277,8 +395,16 @@ public final class AuthBootstrap {
     }
 
     private static void fail(MinecraftClient client, String message) {
+        fail(client, message, new SecurityException(message));
+    }
+
+    private static void fail(MinecraftClient client, String message, Throwable failure) {
         status = message;
         show(client, message);
+        Consumer<Throwable> observer = lateFailureObserver;
+        if (observer != null && !STOPPED.get()) {
+            client.execute(() -> { if (!STOPPED.get()) observer.accept(failure); });
+        }
     }
 
     private static void show(MinecraftClient client, String message) {

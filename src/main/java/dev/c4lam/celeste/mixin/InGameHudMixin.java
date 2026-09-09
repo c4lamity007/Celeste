@@ -1,8 +1,6 @@
 package dev.c4lam.celeste.mixin;
 
-import dev.c4lam.celeste.gui.CelesteScreen;
-import dev.c4lam.celeste.hud.HudEditorScreen;
-import net.minecraft.client.MinecraftClient;
+import dev.c4lam.celeste.compat.PresentationHooks;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.hud.InGameHud;
 import net.minecraft.client.render.RenderTickCounter;
@@ -20,10 +18,7 @@ public abstract class InGameHudMixin {
         RenderTickCounter tickCounter,
         CallbackInfo callback
     ) {
-        if (MinecraftClient.getInstance().currentScreen instanceof HudEditorScreen) {
-            ((InGameHudAccessor) this).celeste$renderHotbar(context, tickCounter);
-            callback.cancel();
-        } else if (MinecraftClient.getInstance().currentScreen instanceof CelesteScreen) {
+        if (PresentationHooks.hideHud((InGameHud) (Object) this, context, tickCounter)) {
             callback.cancel();
         }
     }

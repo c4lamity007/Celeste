@@ -5,12 +5,22 @@ public final class AmbientField {
     public static final double CELL = 5.0;
     public static final double RANGE = 22.0;
     public static final double HEIGHT = 11.0;
-    public enum Style { FIREFLIES, CRYSTALS, SNOW }
+    public enum Style { FIREFLIES, CRYSTALS, SNOW, LEAVES }
     public record Mote(double x, double y, double z, double size, double yaw, double pitch,
                        double opacity, int color) { }
 
     private AmbientField() { }
 
+    /** Reject only whole cells outside the visibility ellipsoid, before motion/trigonometry. */
+    public static boolean mayBeVisible(int x, int y, int z, double eyeX, double eyeY, double eyeZ) {
+        double dx = distanceToCell(x, eyeX), dy = distanceToCell(y, eyeY), dz = distanceToCell(z, eyeZ);
+        return (dx * dx + dz * dz) / (RANGE * RANGE) + dy * dy / (HEIGHT * HEIGHT) <= 1.0;
+    }
+
+    private static double distanceToCell(int cell, double eye) {
+        double low = cell * CELL, high = low + CELL;
+        return eye < low ? low - eye : eye > high ? eye - high : 0.0;
+    }
     public static boolean occupied(int x, int y, int z, double density) {
         return unit(hash(x, y, z)) < .75 * clamp(density);
     }
@@ -20,21 +30,26 @@ public final class AmbientField {
         double a = unit(mix(seed + 1)), b = unit(mix(seed + 2)), c = unit(mix(seed + 3));
         double time = Double.isFinite(seconds) ? seconds : 0.0;
         double phase = a * Math.PI * 2.0;
-        double speed = style == Style.SNOW ? -.085 : style == Style.CRYSTALS ? .018 : .035;
+        boolean leaf = style == Style.LEAVES;
+        double speed = leaf ? -(.045 + c * .025) : style == Style.SNOW ? -.085 : style == Style.CRYSTALS ? .018 : .035;
         double cycle = b + time * speed;
         cycle -= Math.floor(cycle);
         // The recycle point is invisible, so a bounded field needs no spawn/death objects.
         double life = smooth(cycle / .14) * smooth((1.0 - cycle) / .14);
-        double sway = style == Style.SNOW ? .24 : .13;
-        double px = (x + .25 + a * .50) * CELL + Math.sin(time * .31 + phase) * sway;
+        // Leaves follow a wider lazy eddy, but remain inside their original world cell.
+        // This preserves conservative cell culling without any additional world queries.
+        double sway = leaf ? .54 : style == Style.SNOW ? .24 : .13;
+        double px = (x + .25 + a * .50) * CELL + Math.sin(time * (leaf ? .71 : .31) + phase) * sway;
         double py = (y + cycle) * CELL;
-        double pz = (z + .25 + c * .50) * CELL + Math.cos(time * .24 + phase) * sway;
-        double size = (style == Style.CRYSTALS ? .13 : style == Style.SNOW ? .075 : .035) * (.8 + c * .4);
-        int color = style == Style.SNOW ? 0xE3F5FF : style == Style.CRYSTALS
+        double pz = (z + .25 + c * .50) * CELL + Math.cos(time * (leaf ? .49 : .24) + phase) * sway;
+        double size = (leaf ? .17 : style == Style.CRYSTALS ? .13 : style == Style.SNOW ? .075 : .035) * (.8 + c * .4);
+        int color = leaf ? (a < .72 ? blend(0xD98739, 0xF0BE63, a / .72) : blend(0x63A68A, 0xABC181, (a - .72) / .28))
+            : style == Style.SNOW ? 0xE3F5FF : style == Style.CRYSTALS
             ? blend(0x6BDEFF, 0xC59AFF, a) : blend(0xA6FFE1, 0xFFE4A3, a);
         double breathing = style == Style.FIREFLIES ? .65 + .35 * Math.pow(.5 + .5 * Math.sin(time * 1.8 + phase), 2) : 1;
-        return new Mote(px, py, pz, size, phase + time * .32,
-            style == Style.SNOW ? time * .48 + phase : .22 * Math.sin(time * .29 + phase),
+        return new Mote(px, py, pz, size, phase + time * (leaf ? .38 : .32),
+            leaf ? time * (.56 + c * .23) + phase + .24 * Math.sin(time * .87 + phase)
+                : style == Style.SNOW ? time * .48 + phase : .22 * Math.sin(time * .29 + phase),
             life * breathing, color);
     }
 

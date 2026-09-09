@@ -560,10 +560,20 @@ public final class CelesteScreen extends Screen {
                 RenderUtil.RECT.draw(matrices, x + 2, y + 2, width - 4, 30, 5,
                     withAlpha(color(45, 28, 45, 155), Math.round(76 * hover * animation)));
             }
-            Fonts.regular().drawText(matrices, setting.label(), x + 9, y + 7.4f, 8.2f,
-                withAlpha(TEXT, Math.round(255 * animation)));
-            Fonts.regular().drawText(matrices, trim(setting.description(), 34), x + 9, y + 20.6f, 6.5f,
-                withAlpha(DIM, Math.round(255 * animation)));
+            if (setting instanceof GuiSetting.Action action) {
+                boolean buttonHovered = interactive && hovered(mouseX, mouseY, x + 9, y + 3, width - 18, 18);
+                RenderUtil.RECT.draw(matrices, x + 9, y + 3, width - 18, 18, 5,
+                    withAlpha(buttonHovered ? ACCENT : ACCENT_SOFT, Math.round(230 * animation)));
+                Fonts.semibold().drawCenteredText(matrices, action.label(), x + width / 2,
+                    centeredTextY(y + 3, 18, 7.6f), 7.6f, withAlpha(TEXT, Math.round(255 * animation)));
+                Fonts.regular().drawText(matrices, trim(action.description(), 34), x + 9, y + 24, 6.5f,
+                    withAlpha(DIM, Math.round(255 * animation)));
+            } else {
+                Fonts.regular().drawText(matrices, setting.label(), x + 9, y + 7.4f, 8.2f,
+                    withAlpha(TEXT, Math.round(255 * animation)));
+                Fonts.regular().drawText(matrices, trim(setting.description(), 34), x + 9, y + 20.6f, 6.5f,
+                    withAlpha(DIM, Math.round(255 * animation)));
+            }
 
             if (setting instanceof GuiSetting.Toggle toggle) {
                 drawToggle(matrices, toggle, x + width - 37, y + 9, toggle.value(), animation);
@@ -623,7 +633,9 @@ public final class CelesteScreen extends Screen {
             }
 
             if (interactive) {
-                if (setting instanceof GuiSetting.Slider || setting instanceof GuiSetting.Range) {
+                if (setting instanceof GuiSetting.Action) {
+                    settingHits.add(new SettingHit(setting, x + 9, y + 3, width - 18, 18));
+                } else if (setting instanceof GuiSetting.Slider || setting instanceof GuiSetting.Range) {
                     settingHits.add(new SettingHit(setting, x + width - 93, y + 14, 76, 17));
                 } else if (setting instanceof GuiSetting.ColorPick) {
                     settingHits.add(new SettingHit(setting, x + width - 37, y + 9, 16, 16));
@@ -1556,7 +1568,13 @@ public final class CelesteScreen extends Screen {
             if (!insideContent || !hit.contains(mouseX, mouseY)) {
                 continue;
             }
-            if (hit.setting() instanceof GuiSetting.Toggle toggle) {
+            if (hit.setting() instanceof GuiSetting.Action action) {
+                if (click.button() == GLFW.GLFW_MOUSE_BUTTON_LEFT) {
+                    draggingSlider = null;
+                    draggingRange = null;
+                    action.invoke();
+                }
+            } else if (hit.setting() instanceof GuiSetting.Toggle toggle) {
                 toggle.toggle();
             } else if (hit.setting() instanceof GuiSetting.Mode mode) {
                 if (click.button() == GLFW.GLFW_MOUSE_BUTTON_RIGHT) {

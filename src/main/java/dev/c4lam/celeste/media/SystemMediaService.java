@@ -11,7 +11,9 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -29,6 +31,7 @@ public final class SystemMediaService implements AutoCloseable {
     private final ScheduledExecutorService executor = Executors.newSingleThreadScheduledExecutor(runnable -> {
         Thread thread = new Thread(runnable, "Celeste Native Media");
         thread.setDaemon(true);
+        thread.setContextClassLoader(ClassLoader.getPlatformClassLoader());
         return thread;
     });
     private final AtomicReference<MediaPlaybackSnapshot> snapshot = new AtomicReference<>(
@@ -36,13 +39,20 @@ public final class SystemMediaService implements AutoCloseable {
     );
     private final AtomicReference<IMediaSession> activeSession = new AtomicReference<>();
     private final Object lifecycleLock = new Object();
+    private final Thread shutdownHook;
+    private final NativeMediaLyrics nativeLyrics = new NativeMediaLyrics();
+    private final LrclibLyricsSource onlineLyrics = new LrclibLyricsSource();
 
     private volatile boolean initialized;
     private volatile boolean closed;
     private volatile WindowsMediaPlayerInfo bridge;
+    private WindowsMediaPlayerInfo closingBridge;
+    private CompletableFuture<Void> stopCompletion;
 
     private SystemMediaService() {
-        Runtime.getRuntime().addShutdownHook(new Thread(this::close, "Celeste Native Media Shutdown"));
+        shutdownHook = new Thread(this::close, "Celeste Native Media Shutdown");
+        shutdownHook.setContextClassLoader(ClassLoader.getPlatformClassLoader());
+        Runtime.getRuntime().addShutdownHook(shutdownHook);
     }
 
     public static SystemMediaService getInstance() {
@@ -71,6 +81,11 @@ public final class SystemMediaService implements AutoCloseable {
         return snapshot.get();
     }
 
+    /** Only Sky Lyrics opts into online title/artist lookup; the ordinary media HUD does not. */
+    public void setSkyLyricsEnabled(boolean enabled) {
+        onlineLyrics.setEnabled(enabled);
+    }
+
     public CompletableFuture<MediaPlaybackSnapshot> refresh() {
         return command(Command.STATE);
     }
@@ -94,7 +109,8 @@ public final class SystemMediaService implements AutoCloseable {
     private CompletableFuture<MediaPlaybackSnapshot> command(Command command) {
         initialize();
         if (closed || bridge == null) return CompletableFuture.completedFuture(snapshot.get());
-        return CompletableFuture.supplyAsync(() -> exchange(command), executor);
+        try { return CompletableFuture.supplyAsync(() -> exchange(command), executor); }
+        catch (RejectedExecutionException stopped) { return CompletableFuture.completedFuture(snapshot.get()); }
     }
 
     private void pollSafely() {
@@ -115,8 +131,9 @@ public final class SystemMediaService implements AutoCloseable {
             if (session == null) {
                 activeSession.set(null);
                 MediaPlaybackSnapshot empty = MediaPlaybackSnapshot.empty("Nothing is playing");
-                snapshot.set(empty);
-                return empty;
+                nativeLyrics.reset();
+                onlineLyrics.reset();
+                return publish(empty);
             }
             activeSession.set(session);
             perform(command, session);
@@ -131,13 +148,26 @@ public final class SystemMediaService implements AutoCloseable {
                 }
             }
             MediaPlaybackSnapshot current = snapshotFor(session);
-            snapshot.set(current);
-            return current;
+            return publish(current);
         } catch (RuntimeException | LinkageError exception) {
             activeSession.set(null);
             MediaPlaybackSnapshot failed = MediaPlaybackSnapshot.empty("Could not read Windows media");
-            snapshot.set(failed);
-            return failed;
+            nativeLyrics.reset();
+            onlineLyrics.reset();
+            return publish(failed);
+        }
+    }
+
+    private MediaPlaybackSnapshot publish(MediaPlaybackSnapshot current) {
+        synchronized (lifecycleLock) {
+            if (closed) {
+                nativeLyrics.reset();
+                onlineLyrics.reset();
+                activeSession.set(null);
+                return snapshot.get();
+            }
+            snapshot.set(current);
+            return current;
         }
     }
 
@@ -202,7 +232,8 @@ public final class SystemMediaService implements AutoCloseable {
             progressMs,
             durationMs,
             "",
-            Instant.now()
+            Instant.now(),
+            onlineLyrics.update(owner, title, artist, durationMs, nativeLyrics.update(owner, media))
         );
     }
 
@@ -215,14 +246,23 @@ public final class SystemMediaService implements AutoCloseable {
 
     @Override
     public void close() {
-        WindowsMediaPlayerInfo currentBridge;
+
         synchronized (lifecycleLock) {
             if (closed) return;
             closed = true;
+            snapshot.set(MediaPlaybackSnapshot.empty("Media support closed"));
+            nativeLyrics.reset();
+            onlineLyrics.reset();
             activeSession.set(null);
-            currentBridge = bridge;
+            closingBridge = bridge;
             bridge = null;
         }
+        try {
+            Runtime.getRuntime().removeShutdownHook(shutdownHook);
+        } catch (IllegalStateException shuttingDown) {
+            // The JVM already owns and is running its shutdown hooks.
+        }
+        onlineLyrics.close();
         executor.shutdownNow();
         boolean executorStopped = false;
         try {
@@ -235,12 +275,42 @@ public final class SystemMediaService implements AutoCloseable {
         // The JNI bridge owns a global Windows media-session object. Release
         // it after the polling worker has exited; unlike the old synchronized
         // close path, this never waits indefinitely for a native poll.
-        if (executorStopped && currentBridge != null) {
-            WindowsMediaPlayerInfo.cleanupNativeResources();
-        }
+        if (executorStopped) releaseNativeResources();
         MediaArtwork.getInstance().close();
     }
 
+    /** Completes only after the native/lyrics workers, artwork decoder and queued render work have drained. */
+    public CompletionStage<Void> stopped() {
+        synchronized (lifecycleLock) {
+            if (!closed) return CompletableFuture.failedFuture(new IllegalStateException("Media support is not closed"));
+            if (stopCompletion == null) {
+                CompletableFuture<Void> workerStopped = CompletableFuture.runAsync(() -> {
+                    try {
+                        if (!executor.awaitTermination(30L, TimeUnit.SECONDS)) {
+                            throw new IllegalStateException("Media worker did not finish stopping within 30 seconds");
+                        }
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw new IllegalStateException("Media shutdown observation was interrupted", interrupted);
+                    }
+                    releaseNativeResources();
+                });
+                stopCompletion = CompletableFuture.allOf(workerStopped, onlineLyrics.stopped().toCompletableFuture(),
+                    MediaArtwork.getInstance().stopped().toCompletableFuture());
+            }
+            return stopCompletion.minimalCompletionStage();
+        }
+    }
+
+    private void releaseNativeResources() {
+        WindowsMediaPlayerInfo retired;
+        synchronized (lifecycleLock) {
+            if (!executor.isTerminated()) return;
+            retired = closingBridge;
+            closingBridge = null;
+        }
+        if (retired != null) WindowsMediaPlayerInfo.cleanupNativeResources();
+    }
     private static boolean isWindows() {
         return System.getProperty("os.name", "").toLowerCase(Locale.ROOT).contains("windows");
     }
@@ -255,3 +325,4 @@ public final class SystemMediaService implements AutoCloseable {
 
     private enum Command { STATE, TOGGLE, NEXT, PREVIOUS, CYCLE }
 }
+

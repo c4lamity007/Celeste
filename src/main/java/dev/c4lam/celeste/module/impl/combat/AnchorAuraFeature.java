@@ -5,7 +5,7 @@ import dev.c4lam.celeste.module.ModuleContext;
 import net.minecraft.client.world.ClientWorld;
 import net.minecraft.util.math.BlockPos;
 
-/** Silent placement/charge/detonation, with a read-only next-position preview. */
+/** Silent placement/charge/detonation with a shared CPVP turn and read-only preview. */
 public final class AnchorAuraFeature implements ModuleFeature {
     private final ExplosiveAuraRuntime runtime = new ExplosiveAuraRuntime(this, true);
     private static volatile Preview currentPreview;

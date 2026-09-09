@@ -13,29 +13,12 @@ import org.spongepowered.asm.mixin.injection.Redirect;
 /** Scopes silent weapon selection to the user's original vanilla attack call. */
 @Mixin(MinecraftClient.class)
 public abstract class SwordExpansionMinecraftClientMixin {
-    @Shadow
-    private boolean doAttack() {
-        throw new AssertionError("mixin shadow");
-    }
-
     @Redirect(
         method = "handleInputEvents",
         at = @At(value = "INVOKE", target = "Lnet/minecraft/client/MinecraftClient;doAttack()Z")
     )
     private boolean celeste$swordExpansionAttack(MinecraftClient client) {
-        SwordAttackCoordinator.AttackScope scope = SwordAttackCoordinator.beginVanillaAttack(client);
-        if (!scope.proceed()) {
-            return false;
-        }
-        try {
-            SwordAttackCoordinator.prepareVanillaClick(client, scope);
-            if (scope.replaceVanillaClick()) {
-                return SwordAttackCoordinator.performSwappedMelee(client, scope);
-            }
-            return doAttack();
-        } finally {
-            SwordAttackCoordinator.finishVanillaAttack(client, scope);
-        }
+        return dev.c4lam.celeste.compat.GameplayCallbacks.attack(client);
     }
 
     /**
@@ -51,9 +34,6 @@ public abstract class SwordExpansionMinecraftClientMixin {
     )
     private ItemStack celeste$swappedMainHand(ClientPlayerEntity player, Hand hand) {
         ItemStack vanilla = player.getStackInHand(hand);
-        if (hand != Hand.MAIN_HAND) {
-            return vanilla;
-        }
-        return SwordAttackCoordinator.mainHandForVanillaClick(vanilla);
+        return dev.c4lam.celeste.compat.GameplayCallbacks.mainHand(vanilla, hand);
     }
 }

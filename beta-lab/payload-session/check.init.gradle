@@ -1,0 +1,22 @@
+allprojects { project ->
+    project.afterEvaluate {
+        if (project == project.rootProject) {
+            def output = project.layout.buildDirectory.dir('module-qa/payload-session/classes')
+            def compileCheck = project.tasks.register('compileBetaPayloadSessionCheck', JavaCompile) {
+                source project.fileTree('beta-lab/payload-session/src') { include '**/*.java' }
+                source project.file('src/main/java/dev/c4lam/celeste/beta/lifecycle/BetaPayloadSession.java')
+                classpath = project.files()
+                destinationDirectory = output
+                options.release = 21
+                options.encoding = 'UTF-8'
+                options.compilerArgs += ['-Xlint:all', '-Werror']
+            }
+            project.tasks.register('betaPayloadSessionCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(output)
+                mainClass = 'fixture.SessionCheck'
+                enableAssertions = true
+            }
+        }
+    }
+}

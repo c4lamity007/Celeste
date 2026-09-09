@@ -19,6 +19,8 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -54,13 +56,14 @@ public final class ConfigLibrary {
         }
     }
 
-    private static final Logger LOGGER = LoggerFactory.getLogger("Celeste/ConfigLibrary");
+    private static final Logger LOGGER = dev.c4lam.celeste.compat.RuntimeLogging.getLogger("Celeste/ConfigLibrary");
     private static final ConfigLibrary INSTANCE = new ConfigLibrary();
     private static final DateTimeFormatter DATE = DateTimeFormatter.ofPattern("d MMM yyyy", Locale.ENGLISH);
     private static final ZoneId DISPLAY_ZONE = ZoneId.of("America/Los_Angeles");
     private static final ExecutorService CLOUD_WORKER = Executors.newSingleThreadExecutor(task -> {
         Thread thread = new Thread(task, "celeste-cloud-configs");
         thread.setDaemon(true);
+        thread.setContextClassLoader(ClassLoader.getPlatformClassLoader());
         return thread;
     });
 
@@ -73,6 +76,9 @@ public final class ConfigLibrary {
     private List<Card> publicCards = List.of();
     private String publicError = "";
     private boolean initialized;
+    private volatile boolean closed;
+    private CompletableFuture<String> cloudFuture;
+    private final CompletableFuture<Void> cloudStopped = new CompletableFuture<>();
 
     private ConfigLibrary() {
     }
@@ -82,7 +88,7 @@ public final class ConfigLibrary {
     }
 
     public synchronized void initialize() {
-        if (initialized) {
+        if (initialized || closed) {
             return;
         }
         load();
@@ -229,26 +235,61 @@ public final class ConfigLibrary {
         return cards;
     }
 
-    private CompletableFuture<String> cloudTask(CloudOperation operation) {
+    private synchronized CompletableFuture<String> cloudTask(CloudOperation operation) {
+        if (closed) {
+            return CompletableFuture.failedFuture(new IllegalStateException("Cloud configs are stopped"));
+        }
         if (!cloudBusy.compareAndSet(false, true)) {
             return CompletableFuture.completedFuture("Cloud sync is already running");
         }
-        return CompletableFuture.supplyAsync(() -> {
+        cloudFuture = CompletableFuture.supplyAsync(() -> {
             try {
+                if (closed) throw new IllegalStateException("Cloud configs are stopped");
                 String result = operation.run();
                 synchronized (this) {
-                    publicError = "";
+                    if (!closed) publicError = "";
                 }
                 return result;
             } catch (Exception exception) {
                 synchronized (this) {
-                    publicError = friendly(exception);
+                    if (!closed) publicError = friendly(exception);
                 }
                 throw new CompletionException(exception);
             } finally {
                 cloudBusy.set(false);
             }
         }, CLOUD_WORKER);
+        return cloudFuture;
+    }
+
+    /** Interrupt work without blocking Minecraft; stopped() proves actual worker retirement. */
+    public synchronized void close() {
+        if (closed) return;
+        closed = true;
+        if (cloudFuture != null) cloudFuture.cancel(false);
+        CLOUD_WORKER.shutdownNow();
+        cloudBusy.set(false);
+        if (CLOUD_WORKER.isTerminated()) cloudStopped.complete(null);
+        else CompletableFuture.runAsync(this::awaitCloudTermination);
+    }
+
+    public CompletionStage<Void> stopped() {
+        return cloudStopped.minimalCompletionStage();
+    }
+
+    private void awaitCloudTermination() {
+        try {
+            if (!CLOUD_WORKER.awaitTermination(30, TimeUnit.SECONDS)) {
+                throw new IllegalStateException("Cloud config worker did not stop");
+            }
+            synchronized (this) { cloudFuture = null; }
+            cloudStopped.complete(null);
+        } catch (InterruptedException failure) {
+            Thread.currentThread().interrupt();
+            cloudStopped.completeExceptionally(failure);
+        } catch (RuntimeException failure) {
+            cloudStopped.completeExceptionally(failure);
+        }
     }
 
     @FunctionalInterface
@@ -269,7 +310,7 @@ public final class ConfigLibrary {
                 ))
                 .toList();
             synchronized (this) {
-                publicCards = List.copyOf(next);
+                if (!closed) publicCards = List.copyOf(next);
             }
         } catch (Exception exception) {
             throw new IllegalStateException(friendly(exception), exception);

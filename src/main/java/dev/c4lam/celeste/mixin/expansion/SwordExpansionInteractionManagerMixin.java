@@ -16,6 +16,6 @@ public abstract class SwordExpansionInteractionManagerMixin {
     @Inject(method = "attackEntity", at = @At("HEAD"))
     private void celeste$swordExpansionOnAttack(PlayerEntity player, Entity target,
                                                 CallbackInfo callback) {
-        SwordAttackCoordinator.onVanillaEntityAttack(MinecraftClient.getInstance(), target);
+        dev.c4lam.celeste.compat.GameplayCallbacks.entityAttack(target);
     }
 }

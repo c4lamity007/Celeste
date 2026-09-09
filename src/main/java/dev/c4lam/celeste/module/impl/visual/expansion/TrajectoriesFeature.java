@@ -12,7 +12,6 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.item.BowItem;
 import net.minecraft.item.CrossbowItem;
-import net.minecraft.util.Util;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
@@ -25,10 +24,8 @@ import net.minecraft.world.RaycastContext;
 import java.util.ArrayList;
 import java.util.List;
 
-/** Bounded solid projectile preview with a surface-aligned raised landing marker. */
+/** Image-bloom trail, continuous shader core and compact impact marker. Prediction stays exact. */
 public final class TrajectoriesFeature implements ModuleFeature {
-    private static final int MAX_EFFECT_QUADS = 192;
-    private static final int MAX_PATH_QUADS = 128;
     private volatile boolean enabled;
     private volatile boolean pearls = true;
     private volatile boolean bows = true;
@@ -162,113 +159,83 @@ public final class TrajectoriesFeature implements ModuleFeature {
             }
         }
 
-        double time = Util.getMeasuringTimeMs() / 1000.0D;
-        int effectLimit = glows == null ? 0 : Math.min(Math.min(768, Math.max(0, quadLimit)), glows.size() + MAX_EFFECT_QUADS);
-        List<WorldGlowRenderer.Quad> effects = glow > 0.01D ? glows : null;
-        // Reserve a full raised landing torus, impact gem and supporting glow.
-        int pathLimit = effects == null ? 0 : landing && hitSomething
-            ? Math.max(effects.size(), effectLimit - 64) : effectLimit;
-        boolean filled = projectileVolume(effects, pathLimit, points, context.camera().getCameraPos(), time);
-        // Preserve the exact simulated centerline as a subdued aiming reference,
-        // not the primary visual; the broad mesh alone is linearly resampled.
-        VisualEffects.trail(paths, points, theme, customColor, time, opacity * (filled ? 0.32D : 1.0D),
-            1.0D, trailFade ? 0.40D : 1.0D, 1.0F, 0.0D, 12);
+        Vec3d camera = context.camera().getCameraPos();
+        TrajectoryAppearance.Budget budget = TrajectoryAppearance.budget(glows == null ? 0 : glows.size(),
+            glows == null ? 0 : quadLimit, landing && hitSomething, glow);
+        boolean ribbon = projectileRibbon(glows, budget.pathSegments(), points, camera);
+        GlowTrail.append(glows, points, camera, budget.glowSprites(), glow, opacity, trailFade, this::pathColor);
+        // No second line over the shader: it made joints look dark/doubled at grazing angles.
+        // Retain the unmodified predicted polyline only as a low-budget fallback.
+        if (!ribbon) fallbackPath(paths, points, camera);
         if (landing && hitSomething) {
-            landingMarker(paths, effects, effectLimit, position, hitNormal, time);
+            landingMarker(paths, glows, budget.absoluteLimit(), position, hitNormal, camera);
         }
     }
 
     /** The authoritative predicted points remain untouched; only the glow mesh is resampled linearly. */
-    private boolean projectileVolume(List<WorldGlowRenderer.Quad> effects, int limit,
-                                  List<Vec3d> points, Vec3d camera, double time) {
-        if (effects == null || camera == null || points.size() < 2 || effects.size() >= limit) return false;
+    private boolean projectileRibbon(List<WorldGlowRenderer.Quad> effects, int segments,
+                                     List<Vec3d> points, Vec3d camera) {
+        if (effects == null || camera == null || !TrajectoryAppearance.enoughDetail(points.size(), segments)) return false;
         double[] distances = new double[points.size()];
         for (int i = 1; i < points.size(); i++) {
             distances[i] = distances[i - 1] + points.get(i - 1).distanceTo(points.get(i));
         }
         double length = distances[distances.length - 1];
         if (length < 1.0E-6D) return false;
-        List<SolidVisualMesh.Node> nodes = new ArrayList<>(points.size());
+        List<ConnectedRibbon.Node> nodes = new ArrayList<>(points.size());
         for (int i = 0; i < points.size(); i++) {
             Vec3d point = points.get(i);
             double progress = distances[i] / length;
-            double distance = camera.distanceTo(point);
-            double halfWidth = MathHelper.clamp(0.040D + distance * 0.0007D, 0.040D, 0.065D);
-            // A near-eye fade keeps the first-person bow/hand crisp.
-            double alpha = MathHelper.clamp((distance - 0.18D) / 0.70D, 0.0D, 1.0D)
-                * (trailFade ? 1.0D - progress * 0.60D : 1.0D);
-            nodes.add(new SolidVisualMesh.Node(point(point), halfWidth, halfWidth * 0.88D,
-                VisualExpansionRenderer.argb((float) (opacity * Math.min(1.0D, glow * 1.65D) * alpha),
-                    VisualEffects.color(theme, customColor, time, progress * 0.75D))));
+            TrajectoryAppearance.Sample style = TrajectoryAppearance.sample(camera.distanceTo(point), progress, opacity, trailFade);
+            nodes.add(new ConnectedRibbon.Node(point, style.width(),
+                VisualExpansionRenderer.argb((float) style.alpha(), pathColor(progress))));
         }
-        return SolidVisuals.append(effects, nodes, new SolidVisualMesh.Point(0.0D, 1.0D, 0.0D), 4,
-            Math.min(limit, effects.size() + MAX_PATH_QUADS), false) > 0;
+        return ConnectedRibbon.append(effects, nodes, camera, null, segments, false,
+            WorldGlowRenderer.Texture.TRAJECTORY, (float) glow) > 0;
+    }
+
+    private int pathColor(double progress) {
+        // Stable material: no crawling stripes or hue motion when lining up a throw.
+        return VisualEffects.color(theme, customColor, 0, .10 + progress * .32);
+    }
+
+    private void fallbackPath(List<VisualExpansionRenderer.WorldLineStrip> paths, List<Vec3d> points, Vec3d camera) {
+        double total = 0;
+        for (int i = 1; i < points.size(); i++) total += points.get(i - 1).distanceTo(points.get(i));
+        if (total < 1e-6 || camera == null) return;
+        double at = 0;
+        for (int i = 1; i < points.size(); i++) {
+            Vec3d a = points.get(i - 1), b = points.get(i);
+            double length = a.distanceTo(b), progress = (at + length * .5) / total;
+            double alpha = TrajectoryAppearance.sample(camera.distanceTo(a.lerp(b, .5)), progress, opacity, trailFade).alpha();
+            VisualEffects.line(paths, List.of(a, b), pathColor(progress), alpha, 1.6F, 0);
+            at += length;
+        }
     }
 
     private void landingMarker(List<VisualExpansionRenderer.WorldLineStrip> paths,
                                List<WorldGlowRenderer.Quad> glows, int limit,
-                               Vec3d position, Vec3d normal, double time) {
+                               Vec3d position, Vec3d normal, Vec3d camera) {
+        if (camera == null) return;
+        if (normal.lengthSquared() < 1e-8) normal = new Vec3d(0, 1, 0);
         Vec3d reference = Math.abs(normal.y) > 0.9D ? VisualEffects.X : new Vec3d(0.0D, 1.0D, 0.0D);
         Vec3d axisU = reference.subtract(normal.multiply(reference.dotProduct(normal))).normalize();
         Vec3d axisV = normal.crossProduct(axisU).normalize();
         Vec3d center = position.add(normal.multiply(0.018D));
-        int color = VisualEffects.color(theme, customColor, time, 0.25D);
-        double radius = 0.36D + 0.018D * Math.sin(time * 3.0D);
-        if (glows == null) {
-            VisualEffects.line(paths, VisualEffects.arc(center, axisU, axisV, radius,
-                0.0D, VisualEffects.TAU, 48), color, opacity * 0.52D, 1.1F, 0.0D);
+        int color = pathColor(1);
+        double alpha = TrajectoryAppearance.markerAlpha(camera.distanceTo(center), opacity);
+        if (alpha < .002) return;
+        if (glows != null && glows.size() < limit) {
+            impactGlow(glows, WorldGlowRenderer.Texture.TRAJECTORY_IMPACT, center, axisU, axisV, .34, color, alpha);
+            if (glow > .01 && glows.size() < limit)
+                impactGlow(glows, WorldGlowRenderer.Texture.SOFT, center, axisU, axisV, .47, color, alpha * glow * .16);
+        } else {
+            // Also works when the shared quad budget is exhausted, not just when the list is absent.
+            VisualEffects.line(paths, VisualEffects.arc(center, axisU, axisV, .34 * .64,
+                0, VisualEffects.TAU, 48), color, alpha * .82, 1.6F, 0);
+            VisualEffects.line(paths, VisualEffects.arc(center, axisU, axisV, .022,
+                0, VisualEffects.TAU, 12), VisualEffects.mix(color, 0xFFFFFF, .65), alpha, 2F, 0);
         }
-        int highlight = VisualEffects.mix(color, 0xFFFFFF, 0.65D);
-        VisualEffects.line(paths, List.of(center.add(axisU.multiply(-0.065D)), center.add(axisU.multiply(0.065D))),
-            highlight, opacity, 1.4F, 0.0D);
-        VisualEffects.line(paths, List.of(center.add(axisV.multiply(-0.065D)), center.add(axisV.multiply(0.065D))),
-            highlight, opacity, 1.4F, 0.0D);
-        if (glows != null) {
-            if (glows.size() + 16 <= limit) {
-                List<SolidVisualMesh.Node> nodes = new ArrayList<>(12);
-                Vec3d raised = center.add(normal.multiply(0.12D));
-                for (int i = 0; i < 12; i++) {
-                    double progress = i / 12.0D;
-                    double angle = time * 0.42D + progress * VisualEffects.TAU;
-                    Vec3d ringPoint = raised.add(axisU.multiply(Math.cos(angle) * radius))
-                        .add(axisV.multiply(Math.sin(angle) * radius));
-                    nodes.add(new SolidVisualMesh.Node(point(ringPoint), 0.10D, 0.115D,
-                        VisualExpansionRenderer.argb((float) (opacity * Math.min(1.0D, glow * 1.6D)),
-                            VisualEffects.color(theme, customColor, time, progress * 0.60D))));
-                }
-                SolidVisuals.append(glows, nodes, point(normal), 4, Math.min(limit, glows.size() + 48), true);
-            }
-            if (glows.size() + 8 <= limit) {
-                // The gem follows the collision plane, including walls and ceilings.
-                List<SolidVisualMesh.Face> local = SolidVisualMesh.diamond(new SolidVisualMesh.Point(0, 0, 0),
-                    0.14D, 0.15D, VisualExpansionRenderer.argb((float) (opacity * Math.min(1.0D, glow * 1.8D)),
-                        highlight), 8);
-                List<SolidVisualMesh.Face> oriented = new ArrayList<>(8);
-                Vec3d raised = center.add(normal.multiply(0.16D));
-                for (SolidVisualMesh.Face face : local) {
-                    oriented.add(new SolidVisualMesh.Face(
-                        orient(face.a(), raised, axisU, normal, axisV), orient(face.b(), raised, axisU, normal, axisV),
-                        orient(face.c(), raised, axisU, normal, axisV), orient(face.d(), raised, axisU, normal, axisV),
-                        face.color(), face.endColor(), face.uStart(), face.uEnd()));
-                }
-                SolidVisuals.faces(glows, oriented, limit);
-            }
-        }
-        if (glows != null && glows.size() + 2 <= limit) {
-            impactGlow(glows, WorldGlowRenderer.Texture.SOFT, center, axisU, axisV, radius * 2.10D,
-                color, opacity * glow * 0.10D);
-            impactGlow(glows, WorldGlowRenderer.Texture.PULSE, center.add(normal.multiply(0.003D)),
-                axisU, axisV, radius * 1.60D, color, opacity * glow * 0.36D);
-        }
-    }
-
-    private static SolidVisualMesh.Point point(Vec3d point) {
-        return new SolidVisualMesh.Point(point.x, point.y, point.z);
-    }
-
-    private static SolidVisualMesh.Point orient(SolidVisualMesh.Point point, Vec3d center,
-                                                Vec3d axisU, Vec3d normal, Vec3d axisV) {
-        return point(center.add(axisU.multiply(point.x())).add(normal.multiply(point.y())).add(axisV.multiply(point.z())));
     }
 
     private static void impactGlow(List<WorldGlowRenderer.Quad> glows, WorldGlowRenderer.Texture texture,

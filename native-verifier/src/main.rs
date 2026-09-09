@@ -1,8 +1,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod atomic_store;
+pub(crate) use atomic_store::atomic_write;
+mod bindings;
+mod credential_protection;
 mod launchers;
 mod release;
 mod ui;
+mod windows_profile;
+
+pub(crate) const SETUP_BUILD: &str = "20260908.1";
 
 use crate::launchers::{DetectedLauncher, GameInstance};
 use crate::ui::UiEvent;
@@ -22,27 +29,20 @@ use std::env;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::ptr;
-use std::slice;
 use std::sync::mpsc;
-use winapi::shared::minwindef::DWORD;
-use winapi::um::dpapi::{CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData};
-use winapi::um::winbase::LocalFree;
-use winapi::um::wincrypt::DATA_BLOB;
 use winreg::RegKey;
 use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
 use wmi::{COMLibrary, WMIConnection};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
 const STORE_MAGIC: &[u8; 4] = b"CST1";
-const TICKET_MAGIC: &[u8; 4] = b"CLT1";
 const INSTALLER_UUID: &str = "00000000-0000-0000-0000-000000000000";
 const INSTALLER_NAME: &str = "CelesteInstaller";
 const TOKEN_INFO: &[u8] = b"celeste-install-token-v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct InstallCredential {
+pub(crate) struct InstallCredential {
     device_id: String,
     uid: u64,
     signing_private: String,
@@ -124,7 +124,7 @@ fn main() {
 }
 
 pub(crate) fn verify_and_install(
-    license: String,
+    credential: InstallCredential,
     launcher: DetectedLauncher,
     instance: GameInstance,
     tx: &mpsc::Sender<UiEvent>,
@@ -132,52 +132,14 @@ pub(crate) fn verify_and_install(
     let send = |message: &str| {
         let _ = tx.send(UiEvent::Status(message.to_owned()));
     };
+    launchers::validate_install_target(&launcher, &instance)?;
     send("Authenticating");
-    let stored = credential_path(&instance.game_dir);
     let runtime_stored = runtime_credential_path(&instance.game_dir);
-    let license = license.trim();
-
-    let existing_credential = if stored.is_file() {
-        Some(stored.as_path())
-    } else if runtime_stored.is_file() {
-        Some(runtime_stored.as_path())
-    } else {
-        None
-    };
-
-    let (credential, session) = if let Some(existing) = existing_credential {
-        let hardware = collect_hardware()?;
-        let credential = load_credential(existing)
-            .context("The saved installation binding could not be opened")?;
-        match authenticate_installer(&credential, &hardware) {
-            Ok(session) => (credential, session),
-            Err(error) if is_unauthorized(&error) => {
-                if !license_looks_valid(license) {
-                    bail!(
-                        "This installation is no longer authorized. Enter a valid Celeste license to rebind."
-                    );
-                }
-                let replacement = enroll(license, &hardware)?;
-                save_credential(&stored, &replacement)?;
-                let session = authenticate_installer(&replacement, &hardware)?;
-                (replacement, session)
-            }
-            Err(error) => return Err(error),
-        }
-    } else if license_looks_valid(license) {
-        let hardware = collect_hardware()?;
-        let created = enroll(license, &hardware)?;
-        save_credential(&stored, &created)?;
-        let session = authenticate_installer(&created, &hardware)?;
-        (created, session)
-    } else {
-        bail!("Enter a valid Celeste license to bind this installation")
-    };
-
-    // Older Celeste builds only wrote the runtime credential. Once that
-    // server-signed credential authenticates successfully, promote it into
-    // the native verifier store so the user is never forced to re-enroll.
-    save_credential(&stored, &credential)?;
+    let hardware = collect_hardware()?;
+    // Setup does not authorize delivery. Recheck the exact selected identity
+    // with a new server challenge immediately before every installation.
+    let session = authenticate_installer(&credential, &hardware, None)?;
+    persist_binding(&instance.game_dir, &credential)?;
 
     send("Downloading");
     let loader = get_bytes(
@@ -191,18 +153,8 @@ pub(crate) fn verify_and_install(
     // Give them the same DPAPI-bound credential only after the native verifier
     // has completed its independent authentication and verified the bootstrap.
     save_credential(&runtime_stored, &credential)?;
-    let _jar = launchers::install_and_patch(&launcher, &instance, &loader)?;
-    save_launch_ticket(
-        &instance
-            .game_dir
-            .join("config")
-            .join("celeste")
-            .join("auth")
-            .join("launch.bin"),
-        required_text(&session, "/grant")?,
-    )?;
-    send("Launching");
-    launchers::launch(&launcher, &instance)?;
+    let _jar = launchers::install_mod(&launcher, &instance, &loader)?;
+    send("Installed. Open this instance in your launcher.");
     Ok(())
 }
 
@@ -211,16 +163,163 @@ fn license_looks_valid(license: &str) -> bool {
     (20..=96).contains(&len)
 }
 
-pub(crate) fn saved_binding_exists(game_dir: &Path) -> bool {
-    credential_path(game_dir).is_file() || runtime_credential_path(game_dir).is_file()
+pub(crate) fn verify_activation(license: Option<String>) -> Result<Option<InstallCredential>> {
+    let license = license.as_deref().map(str::trim);
+    if license.is_some_and(|key| !license_looks_valid(key)) {
+        bail!("Enter a valid Celeste license key (20–96 characters)");
+    }
+    let candidates = if license.is_some() {
+        credential_candidates(Path::new(""))
+    } else if let Some(active) = user_binding_dir()
+        .map(|dir| dir.join("celeste-active.bin"))
+        .filter(|path| path.is_file())
+    {
+        // An explicitly selected identity must not silently change to another
+        // account just because an old profile contains a different credential.
+        vec![bindings::Candidate {
+            path: active,
+            selected_instance: true,
+        }]
+    } else {
+        // Read legacy profile credentials in this worker, without exposing or
+        // starting install-target discovery before the license gate succeeds.
+        credential_candidates(Path::new(""))
+    };
+    if candidates.is_empty() && license.is_none() {
+        return Ok(None);
+    }
+    let hardware = collect_hardware()?;
+    let saved = bindings::reuse_for_key(candidates, license.is_some(), load_credential, |saved| {
+        authenticate_installer(saved, &hardware, license)
+    });
+    finish_activation(
+        saved,
+        license.is_some(),
+        || {
+            enroll(
+                license.expect("enrollment requires an explicit key"),
+                &hardware,
+            )
+        },
+        persist_user_binding,
+        |created| authenticate_installer(created, &hardware, license),
+    )
 }
 
-pub(crate) fn any_saved_binding() -> bool {
-    launchers::detect_installed().iter().any(|launcher| {
-        launchers::preferred_instances(&launchers::list_instances(launcher))
-            .iter()
-            .any(|instance| saved_binding_exists(&instance.game_dir))
-    })
+// This boundary makes persistence mandatory and keeps retryable authentication
+// errors from falling through to another enrollment (and consuming a binding).
+fn finish_activation<E, P, A>(
+    saved: Result<Option<(InstallCredential, Value)>>,
+    explicit_key: bool,
+    mut enroll_new: E,
+    mut persist: P,
+    mut authenticate: A,
+) -> Result<Option<InstallCredential>>
+where
+    E: FnMut() -> Result<InstallCredential>,
+    P: FnMut(&InstallCredential) -> Result<()>,
+    A: FnMut(&InstallCredential) -> Result<Value>,
+{
+    let credential = match saved {
+        Ok(Some((credential, _))) => credential,
+        Ok(None) if !explicit_key => return Ok(None),
+        Ok(None) => {
+            let created = enroll_new()?;
+            // Preserve an enrolled identity even if its first installer check
+            // times out. Retry must authenticate this copy, not enroll again.
+            persist(&created)?;
+            authenticate(&created)?;
+            created
+        }
+        Err(error) if explicit_key && (is_unauthorized(&error) || is_product_denied(&error)) => {
+            let created = enroll_new()?;
+            persist(&created)?;
+            authenticate(&created)?;
+            created
+        }
+        Err(error) => return Err(error),
+    };
+    persist(&credential)?;
+    Ok(Some(credential))
+}
+
+fn user_binding_dir() -> Option<PathBuf> {
+    required_user_binding_dir().ok()
+}
+
+fn credential_candidates(game_dir: &Path) -> Vec<bindings::Candidate> {
+    let mut candidates = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut add = |path: PathBuf, selected_instance: bool| {
+        if path.is_file() && seen.insert(path.clone()) {
+            candidates.push(bindings::Candidate {
+                path,
+                selected_instance,
+            });
+        }
+    };
+    if !game_dir.as_os_str().is_empty() {
+        add(credential_path(game_dir), true);
+        add(runtime_credential_path(game_dir), true);
+    }
+    if let Some(cache) = user_binding_dir() {
+        add(cache.join("celeste-active.bin"), false);
+        let mut files = fs::read_dir(cache)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("uid-") && name.ends_with(".bin"))
+            })
+            .collect::<Vec<_>>();
+        files.sort();
+        for path in files {
+            add(path, false);
+        }
+    }
+    for launcher in launchers::detect_installed() {
+        for instance in launchers::list_instances(&launcher) {
+            add(credential_path(&instance.game_dir), false);
+            add(runtime_credential_path(&instance.game_dir), false);
+            // Old Prism installs could write to the instance root before
+            // minecraft existed. Authenticate that binding before migrating it.
+            if let Some(legacy_root) = launchers::legacy_binding_root(&launcher, &instance) {
+                let selected = instance.game_dir == game_dir
+                    && !credential_path(game_dir).is_file()
+                    && !runtime_credential_path(game_dir).is_file();
+                add(credential_path(&legacy_root), selected);
+                add(runtime_credential_path(&legacy_root), selected);
+            }
+        }
+    }
+    candidates
+}
+
+fn persist_binding(game_dir: &Path, credential: &InstallCredential) -> Result<()> {
+    persist_user_binding(credential)?;
+    save_credential(&credential_path(game_dir), credential)
+        .context("Could not save activation for the selected Minecraft instance")
+}
+
+fn required_user_binding_dir() -> Result<PathBuf> {
+    Ok(windows_profile::current_local_app_data()?
+        .join("Celeste")
+        .join("auth")
+        .join(release::LAUNCHER_CHANNEL_ID))
+}
+
+fn persist_user_binding(credential: &InstallCredential) -> Result<()> {
+    let cache = required_user_binding_dir()?;
+    save_credential(
+        &cache.join(format!("uid-{}.bin", credential.uid)),
+        credential,
+    )
+    .context("Could not save this PC's activation in the Windows user profile")?;
+    save_credential(&cache.join("celeste-active.bin"), credential)
+        .context("Could not save the selected activation in the Windows user profile")
 }
 
 fn credential_path(game_root: &Path) -> PathBuf {
@@ -241,8 +340,36 @@ fn runtime_credential_path(game_root: &Path) -> PathBuf {
 
 fn is_unauthorized(error: &anyhow::Error) -> bool {
     error
-        .chain()
-        .any(|cause| cause.to_string().contains("(401)"))
+        .downcast_ref::<HttpFailure>()
+        .is_some_and(|failure| failure.status == 401)
+}
+
+#[derive(Debug)]
+struct HttpFailure {
+    status: u16,
+    path: String,
+    detail: String,
+}
+
+impl std::fmt::Display for HttpFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Authentication server rejected the request ({}) at {}: {}",
+            self.status, self.path, self.detail
+        )
+    }
+}
+
+impl std::error::Error for HttpFailure {}
+
+fn http_failure(status: u16, path: &str, detail: &str) -> anyhow::Error {
+    HttpFailure {
+        status,
+        path: path.to_owned(),
+        detail: detail.to_owned(),
+    }
+    .into()
 }
 
 fn collect_hardware() -> Result<HardwareProfile> {
@@ -344,12 +471,30 @@ fn monitor_edids() -> Vec<Vec<u8>> {
 }
 
 fn enroll(license: &str, hardware: &HardwareProfile) -> Result<InstallCredential> {
+    // Never bind a new server identity before Windows protection and the
+    // mandatory, game-independent cache have passed a real write/read check.
+    enroll_after_preflight(
+        || credential_protection::preflight(&required_user_binding_dir()?),
+        || enroll_remote(license, hardware),
+    )
+}
+
+fn enroll_after_preflight<T>(
+    preflight: impl FnOnce() -> Result<()>,
+    enroll_remote: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    preflight()?;
+    enroll_remote()
+}
+
+fn enroll_remote(license: &str, hardware: &HardwareProfile) -> Result<InstallCredential> {
     let signing = SigningKey::generate(&mut OsRng);
     let encryption = StaticSecret::random_from_rng(OsRng);
     let encryption_public = X25519PublicKey::from(&encryption);
     let start = post_json(
         "/v1/enroll/start",
         &json!({
+            "product": "celeste",
             "release_id": release::LAUNCHER_CHANNEL_ID,
             "client_version": release::LAUNCHER_PROTOCOL_VERSION,
             "client_sha256": release::LAUNCHER_CHANNEL_DIGEST,
@@ -360,10 +505,13 @@ fn enroll(license: &str, hardware: &HardwareProfile) -> Result<InstallCredential
             "install_encryption_key": encode(encryption_public.as_bytes()),
             "hardware": hardware,
         }),
-    )
-    .context(
-        "License activation failed. Use the complete one-time key from the current auth dashboard",
-    )?;
+    ).map_err(|error| {
+        if error.downcast_ref::<HttpFailure>().is_some_and(|failure| failure.status == 409) {
+            error.context("This license is already activated. Use the original Windows account, or contact support if its saved activation was lost")
+        } else {
+            error.context("License activation failed")
+        }
+    })?;
     let message = decode(required_text(&start, "/message")?)?;
     let complete = post_json(
         "/v1/enroll/complete",
@@ -408,18 +556,21 @@ fn enroll(license: &str, hardware: &HardwareProfile) -> Result<InstallCredential
 fn authenticate_installer(
     credential: &InstallCredential,
     hardware: &HardwareProfile,
+    license: Option<&str>,
 ) -> Result<Value> {
     let signing = signing_key(&credential.signing_private)?;
     let token = signing_key(&credential.token_seed)?;
     let start = post_json(
         "/v1/installer/start",
         &json!({
+            "product": "celeste",
             "release_id": release::LAUNCHER_CHANNEL_ID,
             "client_version": release::LAUNCHER_PROTOCOL_VERSION,
             "client_sha256": release::LAUNCHER_CHANNEL_DIGEST,
             "game_uuid": INSTALLER_UUID,
             "game_name": INSTALLER_NAME,
             "device_id": credential.device_id,
+            "license_key": license,
             "hardware": hardware,
         }),
     )?;
@@ -437,6 +588,9 @@ fn authenticate_installer(
     let bootstrap_url = required_text(&complete, "/bootstrap/url")?;
     let bootstrap_id = bootstrap_url.rsplit('/').next().unwrap_or("");
     let bootstrap_sha = required_text(&complete, "/bootstrap/sha256")?;
+    if required_text(&claims, "/product")? != "celeste" {
+        return Err(ProductDenied.into());
+    }
     if required_text(&claims, "/device")? != credential.device_id
         || required_text(&claims, "/release")? != release::LAUNCHER_CHANNEL_ID
         || required_text(&claims, "/client_sha256")? != release::LAUNCHER_CHANNEL_DIGEST
@@ -481,20 +635,34 @@ fn decrypt_token(envelope: &Value, private: &StaticSecret, message: &[u8]) -> Re
 
 fn post_json(path: &str, body: &Value) -> Result<Value> {
     let url = endpoint(path)?;
-    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    let agent = ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout(std::time::Duration::from_secs(25))
+        .build();
     let result = agent
         .post(&url)
         .set("Content-Type", "application/json")
         .set("Accept", "application/json")
         .send_json(body.clone());
     match result {
-        Ok(response) => response.into_json().context("Server returned invalid JSON"),
+        Ok(response) => {
+            let mut bytes = Vec::new();
+            response
+                .into_reader()
+                .take(65_537)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > 65_536 {
+                bail!("Authentication response exceeds size bounds");
+            }
+            serde_json::from_slice(&bytes).context("Server returned invalid JSON")
+        }
         Err(ureq::Error::Status(code, response)) => {
-            let detail = response.into_string().unwrap_or_default();
-            bail!(
-                "Authentication server rejected the request ({code}) at {path}: {}",
-                short_detail(&detail)
-            );
+            let mut detail = String::new();
+            let _ = response
+                .into_reader()
+                .take(4_097)
+                .read_to_string(&mut detail);
+            Err(http_failure(code, path, &short_detail(&detail, body)))
         }
         Err(error) => Err(anyhow!(error).context("Authentication server is unreachable")),
     }
@@ -502,7 +670,10 @@ fn post_json(path: &str, body: &Value) -> Result<Value> {
 
 fn get_bytes(path: &str, bearer: Option<&str>) -> Result<Vec<u8>> {
     let url = endpoint(path)?;
-    let agent = ureq::AgentBuilder::new().redirects(0).build();
+    let agent = ureq::AgentBuilder::new()
+        .redirects(0)
+        .timeout(std::time::Duration::from_secs(25))
+        .build();
     let mut request = agent.get(&url).set("Accept", "application/octet-stream");
     if let Some(value) = bearer {
         request = request.set("Authorization", &format!("Bearer {value}"));
@@ -601,76 +772,12 @@ fn save_credential(path: &Path, credential: &InstallCredential) -> Result<()> {
     atomic_write(path, &stored)
 }
 
-fn save_launch_ticket(path: &Path, ticket: &str) -> Result<()> {
-    let protected = dpapi_protect(ticket.as_bytes())?;
-    let mut stored = Vec::with_capacity(TICKET_MAGIC.len() + protected.len());
-    stored.extend_from_slice(TICKET_MAGIC);
-    stored.extend_from_slice(&protected);
-    atomic_write(path, &stored)
-}
-
-pub(crate) fn atomic_write(path: &Path, value: &[u8]) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("Output path has no parent"))?;
-    fs::create_dir_all(parent)?;
-    let pending = path.with_extension("pending");
-    fs::write(&pending, value)?;
-    if path.exists() {
-        fs::remove_file(path)?;
-    }
-    fs::rename(&pending, path)?;
-    Ok(())
-}
-
 fn dpapi_protect(value: &[u8]) -> Result<Vec<u8>> {
-    unsafe {
-        let mut input = DATA_BLOB {
-            cbData: value.len() as DWORD,
-            pbData: value.as_ptr() as *mut u8,
-        };
-        let mut output: DATA_BLOB = std::mem::zeroed();
-        if CryptProtectData(
-            &mut input,
-            ptr::null(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            CRYPTPROTECT_UI_FORBIDDEN,
-            &mut output,
-        ) == 0
-        {
-            bail!("Windows could not protect the device credential");
-        }
-        let result = slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
-        LocalFree(output.pbData as *mut _);
-        Ok(result)
-    }
+    credential_protection::protect(value)
 }
 
 fn dpapi_unprotect(value: &[u8]) -> Result<Vec<u8>> {
-    unsafe {
-        let mut input = DATA_BLOB {
-            cbData: value.len() as DWORD,
-            pbData: value.as_ptr() as *mut u8,
-        };
-        let mut output: DATA_BLOB = std::mem::zeroed();
-        if CryptUnprotectData(
-            &mut input,
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            ptr::null_mut(),
-            CRYPTPROTECT_UI_FORBIDDEN,
-            &mut output,
-        ) == 0
-        {
-            bail!("Windows rejected the saved device credential");
-        }
-        let result = slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
-        LocalFree(output.pbData as *mut _);
-        Ok(result)
-    }
+    credential_protection::unprotect(value)
 }
 
 fn required_text<'a>(value: &'a Value, pointer: &str) -> Result<&'a str> {
@@ -712,13 +819,252 @@ fn fixed_32(value: &[u8]) -> Result<[u8; 32]> {
         .map_err(|_| anyhow!("Expected a 32-byte key"))
 }
 
-fn short_detail(value: &str) -> String {
+fn short_detail(value: &str, request: &Value) -> String {
     let parsed: Value = serde_json::from_str(value).unwrap_or(Value::Null);
-    parsed
+    let mut detail = parsed
         .pointer("/detail")
         .and_then(Value::as_str)
         .unwrap_or("request denied")
-        .chars()
-        .take(120)
-        .collect()
+        .to_owned();
+    // Redact before truncation to avoid leaking a partial key or signature
+    // if an error response happens to echo request values.
+    for key in [
+        "license_key",
+        "install_signature",
+        "token_signature",
+        "grant",
+    ] {
+        if let Some(secret) = request
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            detail = detail.replace(secret, "[redacted]");
+        }
+    }
+    detail.chars().take(120).collect()
+}
+
+fn is_product_denied(error: &anyhow::Error) -> bool {
+    error.is::<ProductDenied>()
+        || error
+            .downcast_ref::<HttpFailure>()
+            .is_some_and(|failure| failure.status == 403)
+}
+
+#[derive(Debug)]
+struct ProductDenied;
+
+impl std::fmt::Display for ProductDenied {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(
+            "This activation is not authorized for Celeste. Enter a Celeste or Both license",
+        )
+    }
+}
+
+impl std::error::Error for ProductDenied {}
+
+pub(crate) fn activation_key_required(error: &anyhow::Error) -> bool {
+    is_unauthorized(error) || is_product_denied(error) || bindings::license_required(error)
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+    use std::cell::{Cell, RefCell};
+
+    fn fixture() -> InstallCredential {
+        InstallCredential {
+            device_id: "nonsecret-test-device".into(),
+            uid: 7,
+            signing_private: String::new(),
+            encryption_private: String::new(),
+            token_seed: String::new(),
+            certificate: String::new(),
+            game_uuid: String::new(),
+            game_name: String::new(),
+        }
+    }
+
+    #[test]
+    fn first_use_without_key_has_no_enrollment_or_persistence() {
+        let result = finish_activation(
+            Ok(None),
+            false,
+            || panic!("no implicit enrollment"),
+            |_| panic!("nothing to persist"),
+            |_| panic!("nothing to authenticate"),
+        )
+        .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn explicit_activation_saves_before_authentication_and_before_unlocking() {
+        let calls = RefCell::new(Vec::new());
+        let result = finish_activation(
+            Ok(None),
+            true,
+            || {
+                calls.borrow_mut().push("enroll");
+                Ok(fixture())
+            },
+            |_| {
+                calls.borrow_mut().push("persist");
+                Ok(())
+            },
+            |_| {
+                calls.borrow_mut().push("authenticate");
+                Ok(json!({"product":"celeste"}))
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(result.uid, 7);
+        assert_eq!(
+            *calls.borrow(),
+            ["enroll", "persist", "authenticate", "persist"]
+        );
+    }
+
+    #[test]
+    fn successful_saved_authentication_still_requires_shared_persistence() {
+        let result = finish_activation(
+            Ok(Some((fixture(), json!({"product":"celeste"})))),
+            false,
+            || panic!("must reuse"),
+            |_| bail!("cache not writable"),
+            |_| panic!("already authenticated"),
+        );
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("cache not writable")
+        );
+    }
+
+    #[test]
+    fn newly_enrolled_identity_cannot_unlock_if_persistence_fails() {
+        let result = finish_activation(
+            Ok(None),
+            true,
+            || Ok(fixture()),
+            |_| bail!("cache not writable"),
+            |_| panic!("must persist before checking or unlocking"),
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn network_error_on_saved_identity_never_enrolls_even_with_explicit_key() {
+        for explicit_key in [false, true] {
+            let result = finish_activation(
+                Err(anyhow!("Authentication server is unreachable")),
+                explicit_key,
+                || panic!("network failure is not permission to enroll"),
+                |_| panic!("nothing newly verified"),
+                |_| panic!("do not retry automatically"),
+            );
+            assert!(!activation_key_required(&result.unwrap_err()));
+        }
+    }
+
+    #[test]
+    fn failed_first_authentication_preserves_the_new_credential_for_retry() {
+        let writes = Cell::new(0);
+        let result = finish_activation(
+            Ok(None),
+            true,
+            || Ok(fixture()),
+            |_| {
+                writes.set(writes.get() + 1);
+                Ok(())
+            },
+            |_| bail!("offline"),
+        );
+        assert!(result.is_err());
+        assert_eq!(writes.get(), 1);
+    }
+
+    #[test]
+    fn revoked_and_wrong_product_saved_bindings_require_a_key_without_enrolling() {
+        for status in [401, 403] {
+            let result = finish_activation(
+                Err(http_failure(status, "/v1/installer/start", "denied")),
+                false,
+                || panic!("automatic startup must not enroll"),
+                |_| panic!("rejected activation must not persist"),
+                |_| panic!("rejected activation must not authenticate again"),
+            );
+            assert!(activation_key_required(&result.unwrap_err()));
+        }
+        assert!(activation_key_required(&anyhow!(ProductDenied)));
+    }
+
+    #[test]
+    fn explicit_key_can_replace_server_rejected_binding() {
+        let result = finish_activation(
+            Err(http_failure(
+                401,
+                "/v1/installer/start",
+                "old activation revoked",
+            )),
+            true,
+            || Ok(fixture()),
+            |_| Ok(()),
+            |_| Ok(json!({"product":"celeste"})),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(result.uid, 7);
+    }
+
+    #[test]
+    fn failed_preflight_makes_zero_enrollment_requests() {
+        let requests = Cell::new(0);
+        let result = enroll_after_preflight(
+            || bail!("simulated Windows protection or cache write failure"),
+            || {
+                requests.set(requests.get() + 1);
+                Ok(())
+            },
+        );
+        assert!(result.is_err());
+        assert_eq!(requests.get(), 0);
+    }
+
+    #[test]
+    fn successful_preflight_precedes_the_only_enrollment_request() {
+        let calls = RefCell::new(Vec::new());
+        enroll_after_preflight(
+            || {
+                calls.borrow_mut().push("preflight");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("enroll");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(*calls.borrow(), ["preflight", "enroll"]);
+    }
+
+    #[test]
+    fn authentication_errors_redact_request_secrets_before_truncation() {
+        let license = "nonsecret-placeholder-license-key-123";
+        let signature = "nonsecret-signature-fixture";
+        let detail =
+            json!({"detail": format!("{} denied {license} {signature}", "prefix ".repeat(12))});
+        let displayed = short_detail(
+            &detail.to_string(),
+            &json!({"license_key": license, "install_signature": signature}),
+        );
+        assert!(displayed.contains("[redacted]"));
+        assert!(!displayed.contains("nonsecret"));
+        assert!(displayed.chars().count() <= 120);
+        assert_eq!(short_detail("not JSON", &json!({})), "request denied");
+    }
 }

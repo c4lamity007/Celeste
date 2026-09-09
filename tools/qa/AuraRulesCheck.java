@@ -4,7 +4,7 @@ package dev.c4lam.celeste.module.impl.combat;
 public final class AuraRulesCheck {
     private static int assertions;
     public static void main(String[] args) {
-        damage(); crystal(); confirmation(); ownership();
+        damage(); crystal(); confirmation(); ownership(); coordination(); swordFallback();
         System.out.println("PASS AuraRules: " + assertions + " assertions");
     }
 
@@ -51,15 +51,17 @@ public final class AuraRulesCheck {
         check(AuraRules.swordReady(46, 0.4) && !AuraRules.swordReady(45, 0.4), "slow modified weapon boundary");
         check(!AuraRules.swordReady(-1, 1.6) && !AuraRules.swordReady(20, Double.NaN), "invalid recovery inputs");
         eq(AuraRules.crystalAction(64, 64, false, true), AuraRules.CrystalAction.SWORD, "same feet sword");
-        eq(AuraRules.crystalAction(64, 64, false, false), AuraRules.CrystalAction.NONE, "cooldown blocks sword");
+        eq(AuraRules.crystalAction(64, 64, false, false), AuraRules.CrystalAction.PLACE, "sword cooldown does not block a separately safe crystal placement");
         eq(AuraRules.crystalAction(64, 64.1, false, true), AuraRules.CrystalAction.SWORD, "tiny motion not lift");
         eq(AuraRules.crystalAction(64, 64.2, false, false), AuraRules.CrystalAction.PLACE, "observed lift permits placement");
         eq(AuraRules.crystalAction(64, 64.2, true, false), AuraRules.CrystalAction.BREAK, "observed crystal permits break");
-        eq(AuraRules.crystalAction(64, 63, false, true), AuraRules.CrystalAction.NONE, "lower target is not lifted");
+        eq(AuraRules.crystalAction(64, 63, false, true), AuraRules.CrystalAction.PLACE, "lower target can still take a safe crystal");
+        eq(AuraRules.crystalAction(64, 64, true, true), AuraRules.CrystalAction.BREAK, "existing crystal beats same-height sword pressure");
+        eq(AuraRules.crystalAction(64, 63, true, false), AuraRules.CrystalAction.BREAK, "existing crystal does not require target lift");
         eq(AuraRules.crystalAction(64, Double.NaN, false, true), AuraRules.CrystalAction.NONE, "invalid target");
-        // Failed knockback never advances to explosive placement merely because a sword was sent.
-        for (int tick = 0; tick < 24; tick++)
-            check(AuraRules.crystalAction(64, 64, false, tick == 0) != AuraRules.CrystalAction.PLACE, "no assumed lift");
+        // Height decides sword pressure only. Permission to place/explode still
+        // requires the independent live blast/range/friend/world checks.
+        check(!AuraRules.safe(10, 21, 20, 4, 6, false), "placement option never makes an unsafe blast safe");
     }
 
     private static void confirmation() {
@@ -84,6 +86,100 @@ public final class AuraRulesCheck {
         check(gate.active(), "pending survives a transient pause");
         eq(gate.observe(14, 153, true), AuraRules.ConfirmationResult.WAITING, "pause does not approve prediction");
         eq(gate.observe(15, 154, true), AuraRules.ConfirmationResult.CONFIRMED, "pause resumes server confirmation");
+        gate.begin(160, 160, 8);
+        eq(gate.observe(167, 167, false), AuraRules.ConfirmationResult.WAITING, "sword lift may arrive across several server ticks");
+        eq(gate.observe(168, 168, false), AuraRules.ConfirmationResult.TIMED_OUT, "blocked sword cannot reserve whole CPVP for24ticks");
+    }
+
+    private static void coordination() {
+        Object crystal = new Object(), anchor = new Object();
+        for (boolean anchorFirst : new boolean[] {false, true}) {
+            var turns = new AuraRules.SequenceCoordinator();
+            if (anchorFirst) { turns.register(anchor, true, 5); turns.register(crystal, false, 6); }
+            else { turns.register(crystal, false, 6); turns.register(anchor, true, 5); }
+            near(turns.maximumRange(), 6, "shared target uses enabled search ranges");
+            turns.target(45);
+            check(turns.target() == 45, "one stable shared target");
+            long tick = 1;
+            for (int sequence = 0; sequence < 8; sequence++) {
+                Object expected = sequence % 2 == 0 ? crystal : anchor;
+                Object other = expected == crystal ? anchor : crystal;
+                // Every fresh crystal sequence can contain sword, base, place,
+                // break; anchor sequences contain place, charge, break.
+                int actions = expected == crystal ? 4 : 3;
+                for (int step = 0; step < actions; step++) {
+                    if (anchorFirst) { turns.offer(anchor, tick, true); turns.offer(crystal, tick, true); }
+                    else { turns.offer(crystal, tick, true); turns.offer(anchor, tick, true); }
+                    check(turns.winner(tick) == expected, "stable fair winner independent of registration/start order");
+                    check(turns.begin(expected, tick), "chosen aura starts/continues an action");
+                    check(!turns.begin(expected, tick) && !turns.begin(other, tick), "no two aura actions in one tick");
+                    check(turns.owns(expected) && !turns.available(other), "complete explosive chain is exclusive");
+                    tick++;
+                    turns.offer(expected, tick, false); turns.offer(other, tick, true);
+                    check(turns.winner(tick) == null, "pending server state/cooldown/pause cannot interleave second aura");
+                    tick++;
+                }
+                turns.finish(expected);
+                turns.offer(anchor, tick, true); turns.offer(crystal, tick, true);
+                check(turns.winner(tick) == other, "completion yields to other ready aura");
+            }
+            turns.remove(anchor);
+            turns.offer(crystal, tick, true);
+            check(turns.winner(tick) == crystal, "disabling one leaves standalone crystal working");
+            check(turns.begin(crystal, tick), "standalone starts");
+            turns.remove(crystal);
+            check(turns.target() == -1 && turns.maximumRange() == 0, "world/disable clears target and enabled owners");
+            check(turns.available(anchor) && turns.winner(tick + 1) == null, "disconnect leaves no ghost lease or plan");
+        }
+        var fallback = new AuraRules.SequenceCoordinator();
+        fallback.register(anchor, true, 6); fallback.register(crystal, false, 6);
+        fallback.offer(anchor, 1, true); fallback.offer(crystal, 1, false);
+        check(fallback.winner(1) == anchor && fallback.begin(anchor, 1), "unavailable crystal equipment/placement does not reserve a turn");
+        fallback.finish(anchor);
+        fallback.offer(anchor, 2, true); fallback.offer(crystal, 2, false);
+        check(fallback.winner(2) == anchor, "no mandatory empty alternating turn");
+        check(fallback.winner(3) == null, "stale plan cannot win a future tick");
+        fallback.offer(crystal, 3, true);
+        check(fallback.begin(crystal, 3), "crystal joins after equipment becomes available");
+        fallback.target(-1); fallback.finish(crystal);
+        fallback.offer(crystal, 4, false); fallback.offer(anchor, 4, true);
+        check(fallback.winner(4) == anchor, "target loss/timeout releases other aura without a fake confirmation");
+        fallback.remove(crystal); fallback.remove(anchor);
+        fallback.register(anchor, true, 5); fallback.offer(anchor, 5, true);
+        check(fallback.winner(5) == anchor, "reenable starts clean standalone anchor");
+        check(!fallback.begin(null, 5), "null owner rejected");
+    }
+
+    private static void swordFallback() {
+        Object crystal = new Object(), anchor = new Object();
+        var turns = new AuraRules.SequenceCoordinator();
+        var observation = new AuraRules.Confirmation();
+        turns.register(crystal, false, 6); turns.register(anchor, true, 6);
+        turns.offer(crystal, 1, true); turns.offer(anchor, 1, true);
+        check(AuraRules.swordPressure(64, 64, true, turns.owns(crystal)), "initial grounded target permits sword pressure");
+        check(turns.begin(crystal, 1), "sword starts crystal sequence");
+        observation.begin(1, 1, 8);
+        for (int tick = 2; tick < 9; tick++) {
+            var waiting = observation.observe(tick, tick, false);
+            check(!AuraRules.endsSequence(true, false, waiting), "waiting sword observation retains exclusive turn");
+        }
+        var noLift = observation.observe(9, 9, false);
+        eq(noLift, AuraRules.ConfirmationResult.TIMED_OUT, "shield/ceiling stops lift observation");
+        check(!AuraRules.endsSequence(true, false, noLift), "failed lift alone is not an explosive rejection");
+        turns.offer(crystal, 9, true); turns.offer(anchor, 9, true);
+        check(turns.winner(9) == crystal, "same crystal sequence gets its safe-placement fallback");
+        check(!AuraRules.swordPressure(64, 64, true, turns.owns(crystal)), "fallback cannot repeat sword on shield forever");
+        check(!AuraRules.safe(9, 12, 20, 4, 6, false), "no-lift fallback still rejects unsafe explosion");
+        check(turns.begin(crystal, 9), "independently safe placement can follow without fabricated lift ACK");
+        observation.begin(10, 9);
+        var rejected = observation.observe(10, 33, false);
+        check(AuraRules.endsSequence(false, false, rejected), "actual block/entity confirmation timeout releases turn");
+        if (AuraRules.endsSequence(false, false, rejected)) turns.finish(crystal);
+        turns.offer(crystal, 33, true); turns.offer(anchor, 33, true);
+        check(turns.winner(33) == anchor, "other aura runs after failed explosive follow-up");
+        check(AuraRules.endsSequence(false, true, AuraRules.ConfirmationResult.CONFIRMED), "confirmed detonation completes sequence");
+        check(!AuraRules.endsSequence(false, false, AuraRules.ConfirmationResult.CONFIRMED), "confirmed preparation continues sequence");
+        check(!AuraRules.endsSequence(false, true, AuraRules.ConfirmationResult.WAITING), "pending detonation is not completion");
     }
 
     private static void ownership() {

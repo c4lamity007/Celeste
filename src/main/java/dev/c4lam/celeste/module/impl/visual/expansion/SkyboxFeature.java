@@ -1,6 +1,7 @@
 package dev.c4lam.celeste.module.impl.visual.expansion;
 
 import dev.c4lam.celeste.auth.AuthBootstrap;
+import dev.c4lam.celeste.compat.RenderCompatibility;
 import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.module.ModuleFeature;
 import net.minecraft.block.enums.CameraSubmersionType;
@@ -51,6 +52,8 @@ public final class SkyboxFeature implements ModuleFeature {
     /** Extract immutable presentation values while Minecraft's sky state is being prepared. */
     public static SkyboxRenderer.Frame extract(ClientWorld world, Camera camera, SkyRenderState state) {
         Settings options = settings;
+        if (!options.enabled() || RenderCompatibility.isShadowPass() || RenderCompatibility.isShaderPackActive())
+            return SkyboxRenderer.Frame.EMPTY;
         MinecraftClient client = MinecraftClient.getInstance();
         // Existing tested clock excludes paused intervals, including the first resumed frame.
         double elapsed = CLOCK.sample(System.nanoTime(), client.isPaused());
@@ -77,6 +80,13 @@ public final class SkyboxFeature implements ModuleFeature {
     public static boolean isCurrent(SkyboxRenderer.Frame frame) {
         Settings current = settings;
         return frame != null && frame != SkyboxRenderer.Frame.EMPTY && current.enabled()
-            && frame.generation() == current.generation() && AuthBootstrap.authorized();
+            && frame.generation() == current.generation() && AuthBootstrap.authorized()
+            && !RenderCompatibility.isShadowPass() && !RenderCompatibility.isShaderPackActive();
+    }
+
+    /** Fog matches the selected sky palette without importing renderer state or GPU objects. */
+    static int fogMode() {
+        Settings current = settings;
+        return current.enabled() ? current.mode() : 0;
     }
 }

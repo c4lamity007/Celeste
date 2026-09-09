@@ -1,6 +1,6 @@
 package dev.c4lam.celeste.module.expansion.sword;
 
-import dev.c4lam.celeste.mixin.module.KeyBindingAccessor;
+import dev.c4lam.celeste.compat.MinecraftAccess;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
 import net.minecraft.client.util.InputUtil;
@@ -17,7 +17,7 @@ final class PhysicalBinding {
         if (window == null || binding == null) {
             return false;
         }
-        InputUtil.Key key = ((KeyBindingAccessor) (Object) binding).celeste$getBoundKey();
+        InputUtil.Key key = MinecraftAccess.boundKey(binding);
         if (key.getCode() < 0) {
             return false;
         }
@@ -34,7 +34,7 @@ final class PhysicalBinding {
         if (binding == null) {
             return false;
         }
-        InputUtil.Key key = ((KeyBindingAccessor) (Object) binding).celeste$getBoundKey();
+        InputUtil.Key key = MinecraftAccess.boundKey(binding);
         return key.getCategory() == InputUtil.Type.KEYSYM
             || key.getCategory() == InputUtil.Type.MOUSE;
     }

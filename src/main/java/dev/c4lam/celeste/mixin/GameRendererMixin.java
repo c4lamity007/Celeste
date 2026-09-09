@@ -1,6 +1,6 @@
 package dev.c4lam.celeste.mixin;
 
-import dev.c4lam.celeste.render.GuiRenderer;
+import dev.c4lam.celeste.compat.PresentationHooks;
 import net.minecraft.client.render.GameRenderer;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -19,6 +19,6 @@ public abstract class GameRendererMixin {
             )
     )
     private void celeste$flushGui(CallbackInfo ci) {
-        GuiRenderer.getInstance().flush();
+        PresentationHooks.flushGui();
     }
 }

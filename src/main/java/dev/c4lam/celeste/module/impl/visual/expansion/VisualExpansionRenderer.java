@@ -4,11 +4,14 @@ import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.pipeline.BlendFunction;
 import com.mojang.blaze3d.platform.DepthTestFunction;
 import dev.c4lam.celeste.CelesteClient;
+import dev.c4lam.celeste.beta.lifecycle.BetaSubscriptions;
 import dev.c4lam.celeste.auth.AuthBootstrap;
 import dev.c4lam.celeste.module.impl.combat.AnchorAuraFeature;
 import dev.c4lam.celeste.module.expansion.inventory.ReBuffNotifierFeature;
+import net.fabricmc.fabric.api.event.Event;
 import net.fabricmc.fabric.api.client.rendering.v1.RenderStateDataKey;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
+import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElement;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderContext;
 import net.fabricmc.fabric.api.client.rendering.v1.world.WorldRenderEvents;
 import net.minecraft.client.MinecraftClient;
@@ -31,7 +34,7 @@ import java.util.List;
 public final class VisualExpansionRenderer {
     private static final RenderLayer XRAY_QUADS = RenderLayer.of(
         "celeste_visual_expansion_quads",
-        RenderSetup.builder(RenderPipelines.register(
+        RenderSetup.builder(dev.c4lam.celeste.compat.BetaRenderPipelines.register(
             RenderPipeline.builder(RenderPipelines.POSITION_COLOR_SNIPPET)
                 .withLocation(Identifier.of(CelesteClient.MOD_ID, "pipeline/visual_expansion_quads"))
                 .withBlend(BlendFunction.TRANSLUCENT)
@@ -43,7 +46,7 @@ public final class VisualExpansionRenderer {
     );
     private static final RenderLayer XRAY_LINES = RenderLayer.of(
         "celeste_visual_expansion_lines",
-        RenderSetup.builder(RenderPipelines.register(
+        RenderSetup.builder(dev.c4lam.celeste.compat.BetaRenderPipelines.register(
             RenderPipeline.builder(RenderPipelines.RENDERTYPE_LINES_SNIPPET)
                 .withLocation(Identifier.of(CelesteClient.MOD_ID, "pipeline/visual_expansion_lines"))
                 .withBlend(BlendFunction.TRANSLUCENT)
@@ -55,6 +58,7 @@ public final class VisualExpansionRenderer {
     );
     private static final RenderStateDataKey<Frame> FRAME_KEY =
         RenderStateDataKey.create(() -> "celeste_visual_expansion");
+    private static final Identifier LYRIC_PHASE = Identifier.of(CelesteClient.MOD_ID, "sky_lyrics/after_fog");
     private static boolean initialized;
 
     private VisualExpansionRenderer() {
@@ -70,7 +74,8 @@ public final class VisualExpansionRenderer {
         PlayerBoxEspFeature players,
         ChamsFeature chams,
         BlockHighlightFeature blockHighlight,
-        AmbientEffectsFeature ambient
+        AmbientEffectsFeature ambient,
+        SkyLyricsFeature lyrics
     ) {
         if (initialized) return;
         initialized = true;
@@ -78,8 +83,9 @@ public final class VisualExpansionRenderer {
         UnifiedChamsRenderer.initialize();
         AmbientEffectsRenderer.initialize();
 
-        WorldRenderEvents.END_EXTRACTION.register(context -> {
-            if (!AuthBootstrap.authorized()) {
+        BetaSubscriptions.register(WorldRenderEvents.END_EXTRACTION, "celeste:visual_expansion/extract",
+            WorldRenderEvents.EndExtraction.class, context -> {
+            if (!AuthBootstrap.authorized() || dev.c4lam.celeste.compat.RenderCompatibility.isShadowPass()) {
                 return;
             }
             var worldState = context.worldState();
@@ -113,20 +119,30 @@ public final class VisualExpansionRenderer {
             PlayerEchoRenderer.Frame echoes = FakeLagVisualRenderer.extract(context, boxes, lines, glows, 768);
             PlayerEchoRenderer.Frame silhouettes = chams.extract(context);
             AmbientEffectsRenderer.Frame atmosphere = ambient.extract(context);
+            SkyLyricsRenderer.Frame lyricFrame = lyrics.extract(context);
             FakeGambleFeature.extract(context, boxes, lines);
             worldState.setData(
                 FRAME_KEY,
                 boxes.isEmpty() && lines.isEmpty() && glows.isEmpty() && echoes.echoes().isEmpty()
-                    && silhouettes.echoes().isEmpty() && blockMarkers.isEmpty() && atmosphere.particles().isEmpty()
+                    && silhouettes.echoes().isEmpty() && blockMarkers.isEmpty() && atmosphere.isEmpty()
+                    && lyricFrame == SkyLyricsRenderer.Frame.EMPTY
                     ? Frame.EMPTY
                     : new Frame(List.copyOf(boxes), List.copyOf(lines), List.copyOf(glows), echoes, silhouettes,
-                        List.copyOf(blockMarkers), atmosphere)
+                        List.copyOf(blockMarkers), atmosphere, lyricFrame)
             );
-        });
+        }, WorldRenderEvents.END_EXTRACTION::register);
         // AFTER_ENTITIES runs inside the prepared draw pass; BEFORE_DEBUG_RENDER
         // can expose an unprepared or stale WorldRenderContext in Fabric 16.2.x.
-        WorldRenderEvents.AFTER_ENTITIES.register(VisualExpansionRenderer::draw);
-        HudElementRegistry.addLast(Identifier.of(CelesteClient.MOD_ID, "arrow_esp"), (context, tickCounter) -> {
+        BetaSubscriptions.register(WorldRenderEvents.AFTER_ENTITIES, "celeste:visual_expansion/draw",
+            WorldRenderEvents.AfterEntities.class, VisualExpansionRenderer::draw, WorldRenderEvents.AFTER_ENTITIES::register);
+        // Custom fog composites against terrain depth at END_MAIN. Draw the
+        // fog-free lettering afterwards, still depth-tested against the world.
+        // Explicit phase ordering also works when fog registers later than us.
+        WorldRenderEvents.END_MAIN.addPhaseOrdering(Event.DEFAULT_PHASE, LYRIC_PHASE);
+        BetaSubscriptions.register(WorldRenderEvents.END_MAIN, "celeste:sky_lyrics/draw",
+            WorldRenderEvents.EndMain.class, VisualExpansionRenderer::drawLyrics,
+            proxy -> WorldRenderEvents.END_MAIN.register(LYRIC_PHASE, proxy));
+        BetaSubscriptions.register(HudElementRegistry.class, "celeste:arrow_esp", HudElement.class, (context, tickCounter) -> {
             if (!AuthBootstrap.authorized()) {
                 return;
             }
@@ -134,7 +150,7 @@ public final class VisualExpansionRenderer {
             arrows.render(client, context.getScaledWindowWidth(), context.getScaledWindowHeight(), tickCounter.getTickProgress(false));
             ReBuffNotifierFeature.renderHud(client, context.getScaledWindowWidth(), context.getScaledWindowHeight());
             FakeGambleFeature.renderHud(client, context.getScaledWindowWidth(), context.getScaledWindowHeight());
-        });
+        }, proxy -> HudElementRegistry.addLast(Identifier.of(CelesteClient.MOD_ID, "arrow_esp"), proxy));
     }
 
     static int argb(float alpha, int rgb) {
@@ -143,6 +159,7 @@ public final class VisualExpansionRenderer {
     }
 
     private static void draw(WorldRenderContext context) {
+        if (dev.c4lam.celeste.compat.RenderCompatibility.isShadowPass()) return;
         if (!AuthBootstrap.authorized()) {
             return;
         }
@@ -185,6 +202,14 @@ public final class VisualExpansionRenderer {
         UnifiedVolumeRenderer.draw(context, frame.blockMarkers(), true);
         UnifiedChamsRenderer.draw(context, frame.echoes(), true);
         UnifiedChamsRenderer.draw(context, frame.chams());
+    }
+
+    private static void drawLyrics(WorldRenderContext context) {
+        if (!AuthBootstrap.authorized() || dev.c4lam.celeste.compat.RenderCompatibility.isShadowPass()) return;
+        var state = context.worldState();
+        if (state == null) return;
+        Frame frame = state.getData(FRAME_KEY);
+        if (frame != null && frame != Frame.EMPTY) SkyLyricsRenderer.draw(context, frame.lyrics());
     }
 
     private static void drawLineStrip(MatrixStack matrices, VertexConsumer consumer, WorldLineStrip strip, Vec3d camera) {
@@ -274,9 +299,9 @@ public final class VisualExpansionRenderer {
     private record Frame(List<WorldBox> boxes, List<WorldLineStrip> lineStrips,
                          List<WorldGlowRenderer.Quad> glows, PlayerEchoRenderer.Frame echoes,
                          PlayerEchoRenderer.Frame chams, List<WorldGlowRenderer.Quad> blockMarkers,
-                         AmbientEffectsRenderer.Frame atmosphere) {
+                         AmbientEffectsRenderer.Frame atmosphere, SkyLyricsRenderer.Frame lyrics) {
         private static final Frame EMPTY = new Frame(List.of(), List.of(), List.of(),
-            PlayerEchoRenderer.Frame.EMPTY, PlayerEchoRenderer.Frame.EMPTY, List.of(), AmbientEffectsRenderer.Frame.EMPTY);
+            PlayerEchoRenderer.Frame.EMPTY, PlayerEchoRenderer.Frame.EMPTY, List.of(), AmbientEffectsRenderer.Frame.EMPTY, SkyLyricsRenderer.Frame.EMPTY);
     }
 
     private static final List<SolidVisualMesh.Face> ANCHOR_PREVIEW_SHAPE = BlockHighlightMesh.surface(

@@ -69,7 +69,7 @@ public final class AtmosphereRulesCheck {
     static void mote(AmbientField.Mote mote,int x,int y,int z) {
         for(double value:new double[]{mote.x(),mote.y(),mote.z(),mote.size(),mote.yaw(),mote.pitch(),mote.opacity()})
             require(Double.isFinite(value),"Nonfinite ambient sample");
-        require(mote.opacity()>=0&&mote.opacity()<=1&&mote.size()>0&&mote.size()<.20,"Invalid mote size/alpha");
+        require(mote.opacity()>=0&&mote.opacity()<=1&&mote.size()>0&&mote.size()<=.204,"Invalid mote size/alpha");
         require(mote.x()>x*AmbientField.CELL&&mote.x()<(x+1)*AmbientField.CELL
             &&mote.y()>=y*AmbientField.CELL&&mote.y()<=(y+1)*AmbientField.CELL
             &&mote.z()>z*AmbientField.CELL&&mote.z()<(z+1)*AmbientField.CELL,"Mote escaped its stable world cell");
@@ -99,6 +99,12 @@ public final class AtmosphereRulesCheck {
             require(zero.equals(AmbientField.sample(2,-1,3,style,Double.NaN)),"Nonfinite ambient time fallback changed");
             double cycle=zero.y()/AmbientField.CELL+1;
             double speed=style==AmbientField.Style.SNOW?-.085:style==AmbientField.Style.CRYSTALS?.018:.035;
+            if(style==AmbientField.Style.LEAVES) {
+                double phaseDelta=(AmbientField.sample(2,-1,3,style,.001).y()-zero.y())/AmbientField.CELL;
+                phaseDelta-=Math.rint(phaseDelta); // Unwrap the phase if this short sample crosses a cell recycle.
+                speed=phaseDelta/.001;
+                require(speed>=-.070001&&speed<=-.044999,"Leaves must drift downward at their bounded per-cell rate");
+            }
             double wrap=speed<0?cycle/-speed:(1-cycle)/speed;
             AmbientField.Mote before=AmbientField.sample(2,-1,3,style,wrap-1e-5),after=AmbientField.sample(2,-1,3,style,wrap+1e-5);
             require(before.opacity()<1e-6&&after.opacity()<1e-6,"Cell wrap must be transparent on both sides");
@@ -117,7 +123,9 @@ public final class AtmosphereRulesCheck {
         }
     }
     static void sky() {
-        require(SkyboxMath.mode("Aurora")==0&&SkyboxMath.mode("Nebula")==1&&SkyboxMath.mode("Sunset")==2,"Sky mode mapping changed");
+        require(SkyboxMath.mode("Aurora")==0&&SkyboxMath.mode("Nebula")==1&&SkyboxMath.mode("Sunset")==2
+            &&SkyboxMath.mode("Abyss")==3&&SkyboxMath.mode("Black Hole")==4
+            &&SkyboxMath.mode("black hole")==4,"Sky mode mapping changed");
         near(SkyboxMath.finiteClamp(Double.NaN,.4,0,1),.4f,0,"Sky nonfinite setting fallback");
         near(SkyboxMath.finiteClamp(2,.4,0,1),1,0,"Sky setting maximum clamp");
         long origin=1_000_000_000_000L;

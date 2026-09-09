@@ -12,7 +12,7 @@ import net.fabricmc.loader.impl.launch.FabricLauncherBase;
 final class GatewayRuntime {
     private static final CredentialStore STORE = new CredentialStore();
     private static volatile boolean payloadReady;
-    private static volatile String failure = "Run Celeste Verify before starting Minecraft";
+    private static volatile String failure = "Install Celeste for this instance before starting Minecraft";
 
     private GatewayRuntime() {
     }
@@ -24,16 +24,14 @@ final class GatewayRuntime {
         try {
             InstallCredential credential = STORE.load();
             if (!credential.hasGameIdentity()) {
-                throw new SecurityException("Native verifier must refresh this installation");
+                throw new SecurityException("Install Celeste again to refresh this activation");
             }
             AuthConfig config = AuthConfig.load();
             HardwareFingerprint hardware = HardwareFingerprint.collect();
             GameIdentity identity = new GameIdentity(credential.gameUuid(), credential.gameName());
             AuthServiceClient service = new AuthServiceClient(config, identity);
-            String launchTicket = new LaunchTicketStore().consumeIfPresent();
-            if (launchTicket != null) {
-                service.consumeInstallerTicket(launchTicket, credential);
-            }
+            // An installed mod may first run days later. Authenticate the saved
+            // device afresh on each startup; the install-time grant is not a launch ticket.
             AuthServiceClient.Authenticated authenticated = service.authenticate(credential, hardware);
             byte[] stageTwo = service.download(authenticated.loader().url(), authenticated.grant());
             requireDigest(stageTwo, authenticated.loader().sha256(), "second-stage loader");

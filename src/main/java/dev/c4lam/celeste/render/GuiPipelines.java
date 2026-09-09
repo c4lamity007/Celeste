@@ -13,26 +13,26 @@ import net.minecraft.util.Identifier;
 public final class GuiPipelines {
     public static final String UBO = "CelesteParams";
 
-    public static final RenderPipeline RECT = RenderPipelines.register(
+    public static final RenderPipeline RECT = dev.c4lam.celeste.compat.BetaRenderPipelines.register(
             gui("rect", "rect/rect", VertexFormats.POSITION_COLOR).build()
     );
-    public static final RenderPipeline GRADIENT_RECT = RenderPipelines.register(
+    public static final RenderPipeline GRADIENT_RECT = dev.c4lam.celeste.compat.BetaRenderPipelines.register(
             gui("gradient_rect", "rect/gradient_rect", VertexFormats.POSITION_COLOR).build()
     );
-    public static final RenderPipeline SELECTION_OUTLINE = RenderPipelines.register(
+    public static final RenderPipeline SELECTION_OUTLINE = dev.c4lam.celeste.compat.BetaRenderPipelines.register(
             gui("selection_outline", "rect/selection_outline", VertexFormats.POSITION_COLOR).build()
     );
-    public static final RenderPipeline TEXTURE_RECT = RenderPipelines.register(
+    public static final RenderPipeline TEXTURE_RECT = dev.c4lam.celeste.compat.BetaRenderPipelines.register(
             gui("texture_rect", "rect/texture_rect", VertexFormats.POSITION_TEXTURE_COLOR)
                     .withSampler("Sampler0")
                     .build()
     );
-    public static final RenderPipeline BLURRED_RECT = RenderPipelines.register(
+    public static final RenderPipeline BLURRED_RECT = dev.c4lam.celeste.compat.BetaRenderPipelines.register(
             gui("blurred_rect", "rect/blurred_rect", VertexFormats.POSITION_TEXTURE_COLOR)
                     .withSampler("Sampler0")
                     .build()
     );
-    public static final RenderPipeline TEXT = RenderPipelines.register(
+    public static final RenderPipeline TEXT = dev.c4lam.celeste.compat.BetaRenderPipelines.register(
             gui("text", "text", VertexFormats.POSITION_TEXTURE_COLOR)
                     .withSampler("Sampler0")
                     .build()
@@ -62,7 +62,7 @@ public final class GuiPipelines {
     }
 
     private static RenderPipeline fullscreen(String name, String shader) {
-        return RenderPipelines.register(RenderPipeline.builder(RenderPipelines.POST_EFFECT_PROCESSOR_SNIPPET)
+        return dev.c4lam.celeste.compat.BetaRenderPipelines.register(RenderPipeline.builder(RenderPipelines.POST_EFFECT_PROCESSOR_SNIPPET)
                 .withLocation(id("pipeline/" + name))
                 .withVertexShader(Identifier.ofVanilla("core/screenquad"))
                 .withFragmentShader(shader(shader))

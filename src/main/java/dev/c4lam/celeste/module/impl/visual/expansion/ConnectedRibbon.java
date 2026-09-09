@@ -16,7 +16,15 @@ public final class ConnectedRibbon {
     /** width is full world-space width. Non-null fixedAxis bypasses camera facing. */
     public static int append(List<WorldGlowRenderer.Quad> output, List<Node> input,
                              Vec3d camera, Vec3d fixedAxis, int maxSegments, boolean closed) {
+        return append(output, input, camera, fixedAxis, maxSegments, closed, WorldGlowRenderer.Texture.RIBBON, Float.NaN);
+    }
+
+    /** A fixed U can carry a material parameter for strips with no longitudinal texture pattern. */
+    public static int append(List<WorldGlowRenderer.Quad> output, List<Node> input,
+                             Vec3d camera, Vec3d fixedAxis, int maxSegments, boolean closed,
+                             WorldGlowRenderer.Texture material, float fixedU) {
         if (output == null || input == null || input.size() < 2 || input.size() > MAX_INPUT_POINTS
+            || material == null || Float.isInfinite(fixedU)
             || maxSegments < 1 || (fixedAxis == null && !finite(camera))) return 0;
         int budget = Math.min(MAX_SEGMENTS, maxSegments);
         Vec3d axis = fixedAxis == null ? null : unit(fixedAxis);
@@ -110,9 +118,10 @@ public final class ConnectedRibbon {
         int written = 0;
         for (int i = 0; i < count - 1; i++) {
             if (sampled[i].position().squaredDistanceTo(sampled[i + 1].position()) < EPSILON) continue;
-            output.add(new WorldGlowRenderer.Quad(WorldGlowRenderer.Texture.RIBBON,
+            output.add(new WorldGlowRenderer.Quad(material,
                 left[i], left[i + 1], right[i + 1], right[i], sampled[i].color(), sampled[i + 1].color(),
-                (float) (distances.get(i) / total), (float) (distances.get(i + 1) / total)));
+                Float.isNaN(fixedU) ? (float) (distances.get(i) / total) : fixedU,
+                Float.isNaN(fixedU) ? (float) (distances.get(i + 1) / total) : fixedU));
             written++;
         }
         return written;

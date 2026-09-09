@@ -23,6 +23,7 @@ public final class VisualExpansion {
         ChamsFeature chams = new ChamsFeature();
         BlockHighlightFeature blockHighlight = new BlockHighlightFeature();
         AmbientEffectsFeature ambient = new AmbientEffectsFeature();
+        SkyLyricsFeature lyrics = new SkyLyricsFeature();
 
         manager.register(trajectories);
         manager.register(ores);
@@ -34,6 +35,7 @@ public final class VisualExpansion {
         manager.register(chams);
         manager.register(blockHighlight);
         manager.register(ambient);
+        manager.register(lyrics);
         manager.register(new SkyboxFeature());
         manager.register(new CustomFogFeature());
         manager.register(new SwingSpeedFeature());
@@ -42,7 +44,8 @@ public final class VisualExpansion {
         manager.register(new ArrayListFeature());
         manager.register(new FakeGambleFeature());
 
-        VisualExpansionRenderer.initialize(trajectories, ores, arrows, items, targets, jumps, players, chams, blockHighlight, ambient);
+        VisualExpansionRenderer.initialize(trajectories, ores, arrows, items, targets, jumps, players, chams, blockHighlight, ambient, lyrics);
         SkyboxRenderer.initialize();
+        ShaderFogRenderer.initialize();
     }
 }

@@ -1,6 +1,6 @@
 package dev.c4lam.celeste.mixin;
 
-import dev.c4lam.celeste.rotation.RotationManager;
+import dev.c4lam.celeste.compat.RotationHooks;
 import net.minecraft.client.network.ClientPlayerEntity;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
@@ -16,7 +16,7 @@ public abstract class ClientPlayerEntityRotationMixin {
         )
     )
     private float celeste$mountedMovementPacketYaw(ClientPlayerEntity player) {
-        return RotationManager.getInstance().outgoingYawOr(player.getYaw());
+        return RotationHooks.outgoingYaw(player);
     }
 
     @Redirect(
@@ -27,7 +27,7 @@ public abstract class ClientPlayerEntityRotationMixin {
         )
     )
     private float celeste$mountedMovementPacketPitch(ClientPlayerEntity player) {
-        return RotationManager.getInstance().serverPitchOr(player.getPitch());
+        return RotationHooks.outgoingPitch(player);
     }
 
     @Redirect(
@@ -38,7 +38,7 @@ public abstract class ClientPlayerEntityRotationMixin {
         )
     )
     private float celeste$movementPacketYaw(ClientPlayerEntity player) {
-        return RotationManager.getInstance().outgoingYawOr(player.getYaw());
+        return RotationHooks.outgoingYaw(player);
     }
 
     @Redirect(
@@ -49,6 +49,6 @@ public abstract class ClientPlayerEntityRotationMixin {
         )
     )
     private float celeste$movementPacketPitch(ClientPlayerEntity player) {
-        return RotationManager.getInstance().serverPitchOr(player.getPitch());
+        return RotationHooks.outgoingPitch(player);
     }
 }

@@ -1,0 +1,25 @@
+allprojects { project ->
+    project.afterEvaluate {
+        if (project == project.rootProject) {
+            def output = project.layout.buildDirectory.dir('module-qa/rotation-hooks/classes')
+            def compileCheck = project.tasks.register('compileBetaRotationHooksCheck', JavaCompile) {
+                dependsOn project.tasks.named('compileJava')
+                source project.fileTree('beta-lab/rotation-hooks/src') { include '**/*.java' }
+                classpath = project.sourceSets.main.compileClasspath + project.sourceSets.main.output.classesDirs
+                destinationDirectory = output
+                options.release = 21
+                options.encoding = 'UTF-8'
+                options.compilerArgs += ['-Xlint:all', '-Werror']
+            }
+            project.tasks.register('betaRotationHooksCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(output) + project.sourceSets.main.output.classesDirs + project.sourceSets.main.runtimeClasspath
+                mainClass = 'dev.celestebeta.host.fixture.RotationHooksCheck'
+                enableAssertions = true
+                def mappingId = '1.21.11-net.fabricmc.yarn.1_21_11.1.21.11+build.6-v2'
+                args new File(project.gradle.gradleUserHomeDir,
+                    "caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged-intermediary/${mappingId}/minecraft-merged-intermediary-${mappingId}.jar").absolutePath
+            }
+        }
+    }
+}

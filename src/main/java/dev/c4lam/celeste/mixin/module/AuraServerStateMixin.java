@@ -17,21 +17,21 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class AuraServerStateMixin {
     @Inject(method = "onBlockUpdate", at = @At("TAIL"))
     private void celeste$auraBlock(BlockUpdateS2CPacket packet, CallbackInfo callback) {
-        AuraServerState.observeBlock(MinecraftClient.getInstance().world, packet.getPos(), packet.getState());
+        dev.c4lam.celeste.compat.GameplayCallbacks.block(packet);
     }
 
     @Inject(method = "onChunkDeltaUpdate", at = @At("TAIL"))
     private void celeste$auraBlocks(ChunkDeltaUpdateS2CPacket packet, CallbackInfo callback) {
-        packet.visitUpdates((pos, state) -> AuraServerState.observeBlock(MinecraftClient.getInstance().world, pos, state));
+        dev.c4lam.celeste.compat.GameplayCallbacks.blocks(packet);
     }
 
     @Inject(method = "onEntitySpawn", at = @At("TAIL"))
     private void celeste$auraSpawn(EntitySpawnS2CPacket packet, CallbackInfo callback) {
-        AuraServerState.observeEntity(MinecraftClient.getInstance().world, packet.getEntityId(), true);
+        dev.c4lam.celeste.compat.GameplayCallbacks.spawn(packet);
     }
 
     @Inject(method = "onEntitiesDestroy", at = @At("TAIL"))
     private void celeste$auraDestroy(EntitiesDestroyS2CPacket packet, CallbackInfo callback) {
-        for (int id : packet.getEntityIds()) AuraServerState.observeEntity(MinecraftClient.getInstance().world, id, false);
+        dev.c4lam.celeste.compat.GameplayCallbacks.destroy(packet);
     }
 }

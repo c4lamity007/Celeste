@@ -7,7 +7,12 @@ public final class CustomFogMath {
     public record Color(double r, double g, double b, double a) { }
     public record Fog(Color color, double environmentalStart, double environmentalEnd,
                       double renderDistanceStart, double renderDistanceEnd, double skyEnd, double cloudEnd) { }
-    public record Settings(String style, double density, double distance) { }
+    public record Settings(String style, double density, double distance, boolean shader, String shaderPreset) {
+        /** Kept for the native adapter and existing release/test consumers. */
+        public Settings(String style, double density, double distance) {
+            this(style, density, distance, false, "Match Sky");
+        }
+    }
     public enum Medium { AIR, WATER, LAVA, POWDER_SNOW, OTHER }
     public record Conditions(boolean enabled, boolean overworld, Medium medium, boolean blindness,
                              boolean darkness, boolean bossFog, boolean voidDarkness) {

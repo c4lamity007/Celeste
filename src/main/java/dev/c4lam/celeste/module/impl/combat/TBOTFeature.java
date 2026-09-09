@@ -2,7 +2,7 @@ package dev.c4lam.celeste.module.impl.combat;
 
 import dev.c4lam.celeste.action.ActionScheduler;
 import dev.c4lam.celeste.friend.FriendManager;
-import dev.c4lam.celeste.mixin.MinecraftClientAttackInvoker;
+import dev.c4lam.celeste.compat.MinecraftAccess;
 import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.module.ModuleFeature;
 import dev.c4lam.celeste.silent.SilentSlotManager;
@@ -344,14 +344,13 @@ public final class TBOTFeature implements ModuleFeature {
             && piercingPathContainsFriend(client)) {
             return false;
         }
-        MinecraftClientAttackInvoker invoker = (MinecraftClientAttackInvoker) client;
-        if (invoker.celeste$getAttackCooldown() > 0) {
+        if (MinecraftAccess.attackCooldown(client) > 0) {
             return false;
         }
         HitResult previous = client.crosshairTarget;
         client.crosshairTarget = hit;
         try {
-            invoker.celeste$invokeDoAttack();
+            MinecraftAccess.attack(client);
         } finally {
             client.crosshairTarget = previous;
         }

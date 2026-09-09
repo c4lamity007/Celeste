@@ -1,5 +1,7 @@
 package dev.c4lam.celeste.config;
 
+import dev.c4lam.celeste.beta.lifecycle.BetaSubscriptions;
+
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.loader.api.FabricLoader;
 import org.lwjgl.glfw.GLFW;
@@ -17,7 +19,7 @@ import java.util.Properties;
 
 /** Live configuration for Celeste's interface and frosted-glass renderer. */
 public final class InterfaceConfig {
-    private static final Logger LOGGER = LoggerFactory.getLogger("Celeste/Interface");
+    private static final Logger LOGGER = dev.c4lam.celeste.compat.RuntimeLogging.getLogger("Celeste/Interface");
     private static final Path CONFIG_PATH = FabricLoader.getInstance().getConfigDir()
         .resolve("celeste").resolve("interface.properties");
     public static final float DEFAULT_SCALE = 0.9f;
@@ -54,7 +56,8 @@ public final class InterfaceConfig {
             return;
         }
         load();
-        ClientTickEvents.END_CLIENT_TICK.register(client -> flushEventually());
+        BetaSubscriptions.register(ClientTickEvents.END_CLIENT_TICK, "celeste:interface/end_tick",
+            ClientTickEvents.EndTick.class, client -> flushEventually(), ClientTickEvents.END_CLIENT_TICK::register);
         initialized = true;
     }
 

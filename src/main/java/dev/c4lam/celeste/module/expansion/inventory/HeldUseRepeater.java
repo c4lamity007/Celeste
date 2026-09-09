@@ -3,7 +3,7 @@ package dev.c4lam.celeste.module.expansion.inventory;
 import dev.c4lam.celeste.action.ActionScheduler;
 import dev.c4lam.celeste.action.GameplayFoundation;
 import dev.c4lam.celeste.action.UseInputLease;
-import dev.c4lam.celeste.mixin.expansion.inventory.MinecraftClientUseInvoker;
+import dev.c4lam.celeste.compat.MinecraftAccess;
 import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.module.ModuleFeature;
 import dev.c4lam.celeste.rotation.MoveFixMode;
@@ -94,7 +94,7 @@ abstract class HeldUseRepeater implements ModuleFeature {
 
         // One call is one normal client click: block/entity interaction,
         // interactItem fallback, swing/equip reset, and the ordinary cooldown.
-        ((MinecraftClientUseInvoker) (Object) client).celeste$invokeDoItemUse();
+        MinecraftAccess.useItem(client);
         lastInvocationTick = tick;
     }
 

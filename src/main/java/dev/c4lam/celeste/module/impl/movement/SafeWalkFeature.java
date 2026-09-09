@@ -1,6 +1,6 @@
 package dev.c4lam.celeste.module.impl.movement;
 
-import dev.c4lam.celeste.mixin.module.KeyBindingAccessor;
+import dev.c4lam.celeste.compat.MinecraftAccess;
 import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.module.ModuleFeature;
 import net.minecraft.client.MinecraftClient;
@@ -31,7 +31,7 @@ public final class SafeWalkFeature implements ModuleFeature {
     public void onStartTick(ModuleContext context) {
         MinecraftClient client = context.client();
         KeyBinding binding = client.options.sneakKey;
-        InputUtil.Key boundKey = ((KeyBindingAccessor) (Object) binding).celeste$getBoundKey();
+        InputUtil.Key boundKey = MinecraftAccess.boundKey(binding);
 
         if (isPhysicalKeyDown(client, boundKey)) {
             // From this point vanilla owns the pressed state; never release it.

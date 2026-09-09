@@ -1,5 +1,7 @@
 package dev.c4lam.celeste.action;
 
+import dev.c4lam.celeste.beta.lifecycle.BetaSubscriptions;
+
 import dev.c4lam.celeste.rotation.RotationManager;
 import dev.c4lam.celeste.silent.SilentSlotManager;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
@@ -16,7 +18,8 @@ public final class GameplayFoundation {
             return;
         }
         initialized = true;
-        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> clear());
+        BetaSubscriptions.register(ClientPlayConnectionEvents.DISCONNECT, "celeste:gameplay/disconnect",
+            ClientPlayConnectionEvents.Disconnect.class, (handler, client) -> clear(), ClientPlayConnectionEvents.DISCONNECT::register);
     }
 
     /** Called before module START hooks. */

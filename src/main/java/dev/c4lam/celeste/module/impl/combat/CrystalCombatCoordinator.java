@@ -4,7 +4,7 @@ import dev.c4lam.celeste.action.ActionScheduler;
 import dev.c4lam.celeste.action.UseInputLease;
 import dev.c4lam.celeste.gui.model.GuiCatalog;
 import dev.c4lam.celeste.gui.model.GuiModule;
-import dev.c4lam.celeste.mixin.module.KeyBindingAccessor;
+import dev.c4lam.celeste.compat.MinecraftAccess;
 import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.module.expansion.inventory.SilentInventoryScreen;
 import dev.c4lam.celeste.rotation.RotationManager;
@@ -1166,7 +1166,7 @@ final class CrystalCombatCoordinator {
 
     private static boolean activeOrQueued(KeyBinding binding) {
         return binding != null && (binding.isPressed()
-            || ((KeyBindingAccessor) (Object) binding).celeste$getTimesPressed() > 0);
+            || MinecraftAccess.queuedPresses(binding) > 0);
     }
 
     private boolean canRun(MinecraftClient client) {

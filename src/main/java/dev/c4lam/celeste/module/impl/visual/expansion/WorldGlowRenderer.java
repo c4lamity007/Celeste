@@ -23,7 +23,7 @@ import java.util.List;
 /** Bounded textured batches; no entities, particles, packets or per-frame texture uploads. */
 public final class WorldGlowRenderer {
     private static final int MAX_QUADS = 768;
-    private static final RenderPipeline PIPELINE = RenderPipelines.register(
+    private static final RenderPipeline PIPELINE = dev.c4lam.celeste.compat.BetaRenderPipelines.register(
         RenderPipeline.builder(RenderPipelines.TRANSFORMS_AND_PROJECTION_SNIPPET)
             .withLocation(Identifier.of(CelesteClient.MOD_ID, "pipeline/fake_lag_glow"))
             .withVertexShader(Identifier.ofVanilla("core/position_tex_color"))
@@ -41,10 +41,11 @@ public final class WorldGlowRenderer {
         layer("halo"), layer("soft"), layer("streak"),
         WorldVfxRenderer.ribbonLayer(), WorldVfxRenderer.pulseLayer(),
         WorldVfxRenderer.jumpLayer(), WorldVfxRenderer.splashLayer(), WorldVfxRenderer.dropletLayer(),
-        WorldVfxRenderer.prismLayer(), WorldVfxRenderer.waterLayer()
+        WorldVfxRenderer.prismLayer(), WorldVfxRenderer.waterLayer(),
+        WorldVfxRenderer.trajectoryLayer(), WorldVfxRenderer.trajectoryImpactLayer()
     };
 
-    public enum Texture { HALO, SOFT, STREAK, RIBBON, PULSE, JUMP, SPLASH, DROPLET, PRISM, WATER, VOLUME }
+    public enum Texture { HALO, SOFT, STREAK, RIBBON, PULSE, JUMP, SPLASH, DROPLET, PRISM, WATER, TRAJECTORY, TRAJECTORY_IMPACT, VOLUME }
 
     /** World-space corners, in UV order (0,0), (1,0), (1,1), (0,1). */
     public record Quad(Texture texture, Vec3d a, Vec3d b, Vec3d c, Vec3d d, int color, int endColor,

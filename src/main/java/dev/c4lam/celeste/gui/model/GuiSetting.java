@@ -1,11 +1,39 @@
 package dev.c4lam.celeste.gui.model;
 
 import java.util.List;
+import java.util.Objects;
 
-public sealed interface GuiSetting permits GuiSetting.Toggle, GuiSetting.Slider, GuiSetting.Range, GuiSetting.Mode, GuiSetting.Keybind, GuiSetting.ColorPick, GuiSetting.ItemPick {
+public sealed interface GuiSetting permits GuiSetting.Action, GuiSetting.Toggle, GuiSetting.Slider, GuiSetting.Range, GuiSetting.Mode, GuiSetting.Keybind, GuiSetting.ColorPick, GuiSetting.ItemPick {
     String label();
 
     String description();
+
+    /** A local UI command, not a configurable or serializable value. */
+    final class Action implements GuiSetting {
+        private final String label;
+        private final String description;
+        private final Runnable action;
+
+        public Action(String label, String description, Runnable action) {
+            this.label = Objects.requireNonNull(label, "label");
+            this.description = Objects.requireNonNull(description, "description");
+            this.action = Objects.requireNonNull(action, "action");
+        }
+
+        @Override
+        public String label() {
+            return label;
+        }
+
+        @Override
+        public String description() {
+            return description;
+        }
+
+        public void invoke() {
+            action.run();
+        }
+    }
 
     final class Toggle implements GuiSetting {
         private final String label;

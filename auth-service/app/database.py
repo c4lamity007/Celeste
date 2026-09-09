@@ -26,6 +26,13 @@ CREATE TABLE IF NOT EXISTS licenses (
     revoked_reason TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS license_entitlements (
+    license_uid INTEGER NOT NULL REFERENCES licenses(uid) ON DELETE CASCADE,
+    product TEXT NOT NULL CHECK(product IN ('celeste', 'celeste_plus')),
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY(license_uid, product)
+);
+
 CREATE TABLE IF NOT EXISTS devices (
     device_id TEXT PRIMARY KEY,
     license_uid INTEGER NOT NULL REFERENCES licenses(uid),
@@ -52,6 +59,7 @@ CREATE TABLE IF NOT EXISTS challenges (
     challenge_id TEXT PRIMARY KEY,
     kind TEXT NOT NULL CHECK(kind IN ('enroll', 'auth')),
     scope TEXT NOT NULL DEFAULT 'client',
+    product TEXT NOT NULL DEFAULT 'celeste' CHECK(product IN ('celeste', 'celeste_plus')),
     license_uid INTEGER NOT NULL REFERENCES licenses(uid),
     device_id TEXT,
     nonce BLOB NOT NULL,
@@ -179,6 +187,7 @@ class Database:
             },
             "challenges": {
                 "scope": "TEXT NOT NULL DEFAULT 'client'",
+                "product": "TEXT NOT NULL DEFAULT 'celeste' CHECK(product IN ('celeste', 'celeste_plus'))",
             },
         }
         for table, columns in additions.items():

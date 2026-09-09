@@ -3,7 +3,7 @@ package dev.c4lam.celeste.module.impl.combat;
 import dev.c4lam.celeste.module.ModuleFeature;
 import dev.c4lam.celeste.module.ModuleContext;
 
-/** Silent sword-lift/crystal sequence, driven by observed target and server state. */
+/** Silent sword/crystal sequence; pairs with Anchor Aura through a shared CPVP turn. */
 public final class AutoCrystalAuraFeature implements ModuleFeature {
     private final ExplosiveAuraRuntime runtime = new ExplosiveAuraRuntime(this, false);
     @Override

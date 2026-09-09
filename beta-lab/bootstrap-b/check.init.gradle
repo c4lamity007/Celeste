@@ -1,0 +1,70 @@
+allprojects { project ->
+    project.afterEvaluate {
+        if (project == project.rootProject) {
+            def output = project.layout.buildDirectory.dir('module-qa/bootstrap-b/classes')
+            // Gson's class-file annotations require InlineMe even when no annotation processor runs.
+            // Resolve the already-cached concrete jar; preserve strict warnings and offline operation.
+            def inlineMe = project.fileTree(new File(project.gradle.gradleUserHomeDir,
+                'caches/modules-2/files-2.1/com.google.errorprone/error_prone_annotations/2.48.0')) {
+                include '**/error_prone_annotations-2.48.0.jar'
+            }
+            project.tasks.register('compileBetaBootstrapB', JavaCompile) {
+                source project.fileTree('beta-lab/bootstrap-b/src') { include '**/*.java' }
+                source project.fileTree('beta-lab/delivery-client/src') { include '**/*.java' }
+                source project.fileTree('beta-lab/memory-runtime/src/main/java') { include '**/*.java' }
+                classpath = project.sourceSets.main.compileClasspath + inlineMe
+                destinationDirectory = output
+                options.release = 21
+                options.encoding = 'UTF-8'
+                options.compilerArgs += ['-Xlint:all', '-Werror']
+            }
+            def payloadOutput = project.layout.buildDirectory.dir('module-qa/bootstrap-b/fixture-payload')
+            def payloadCompile = project.tasks.register('compileBetaBootstrapBPayloadFixture', JavaCompile) {
+                source project.fileTree('beta-lab/payload-session/src') {
+                    include '**/*.java'
+                    exclude 'fixture/**', '**/auth/ArtifactIntegrity.java'
+                }
+                source project.file('beta-lab/integrity-adapter/src/test/java/dev/c4lam/celeste/CelesteClient.java')
+                source project.files('src/main/java/dev/c4lam/celeste/beta/lifecycle/BetaPayloadSession.java',
+                    'src/main/java/dev/c4lam/celeste/auth/ArtifactIntegrity.java', 'src/main/java/dev/c4lam/celeste/auth/Crypto.java')
+                classpath = project.files()
+                destinationDirectory = payloadOutput
+                options.release = 21
+                options.encoding = 'UTF-8'
+                options.compilerArgs += ['-Xlint:all', '-Werror']
+            }
+            def checkOutput = project.layout.buildDirectory.dir('module-qa/bootstrap-b/checks')
+            def compileCheck = project.tasks.register('compileBetaBootstrapBCheck', JavaCompile) {
+                dependsOn project.tasks.named('compileBetaBootstrapB'), payloadCompile
+                source project.fileTree('beta-lab/bootstrap-b/test') { include '**/*.java' }
+                classpath = project.files(output, payloadOutput) + project.sourceSets.main.compileClasspath + inlineMe
+                destinationDirectory = checkOutput
+                options.release = 21
+                options.encoding = 'UTF-8'
+                options.compilerArgs += ['-Xlint:all', '-Werror']
+            }
+            project.tasks.register('betaBootstrapBCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(checkOutput, output, payloadOutput) + project.sourceSets.main.compileClasspath + inlineMe
+                mainClass = 'dev.c4lam.celeste.beta.delivery.BootstrapBCheck'
+                args payloadOutput.get().asFile.absolutePath
+                enableAssertions = true
+            }
+            project.tasks.register('betaBootstrapBJar', Jar) {
+                dependsOn project.tasks.named('compileBetaBootstrapB')
+                from(output) { include 'dev/celestebeta/bootstrap/internal/**' }
+                if (project.hasProperty('betaLayoutFile')) {
+                    from(project.file(project.property('betaLayoutFile'))) {
+                        into 'META-INF/celeste-beta'
+                        rename { 'runtime-layout.json' }
+                    }
+                }
+                archiveFileName = 'bootstrap-b.bin'
+                destinationDirectory = project.layout.buildDirectory.dir('module-qa/bootstrap-b')
+                preserveFileTimestamps = false
+                reproducibleFileOrder = true
+                manifest { attributes('Implementation-Title': 'Celeste beta internal bootstrap', 'Celeste-Beta-Bootstrap': 'B') }
+            }
+        }
+    }
+}

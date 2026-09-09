@@ -4,7 +4,7 @@ import dev.c4lam.celeste.action.ActionScheduler;
 import dev.c4lam.celeste.action.GameplayFoundation;
 import dev.c4lam.celeste.action.VanillaInputGuard;
 import dev.c4lam.celeste.friend.FriendManager;
-import dev.c4lam.celeste.mixin.module.AuraAttackCooldownAccessor;
+import dev.c4lam.celeste.compat.MinecraftAccess;
 import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.rotation.MoveFixMode;
 import dev.c4lam.celeste.rotation.Rotation;
@@ -54,12 +54,15 @@ import net.minecraft.world.attribute.EnvironmentAttributes;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
-/** Independent low-priority aura planning; existing held-use combat owns priority190. */
+/** Coordinated low-priority CPVP planning; existing held-use combat keeps priority190. */
 final class ExplosiveAuraRuntime {
     private static final int MAX_CANDIDATES = 16;
     private static final int MAX_PLACEMENT_PROBES = 72;
-    private static final AuraRules.PendingLease PENDING_LEASE = new AuraRules.PendingLease();
+    private static final AuraRules.SequenceCoordinator CPVP = new AuraRules.SequenceCoordinator();
+    private static final Map<Object, ExplosiveAuraRuntime> RUNTIMES = new LinkedHashMap<>();
     private final Object owner;
     private final boolean anchors;
     private final int priority;
@@ -71,6 +74,7 @@ final class ExplosiveAuraRuntime {
     private Plan pending;
     private Rotation plannedLook;
     private BlockPos activeAnchor;
+    private BlockPos activeCrystal;
     private long nextTick;
     private int targetId = -1;
     private double swordFeet;
@@ -86,19 +90,21 @@ final class ExplosiveAuraRuntime {
     ExplosiveAuraRuntime(Object owner, boolean anchors) {
         this.owner = owner;
         this.anchors = anchors;
-        priority = anchors ? 171 : 170;
+        priority = 170;
     }
 
     AnchorAuraFeature.Preview preview() { return preview; }
 
     void clear() {
-        PENDING_LEASE.release(owner);
+        CPVP.remove(owner);
+        RUNTIMES.remove(owner);
         GameplayFoundation.releaseOwner(owner);
         world = null;
         player = null;
         plan = pending = null;
         plannedLook = null;
         activeAnchor = null;
+        activeCrystal = null;
         preview = null;
         targetId = -1;
         nextTick = 0;
@@ -107,6 +113,27 @@ final class ExplosiveAuraRuntime {
     }
 
     void start(ModuleContext context) {
+        try {
+            prepare(context);
+        } finally {
+            long tick = ActionScheduler.getInstance().tickNumber();
+            CPVP.offer(owner, tick, plan != null);
+            // A later START hook may offer a better turn. Reconcile both looks
+            // before ModuleManager resolves rotations, never after it does.
+            Object winner = CPVP.winner(tick);
+            for (ExplosiveAuraRuntime runtime : RUNTIMES.values()) {
+                if (runtime.owner != winner || runtime.plan == null) {
+                    RotationManager.getInstance().release(runtime.owner);
+                    continue;
+                }
+                RotationManager.getInstance().submit(RotationTask.builder(runtime.owner, runtime.plannedLook)
+                    .priority(runtime.priority).lifetimeTicks(1).smoothing(180, 180).sensitivityQuantized(false)
+                    .moveFix(MoveFixMode.STRICT).build());
+            }
+        }
+    }
+
+    private void prepare(ModuleContext context) {
         MinecraftClient client = context.client();
         preview = null;
         RotationManager.getInstance().release(owner);
@@ -115,31 +142,60 @@ final class ExplosiveAuraRuntime {
         if (world != client.world || player != client.player) {
             clear(); world = client.world; player = client.player;
         }
+        RUNTIMES.put(owner, this);
+        CPVP.register(owner, anchors, range(context));
+        long tick = ActionScheduler.getInstance().tickNumber();
+        Entity shared = client.world.getEntityById(CPVP.target());
+        if (!validEnemy(client, shared) || client.player.squaredDistanceTo(shared) > Math.pow(CPVP.maximumRange(), 2)) {
+            CPVP.target(-1);
+        }
+        if (targetId >= 0 && targetId != CPVP.target()) abandonSequence();
+        if (confirmation.active()) {
+            if (!observePending(client, tick)) {
+                // An invisible inventory pauses interaction, but observed server
+                // state still retires confirmations and timeouts during it.
+                if (ready(client)) publishPreview(context, pending);
+                return;
+            }
+        }
         if (!ready(client)) {
             // User UI/Silent Totem is a pause, not evidence that a pending action failed.
             discardPlan();
             GameplayFoundation.releaseOwner(owner);
             return;
         }
-        long tick = ActionScheduler.getInstance().tickNumber();
-        if (confirmation.active()) {
-            if (!observePending(client, tick)) {
-                publishPreview(context, pending);
-                return;
-            }
-        }
-        if (tick < nextTick || !PENDING_LEASE.available(owner) || VanillaInputGuard.hasInteractionConflict(client) || slotContended()) {
+        if (tick < nextTick || !CPVP.available(owner) || VanillaInputGuard.hasInteractionConflict(client) || slotContended()) {
             discardPlan(); return;
         }
         List<PlayerEntity> enemies = enemies(client, range(context));
-        if (enemies.isEmpty()) { targetId = -1; discardPlan(); return; }
+        if (enemies.isEmpty()) { abandonSequence(); targetId = -1; return; }
+        if (CPVP.target() < 0) CPVP.target(enemies.get(0).getId());
+        // A sticky target can fall outside the bounded nearest-four shortlist
+        // when another player approaches; that is not target loss.
+        Entity selectedTarget = client.world.getEntityById(CPVP.target());
+        PlayerEntity target = validEnemy(client, selectedTarget)
+            && client.player.squaredDistanceTo(selectedTarget) <= range(context) * range(context)
+            ? (PlayerEntity) selectedTarget : null;
+        if (target == null) { abandonSequence(); return; }
+        if (targetId != target.getId()) { abandonSequence(); targetId = target.getId(); }
+        // Both auras score one shared opponent. Friends remain independently
+        // excluded by the blast safety check.
+        List<PlayerEntity> targets = List.of(target);
+        if (plan != null && !planStillUsable(client, context, plan)) discardPlan();
         if (plan == null) {
+            BlockPos sequencePosition = anchors ? activeAnchor : activeCrystal;
             if (anchors) {
-                plan = anchorPlan(client, context, enemies);
+                plan = anchorPlan(client, context, targets);
             } else {
-                PlayerEntity target = enemies.stream().filter(entity -> entity.getId() == targetId).findFirst().orElse(enemies.get(0));
-                targetId = target.getId();
-                plan = crystalPlan(client, context, target, enemies);
+                plan = crystalPlan(client, context, target, targets);
+            }
+            if (CPVP.owns(owner) && sequencePosition != null
+                && (plan == null || !sequencePosition.equals(plan.position))) {
+                // If this explosion stops being viable, yield rather than keep
+                // reserving CPVP while preparing unrelated new blocks forever.
+                finishSequence();
+                discardPlan();
+                return;
             }
             if (plan != null) {
                 Vec3d aim = plan.entity != null ? plan.entity.getBoundingBox().getCenter() : plan.hit.getPos();
@@ -148,16 +204,12 @@ final class ExplosiveAuraRuntime {
             }
         }
         publishPreview(context, plan);
-        if (plan != null) {
-            RotationManager.getInstance().submit(RotationTask.builder(owner, plannedLook)
-                .priority(priority).lifetimeTicks(1).smoothing(180, 180).sensitivityQuantized(false)
-                .moveFix(MoveFixMode.STRICT).build());
-        }
+        if (plan == null) finishSequence();
     }
 
     void action(ModuleContext context) {
         Plan selected = plan;
-        if (selected == null || !PENDING_LEASE.available(owner) || !ready(context.client()) || !arm.ready(ActionScheduler.getInstance().tickNumber(),
+        if (selected == null || CPVP.winner(ActionScheduler.getInstance().tickNumber()) != owner || !ready(context.client()) || !arm.ready(ActionScheduler.getInstance().tickNumber(),
             RotationManager.getInstance().isOwnedBy(owner), VanillaInputGuard.hasInteractionConflict(context.client()), slotContended())) return;
         ActionScheduler.getInstance().submit(owner, priority, client -> {
             if (selected != plan || !ready(client) || client.world != world || client.player != player
@@ -172,18 +224,29 @@ final class ExplosiveAuraRuntime {
     }
 
     private void discardPlan() { plan = null; plannedLook = null; arm.clear(); }
+    private void finishSequence() {
+        CPVP.finish(owner);
+        activeAnchor = activeCrystal = null;
+    }
+    private void abandonSequence() {
+        discardPlan();
+        pending = null;
+        confirmation.clear();
+        finishSequence();
+        // AuraServerState keeps unresolved prediction markers until vanilla
+        // receives/reconciles an actual server update; cancellation is not ACK.
+    }
     private boolean slotContended() { return SilentSlotManager.getInstance().isActive() && !SilentSlotManager.getInstance().isOwnedBy(owner); }
 
     private void execute(MinecraftClient client, ModuleContext context, Plan selected) {
-        if (selected.slot < 0 || selected.slot > 8 || !PENDING_LEASE.available(owner)) return;
-        if (!anchors && selected.kind != Kind.SWORD) {
-            Entity target = client.world.getEntityById(targetId);
-            if (!validEnemy(client, target) || target.getY() <= client.player.getY() + 0.18D) return;
-        }
+        if (selected.slot < 0 || selected.slot > 8 || CPVP.winner(ActionScheduler.getInstance().tickNumber()) != owner) return;
+        Entity target = client.world.getEntityById(targetId);
+        if (!validEnemy(client, target) || targetId != CPVP.target()
+            || client.player.squaredDistanceTo(target) > range(context) * range(context)) { abandonSequence(); return; }
         if (selected.kind != Kind.SWORD) {
             Vec3d explosion = selected.kind == Kind.CRYSTAL_BREAK && selected.entity != null
                 ? selected.entity.getEntityPos() : explosion(selected.position, anchors);
-            if (!damage(client, context, explosion, anchors ? selected.position : null, enemies(client, range(context))).safe) return;
+            if (!damage(client, context, explosion, anchors ? selected.position : null, List.of((PlayerEntity) target)).safe) return;
         }
         if (selected.kind == Kind.SWORD || selected.kind == Kind.CRYSTAL_BREAK) {
             if (!entityHit(client, selected.entity, selected.slot, context)) return;
@@ -198,7 +261,9 @@ final class ExplosiveAuraRuntime {
         boolean[] sent = {false};
         boolean scoped = SilentSlotManager.getInstance().runWithSlot(owner, selected.slot, priority, true, () -> {
             if (selected.entity != null) {
-                if (client.player.isBelowMinimumAttackCharge(client.player.getMainHandStack(), 0)) return;
+                // Crystals have no weapon charge requirement. Applying the
+                // visible spear/mace attack component here suppressed breaks.
+                if (selected.kind == Kind.SWORD && client.player.isBelowMinimumAttackCharge(client.player.getMainHandStack(), 0)) return;
                 client.interactionManager.attackEntity(client.player, selected.entity);
                 client.player.networkHandler.sendPacket(new HandSwingC2SPacket(Hand.MAIN_HAND));
                 sent[0] = true;
@@ -212,16 +277,17 @@ final class ExplosiveAuraRuntime {
             }
         });
         if (!scoped || !sent[0]) return;
-        PENDING_LEASE.acquire(owner);
+        CPVP.begin(owner, ActionScheduler.getInstance().tickNumber());
         if (selected.kind == Kind.OBSIDIAN_PLACE || selected.kind == Kind.ANCHOR_PLACE
             || selected.kind == Kind.ANCHOR_CHARGE || selected.kind == Kind.ANCHOR_BREAK)
             AuraServerState.predict(client.world, selected.position, revision);
         long tick = ActionScheduler.getInstance().tickNumber();
         pending = selected;
         if (anchors) activeAnchor = selected.position;
+        else if (selected.position != null) activeCrystal = selected.position;
         if (selected.kind == Kind.SWORD) {
             swordFeet = selected.entity.getY();
-            confirmation.begin(tick, tick);
+            confirmation.begin(tick, tick, 8);
         } else confirmation.begin(revision, tick);
         nextTick = tick + delay(context);
     }
@@ -262,24 +328,17 @@ final class ExplosiveAuraRuntime {
         if (result == AuraRules.ConfirmationResult.WAITING) return false;
         if (result == AuraRules.ConfirmationResult.CONFIRMED && pending.position != null)
             AuraServerState.blockReady(client.world, pending.position);
-        PENDING_LEASE.release(owner);
-        if (pending.kind == Kind.ANCHOR_BREAK || result == AuraRules.ConfirmationResult.TIMED_OUT) activeAnchor = null;
+        boolean swordObservation = pending.kind == Kind.SWORD;
+        if (AuraRules.endsSequence(swordObservation, pending.kind == Kind.ANCHOR_BREAK || pending.kind == Kind.CRYSTAL_BREAK,
+            result)) finishSequence();
         pending = null;
-        if (result == AuraRules.ConfirmationResult.TIMED_OUT) nextTick = tick + 4;
+        if (result == AuraRules.ConfirmationResult.TIMED_OUT && !swordObservation) nextTick = tick + 4;
         return true;
     }
 
     private Plan crystalPlan(MinecraftClient client, ModuleContext context, PlayerEntity target, List<PlayerEntity> enemies) {
         int sword = slot(client, null, true);
         int crystalSlot = slot(client, Items.END_CRYSTAL, false);
-        AuraRules.CrystalAction action = AuraRules.crystalAction(client.player.getY(), target.getY(), false,
-            sword >= 0 && swordReady(client, sword));
-        if (action == AuraRules.CrystalAction.SWORD) {
-            if (crystalSlot < 0) return null;
-            if (client.player.getBoundingBox().squaredMagnitude(target.getEyePos()) > range(context) * range(context)) return null;
-            return new Plan(Kind.SWORD, null, null, target, sword, 0, 0, 0);
-        }
-        if (action != AuraRules.CrystalAction.PLACE) return null;
         List<Candidate> candidates = new ArrayList<>();
         int obsidianSlot = slot(client, Items.OBSIDIAN, false);
         BlockPos origin = target.getBlockPos();
@@ -300,16 +359,55 @@ final class ExplosiveAuraRuntime {
             if (crystal != null && crystal.getBoundingBox().squaredMagnitude(client.player.getEyePos()) > Math.pow(Math.min(range(context), VanillaCombatReach.heldHitRange(client)), 2)) continue;
             offer(candidates, new Candidate(pos, hit, crystal, existing, estimate));
         }
-        candidates.sort(Comparator.comparing(Candidate::existing).reversed().thenComparing(Comparator.comparingDouble(Candidate::estimate).reversed()));
+        // Finish the crystal we just prepared; otherwise clear a useful existing
+        // crystal before starting another sword/base/place chain.
+        candidates.sort(Comparator.comparing((Candidate candidate) -> candidate.position.equals(activeCrystal)).reversed()
+            .thenComparing(Comparator.comparing((Candidate candidate) -> candidate.crystal != null).reversed())
+            .thenComparing(Comparator.comparing(Candidate::existing).reversed())
+            .thenComparing(Comparator.comparingDouble(Candidate::estimate).reversed()));
+        Plan placement = null;
         for (Candidate candidate : candidates) {
             Damage damage = damage(client, context, explosion(candidate.position, false), null, enemies);
             if (!damage.safe) continue;
             int attackSlot = client.player.getInventory().getSelectedSlot();
-            return new Plan(!candidate.existing ? Kind.OBSIDIAN_PLACE : candidate.crystal == null ? Kind.CRYSTAL_PLACE : Kind.CRYSTAL_BREAK,
+            Plan next = new Plan(!candidate.existing ? Kind.OBSIDIAN_PLACE : candidate.crystal == null ? Kind.CRYSTAL_PLACE : Kind.CRYSTAL_BREAK,
                 candidate.position, candidate.hit, candidate.crystal, !candidate.existing ? obsidianSlot : candidate.crystal == null ? crystalSlot : attackSlot,
                 damage.target, damage.self, 0);
+            if (candidate.crystal != null || candidate.position.equals(activeCrystal)) return next;
+            if (placement == null) placement = next;
         }
-        return null;
+        if (crystalSlot >= 0 && sword >= 0
+            && AuraRules.swordPressure(client.player.getY(), target.getY(), swordReady(client, sword), CPVP.owns(owner))
+            && VanillaCombatReach.canAttack(client, target, sword, Math.min(4.5D, range(context)), false)
+            && clearRay(client, client.player.getEyePos(), target.getBoundingBox().getCenter())) {
+            return new Plan(Kind.SWORD, null, null, target, sword, 0, 0, 0);
+        }
+        return placement;
+    }
+
+    private boolean planStillUsable(MinecraftClient client, ModuleContext context, Plan selected) {
+        if (plannedLook == null || selected.slot < 0 || selected.slot > 8) return false;
+        Vec3d eyes = client.player.getEyePos();
+        if (selected.entity != null) {
+            if (selected.entity.isRemoved() || !selected.entity.isAlive()
+                || selected.entity.getEntityWorld() != client.world) return false;
+            if (selected.kind == Kind.SWORD && (!validEnemy(client, selected.entity)
+                || !client.player.getInventory().getStack(selected.slot).isIn(ItemTags.SWORDS))) return false;
+            double reach = Math.min(Math.min(4.5D, range(context)), VanillaCombatReach.heldHitRange(client));
+            Vec3d end = eyes.add(plannedLook.direction().multiply(reach));
+            Vec3d intercept = selected.entity.getBoundingBox().contains(eyes) ? eyes
+                : selected.entity.getBoundingBox().raycast(eyes, end).orElse(null);
+            return intercept != null && clearRay(client, eyes, intercept);
+        }
+        // Keep the already-sent aim if it still intersects this face. If player
+        // motion changes the ray, re-aim for one tick before attempting use.
+        return validUse(client, selected) && blockHit(client, selected.hit, context, plannedLook) != null;
+    }
+
+    private static boolean clearRay(MinecraftClient client, Vec3d from, Vec3d to) {
+        BlockHitResult hit = client.world.raycast(new RaycastContext(from, to, RaycastContext.ShapeType.COLLIDER,
+            RaycastContext.FluidHandling.NONE, client.player));
+        return hit.getType() == HitResult.Type.MISS || from.squaredDistanceTo(hit.getPos()) + 1.0E-7 >= from.squaredDistanceTo(to);
     }
 
     private Plan anchorPlan(MinecraftClient client, ModuleContext context, List<PlayerEntity> enemies) {
@@ -402,8 +500,13 @@ final class ExplosiveAuraRuntime {
     }
 
     private static BlockHitResult serverBlockHit(MinecraftClient client, BlockHitResult planned, ModuleContext context) {
+        return blockHit(client, planned, context, RotationManager.getInstance().serverRotation());
+    }
+
+    private static BlockHitResult blockHit(MinecraftClient client, BlockHitResult planned, ModuleContext context, Rotation look) {
+        if (planned == null || look == null) return null;
         Vec3d eyes = client.player.getEyePos();
-        Vec3d end = eyes.add(RotationManager.getInstance().serverRotation().direction().multiply(reach(client, context)));
+        Vec3d end = eyes.add(look.direction().multiply(reach(client, context)));
         BlockHitResult actual = client.world.raycast(new RaycastContext(eyes, end, RaycastContext.ShapeType.OUTLINE,
             RaycastContext.FluidHandling.NONE, client.player));
         return actual.getType() == HitResult.Type.BLOCK && actual.getBlockPos().equals(planned.getBlockPos())
@@ -453,7 +556,9 @@ final class ExplosiveAuraRuntime {
     }
 
     private static boolean crystalSpace(MinecraftClient client, BlockPos pos) {
-        return client.world.getBlockState(pos.up()).isAir() && client.world.getBlockState(pos.up(2)).isAir()
+        // 1.21.11 EndCrystalItem checks one air block above the base, but a
+        // two-block-high entity box. A second air-block test rejected valid use.
+        return client.world.getBlockState(pos.up()).isAir()
             && client.world.getOtherEntities(null, new Box(pos.up()).stretch(0, 1, 0)).isEmpty();
     }
 
@@ -586,7 +691,7 @@ final class ExplosiveAuraRuntime {
         client.player.getInventory().getStack(slot).applyAttributeModifiers(EquipmentSlot.MAINHAND, (attribute, modifier) -> {
             if (attribute.equals(EntityAttributes.ATTACK_SPEED)) scratch.updateModifier(modifier);
         });
-        return AuraRules.swordReady(((AuraAttackCooldownAccessor) client.player).celeste$auraTicksSinceLastAttack(), scratch.getValue());
+        return AuraRules.swordReady(MinecraftAccess.ticksSinceAttack(client.player), scratch.getValue());
     }
 
     private static int triggerSlot(MinecraftClient client) {

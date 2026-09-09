@@ -1,15 +1,27 @@
 package dev.c4lam.celeste.module.impl.combat;
 
+import dev.c4lam.celeste.compat.MinecraftAccess;
 import dev.c4lam.celeste.gui.model.GuiCatalog;
 import dev.c4lam.celeste.gui.model.GuiModule;
 import dev.c4lam.celeste.gui.model.GuiSetting;
+import dev.c4lam.celeste.hud.LocalDamageEstimator;
 import dev.c4lam.celeste.silent.SilentSlotManager;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.enchantment.Enchantment;
+import net.minecraft.enchantment.Enchantments;
+import net.minecraft.entity.EquipmentSlot;
 import net.minecraft.entity.LivingEntity;
+import net.minecraft.entity.attribute.EntityAttribute;
+import net.minecraft.entity.attribute.EntityAttributeInstance;
+import net.minecraft.entity.attribute.EntityAttributes;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
+import net.minecraft.registry.RegistryKey;
+import net.minecraft.registry.entry.RegistryEntry;
+import net.minecraft.registry.tag.EntityTypeTags;
 import net.minecraft.registry.tag.ItemTags;
 
+import java.util.Arrays;
 import java.util.Locale;
 
 /** Shared weapon policy so separately enabled modules never race hotbar state. */
@@ -39,11 +51,11 @@ final class CombatLoadout {
         }
 
         if (requested == Weapon.MACE) {
+            if (enabled("Mace Swap")) {
+                return bestMaceSlot(client, target);
+            }
             if (isWeapon(client.player.getInventory().getStack(visible), Weapon.MACE)) {
                 return visible;
-            }
-            if (enabled("Mace Swap")) {
-                return bestSlot(client, Weapon.MACE);
             }
             return -1;
         }
@@ -94,8 +106,13 @@ final class CombatLoadout {
      * sequence in a half-completed state.
      */
     static int immediateWeaponSlot(MinecraftClient client, Weapon weapon) {
+        return immediateWeaponSlot(client, null, weapon);
+    }
+
+    static int immediateWeaponSlot(MinecraftClient client, LivingEntity target, Weapon weapon) {
         return switch (weapon) {
-            case AXE, MACE, SWORD -> bestSlot(client, weapon);
+            case MACE -> bestMaceSlot(client, target);
+            case AXE, SWORD -> bestSlot(client, weapon);
             case CURRENT -> client.player == null ? -1 : client.player.getInventory().getSelectedSlot();
         };
     }
@@ -223,6 +240,9 @@ final class CombatLoadout {
     }
 
     private static int bestSlot(MinecraftClient client, Weapon weapon) {
+        if (weapon == Weapon.MACE) {
+            return bestMaceSlot(client, null);
+        }
         if (client.player == null) {
             return -1;
         }
@@ -243,6 +263,59 @@ final class CombatLoadout {
         return best;
     }
 
+    /** Read-only candidate projection; never selects a slot or starts an attack. */
+    private static int bestMaceSlot(MinecraftClient client, LivingEntity target) {
+        if (client.player == null) return -1;
+        double[] damage = new double[9];
+        Arrays.fill(damage, Double.NaN);
+        double armor = target == null ? 0.0 : target.getArmor();
+        double toughness = target == null ? 0.0 : target.getAttributeValue(EntityAttributes.ARMOR_TOUGHNESS);
+        int elapsedTicks = MinecraftAccess.ticksSinceAttack(client.player);
+        boolean critical = client.player.fallDistance > 0.0 && !client.player.isOnGround()
+            && !client.player.isClimbing() && !client.player.isTouchingWater()
+            && !client.player.hasBlindnessEffect() && !client.player.hasVehicle() && !client.player.isSprinting();
+        for (int slot = 0; slot < damage.length; slot++) {
+            ItemStack stack = client.player.getInventory().getStack(slot);
+            if (!stack.isOf(Items.MACE)) continue;
+            double enchantmentDamage = LocalDamageEstimator.sharpnessBonus(level(stack, Enchantments.SHARPNESS));
+            if (target != null && target.getType().isIn(EntityTypeTags.SENSITIVE_TO_SMITE)) {
+                enchantmentDamage += 2.5 * level(stack, Enchantments.SMITE);
+            }
+            if (target != null && target.getType().isIn(EntityTypeTags.SENSITIVE_TO_BANE_OF_ARTHROPODS)) {
+                enchantmentDamage += 2.5 * level(stack, Enchantments.BANE_OF_ARTHROPODS);
+            }
+            double charge = MaceSelection.cooldown(elapsedTicks,
+                projectedAttribute(client, stack, EntityAttributes.ATTACK_SPEED));
+            damage[slot] = MaceSelection.damage(
+                projectedAttribute(client, stack, EntityAttributes.ATTACK_DAMAGE), enchantmentDamage,
+                client.player.fallDistance, !client.player.isGliding(),
+                level(stack, Enchantments.DENSITY), level(stack, Enchantments.BREACH),
+                armor, toughness, charge, critical);
+        }
+        return MaceSelection.bestSlot(damage, client.player.getInventory().getSelectedSlot());
+    }
+
+    private static double projectedAttribute(MinecraftClient client, ItemStack stack,
+                                             RegistryEntry<EntityAttribute> attribute) {
+        EntityAttributeInstance source = client.player.getAttributeInstance(attribute);
+        EntityAttributeInstance projected = new EntityAttributeInstance(attribute, ignored -> {});
+        if (source != null) projected.setFrom(source);
+        client.player.getMainHandStack().applyAttributeModifiers(EquipmentSlot.MAINHAND, (key, modifier) -> {
+            if (key.equals(attribute)) projected.removeModifier(modifier);
+        });
+        stack.applyAttributeModifiers(EquipmentSlot.MAINHAND, (key, modifier) -> {
+            if (key.equals(attribute)) projected.updateModifier(modifier);
+        });
+        return projected.getValue();
+    }
+
+    private static int level(ItemStack stack, RegistryKey<Enchantment> enchantment) {
+        for (var entry : stack.getEnchantments().getEnchantmentEntries()) {
+            if (entry.getKey().matchesKey(enchantment)) return Math.max(0, entry.getIntValue());
+        }
+        return 0;
+    }
+
     private static boolean isWeapon(ItemStack stack, Weapon weapon) {
         return switch (weapon) {
             case SWORD -> stack.isIn(ItemTags.SWORDS);
@@ -253,7 +326,6 @@ final class CombatLoadout {
     }
 
     private static int score(ItemStack stack, Weapon weapon) {
-        if (weapon == Weapon.MACE) return 100;
         if (stack.isOf(Items.NETHERITE_SWORD) || stack.isOf(Items.NETHERITE_AXE)) return 60;
         if (stack.isOf(Items.DIAMOND_SWORD) || stack.isOf(Items.DIAMOND_AXE)) return 50;
         if (stack.isOf(Items.IRON_SWORD) || stack.isOf(Items.IRON_AXE)) return 40;

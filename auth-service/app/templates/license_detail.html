@@ -22,6 +22,7 @@
       <div class="summary-grid">
         <div><span>Status</span>{% if license.status == 'revoked' %}<strong class="danger-text">Revoked</strong>{% elif license.expires_at and license.expires_at <= now %}<strong class="warn-text">Expired</strong>{% else %}<strong class="good-text">Active</strong>{% endif %}</div>
         <div><span>License key</span>{% if license.key_prefix %}<code class="license-prefix">{{ license.key_prefix }}…</code>{% else %}<strong class="muted">Unavailable for legacy license</strong>{% endif %}</div>
+        <div><span>Products</span><strong>{{ products|join(" + ") or "No product access" }}</strong></div>
         <div><span>Length</span><strong>{{ license.duration_kind|replace('_', ' ')|title }}</strong></div>
         <div><span>Created</span><strong>{{ license.created_at|timestamp }}</strong></div>
         <div><span>Activated</span><strong>{{ license.activated_at|timestamp }}</strong></div>

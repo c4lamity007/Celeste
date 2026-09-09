@@ -1,0 +1,4 @@
+Manifest-Version: 1.0
+Agent-Class: dev.c4lam.celeste.beta.probe.ProbeAgent
+Can-Redefine-Classes: true
+

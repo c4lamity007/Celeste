@@ -1,0 +1,29 @@
+allprojects { project ->
+    project.afterEvaluate {
+        if (project == project.rootProject) {
+            def output = project.layout.buildDirectory.dir('module-qa/combined-hooks/classes')
+            def compileCheck = project.tasks.register('compileBetaCombinedHooksCheck', JavaCompile) {
+                dependsOn project.tasks.named('compileJava')
+                source project.fileTree('beta-lab/combined-hooks/src') { include '**/*.java' }
+                ['reload-hooks', 'interaction-hooks', 'rotation-hooks', 'fake-gamble-hooks',
+                 'gameplay-callbacks', 'visual-hooks', 'atmosphere-hooks'].each { family ->
+                    source project.fileTree("beta-lab/${family}/src/main/java") { include '**/*.java' }
+                }
+                classpath = project.sourceSets.main.compileClasspath + project.sourceSets.main.output.classesDirs
+                destinationDirectory = output
+                options.release = 21
+                options.encoding = 'UTF-8'
+                options.compilerArgs += ['-Xlint:all', '-Werror']
+            }
+            project.tasks.register('betaCombinedHooksCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(output) + project.sourceSets.main.output.classesDirs + project.sourceSets.main.runtimeClasspath
+                mainClass = 'dev.celestebeta.host.fixture.CombinedHooksCheck'
+                enableAssertions = true
+                def mappingId = '1.21.11-net.fabricmc.yarn.1_21_11.1.21.11+build.6-v2'
+                args new File(project.gradle.gradleUserHomeDir,
+                    "caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged-intermediary/${mappingId}/minecraft-merged-intermediary-${mappingId}.jar").absolutePath
+            }
+        }
+    }
+}
