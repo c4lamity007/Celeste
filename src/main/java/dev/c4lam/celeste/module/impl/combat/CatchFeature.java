@@ -1,5 +1,6 @@
 package dev.c4lam.celeste.module.impl.combat;
 
+import dev.c4lam.celeste.action.ActionScheduler;
 import dev.c4lam.celeste.action.GameplayFoundation;
 import dev.c4lam.celeste.module.ModuleContext;
 import dev.c4lam.celeste.module.ModuleFeature;
@@ -11,13 +12,17 @@ import dev.c4lam.celeste.silent.SilentSlotManager;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.util.InputUtil;
+import net.minecraft.client.world.ClientWorld;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
+import net.minecraft.util.math.Vec3d;
 import org.lwjgl.glfw.GLFW;
 
 import java.util.concurrent.ThreadLocalRandom;
+
+import static dev.c4lam.celeste.module.impl.combat.HorizontalPearlTrajectory.*;
 
 /** Throws a pearl straight up, follows it with a wind charge, then restores cleanly. */
 public final class CatchFeature implements ModuleFeature {
@@ -33,8 +38,12 @@ public final class CatchFeature implements ModuleFeature {
     private long stageStartedNanos;
     private long readyAtNanos;
     private ClientPlayerEntity visiblePlayer;
+    private ClientWorld visibleWorld;
     private int originalVisibleSlot = -1;
     private int moduleVisibleSlot = -1;
+    private boolean glidingSequence;
+    private Rotation glidingAim;
+    private final CatchGlidingTrajectory glidingTrajectory = new CatchGlidingTrajectory();
 
     @Override
     public String name() {
@@ -64,8 +73,10 @@ public final class CatchFeature implements ModuleFeature {
             int charge = CombatLoadout.findItem(client, Items.WIND_CHARGE);
             if (pearl >= 0 && charge >= 0 && !coolingDown(client, pearl) && !coolingDown(client, charge)) {
                 visiblePlayer = client.player;
+                visibleWorld = client.world;
                 originalVisibleSlot = client.player.getInventory().getSelectedSlot();
                 moduleVisibleSlot = -1;
+                glidingSequence = client.player.isGliding();
                 enter(Stage.AIM_PEARL);
             }
         }
@@ -78,13 +89,22 @@ public final class CatchFeature implements ModuleFeature {
             abort(client, true);
             return;
         }
-        if (visiblePlayer != client.player) {
+        if (visiblePlayer != client.player || visibleWorld != client.world) {
             resetState(false, client);
+            return;
+        }
+        if (stage != Stage.RESTORE && client.player.isGliding() != glidingSequence) {
+            abort(client, true);
             return;
         }
         if (moduleVisibleSlot >= 0
             && client.player.getInventory().getSelectedSlot() != moduleVisibleSlot) {
             // A real scroll/key selection always wins over the macro.
+            abort(client, false);
+            return;
+        }
+        if (glidingSequence && moduleVisibleSlot < 0
+            && client.player.getInventory().getSelectedSlot() != originalVisibleSlot) {
             abort(client, false);
             return;
         }
@@ -94,8 +114,8 @@ public final class CatchFeature implements ModuleFeature {
                 beginRestore(context);
             } else {
                 enter(Stage.AIM_CHARGE);
-                // The upward look remained published during the wait.
-                aimSettledLastTick = true;
+                // Only the grounded sequence keeps its upward look published during the wait.
+                aimSettledLastTick = !glidingSequence;
             }
         } else if (stage == Stage.RESTORE && now >= readyAtNanos) {
             restoreVisible(context);
@@ -103,12 +123,20 @@ public final class CatchFeature implements ModuleFeature {
             return;
         }
 
-        submitUpwardRotation(client);
+        if (glidingSequence) {
+            submitGlidingRotation(context);
+        } else {
+            submitUpwardRotation(client);
+        }
     }
 
     @Override
     public void onActionTick(ModuleContext context) {
         if (stage != Stage.AIM_PEARL && stage != Stage.AIM_CHARGE) {
+            return;
+        }
+        if (glidingSequence) {
+            onGlidingActionTick(context);
             return;
         }
         MinecraftClient client = context.client();
@@ -160,12 +188,84 @@ public final class CatchFeature implements ModuleFeature {
             .sensitivityQuantized(false).moveFix(MoveFixMode.OFF).build());
     }
 
+    private void submitGlidingRotation(ModuleContext context) {
+        MinecraftClient client = context.client();
+        if (stage == Stage.AIM_PEARL) {
+            glidingAim = new Rotation(client.player.getYaw(), UP_PITCH);
+        } else if (stage == Stage.AIM_CHARGE) {
+            Solution solution = currentGlidingSolution(client);
+            if (solution == null) {
+                beginRestore(context);
+                RotationManager.getInstance().release(this);
+                glidingAim = null;
+                return;
+            }
+            glidingAim = new Rotation(solution.yaw(), solution.pitch());
+        } else {
+            // No projectile is being used during the configured wait/restore delay.
+            // Let ordinary flight keep the camera look until a new item aim is needed.
+            RotationManager.getInstance().release(this);
+            glidingAim = null;
+            return;
+        }
+        RotationManager.getInstance().submit(RotationTask.builder(this, glidingAim)
+            .priority(PRIORITY).lifetimeTicks(1).smoothing(180.0F, 90.0F)
+            .sensitivityQuantized(false).moveFix(MoveFixMode.OFF).build());
+    }
+
+    private void onGlidingActionTick(ModuleContext context) {
+        MinecraftClient client = context.client();
+        RotationManager rotations = RotationManager.getInstance();
+        if (!playable(client) || client.player != visiblePlayer || client.world != visibleWorld || !client.player.isGliding()
+            || glidingAim == null || !rotations.isOwnedBy(this)
+            || rotations.serverRotation().angularDistanceTo(glidingAim) > .01) return;
+        Stage expected = stage;
+        ActionScheduler.getInstance().submit(this, PRIORITY, actionClient -> {
+            if (stage != expected || !playable(actionClient) || actionClient.player != visiblePlayer
+                || actionClient.world != visibleWorld
+                || !actionClient.player.isGliding() || !rotations.isOwnedBy(this)
+                || actionClient.player.getInventory().getSelectedSlot()
+                    != (moduleVisibleSlot >= 0 ? moduleVisibleSlot : originalVisibleSlot)) return;
+            boolean pearl = expected == Stage.AIM_PEARL;
+            if (!pearl) {
+                // The glider may have accelerated/turned since the planning hook.
+                // Use only an intercept matching the exact state at item execution.
+                Solution fresh = currentGlidingSolution(actionClient);
+                if (fresh == null) { beginRestore(context); return; }
+                Rotation freshAim = new Rotation(fresh.yaw(), fresh.pitch());
+                if (rotations.serverRotation().angularDistanceTo(freshAim) > .01) return;
+                glidingAim = freshAim;
+            } else if (rotations.serverRotation().angularDistanceTo(glidingAim) > .01) {
+                return;
+            }
+            int slot = CombatLoadout.findItem(actionClient, pearl ? Items.ENDER_PEARL : Items.WIND_CHARGE);
+            if (slot < 0 || coolingDown(actionClient, slot)) return;
+            Vec eyes = vec(actionClient.player.getEyePos());
+            Vec movement = inherited(vec(actionClient.player.getMovement()), actionClient.player.isOnGround());
+            long tick = ActionScheduler.getInstance().tickNumber();
+            if (!useSlot(context, slot)) return;
+            if (pearl) {
+                glidingTrajectory.capture(eyes, movement, glidingAim.yaw(), glidingAim.pitch(), tick);
+                readyAtNanos = System.nanoTime() + randomMillis(context, "Charge delay", 200, 300) * 1_000_000L;
+                enter(Stage.WAIT_CHARGE);
+            } else {
+                beginRestore(context);
+            }
+        });
+    }
+
+    private Solution currentGlidingSolution(MinecraftClient client) {
+        return glidingTrajectory.solveCharge(ActionScheduler.getInstance().tickNumber(),
+            vec(client.player.getEyePos()), inherited(vec(client.player.getMovement()), client.player.isOnGround()));
+    }
+
     private boolean useSlot(ModuleContext context, int slot) {
         MinecraftClient client = context.client();
         boolean silent = context.toggle("Silent swap", true);
-        Runnable use = () -> useHeld(client);
+        boolean[] accepted = {false};
+        Runnable use = () -> accepted[0] = useHeld(client);
         if (silent) {
-            return SilentSlotManager.getInstance().runWithSlot(this, slot, PRIORITY, true, use);
+            return SilentSlotManager.getInstance().runWithSlot(this, slot, PRIORITY, true, use) && accepted[0];
         }
         if (moduleVisibleSlot < 0) {
             moduleVisibleSlot = client.player.getInventory().getSelectedSlot();
@@ -175,18 +275,19 @@ public final class CatchFeature implements ModuleFeature {
         }
         moduleVisibleSlot = slot;
         use.run();
-        return true;
+        return accepted[0];
     }
 
-    private static void useHeld(MinecraftClient client) {
+    private static boolean useHeld(MinecraftClient client) {
         if (!playable(client)) {
-            return;
+            return false;
         }
         ActionResult result = client.interactionManager.interactItem(client.player, Hand.MAIN_HAND);
         if (result.isAccepted()) {
             client.player.swingHand(Hand.MAIN_HAND);
             client.gameRenderer.firstPersonRenderer.resetEquipProgress(Hand.MAIN_HAND);
         }
+        return result.isAccepted();
     }
 
     private void beginRestore(ModuleContext context) {
@@ -225,8 +326,12 @@ public final class CatchFeature implements ModuleFeature {
         stageStartedNanos = 0L;
         readyAtNanos = 0L;
         visiblePlayer = null;
+        visibleWorld = null;
         originalVisibleSlot = -1;
         moduleVisibleSlot = -1;
+        glidingSequence = false;
+        glidingAim = null;
+        glidingTrajectory.clear();
     }
 
     private void enter(Stage next) {
@@ -259,4 +364,6 @@ public final class CatchFeature implements ModuleFeature {
         return key != GLFW.GLFW_KEY_UNKNOWN && client != null && client.getWindow() != null
             && InputUtil.isKeyPressed(client.getWindow(), key);
     }
+
+    private static Vec vec(Vec3d value) { return new Vec(value.x, value.y, value.z); }
 }

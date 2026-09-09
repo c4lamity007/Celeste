@@ -16,6 +16,7 @@ import net.minecraft.client.util.InputUtil;
 import net.minecraft.client.world.ClientWorld;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.decoration.EndCrystalEntity;
+import net.minecraft.entity.effect.StatusEffects;
 import net.minecraft.entity.projectile.AbstractWindChargeEntity;
 import net.minecraft.item.Items;
 import net.minecraft.text.Text;
@@ -37,7 +38,7 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
     private Stage stage = Stage.IDLE;
     private ClientPlayerEntity player;
     private ClientWorld world;
-    private boolean keyDown, silentAim, silentSwap, returnSlot;
+    private boolean keyDown, silentAim, silentSwap, returnSlot, glidingSequence;
     private int originalSlot = -1, visibleSlot = -1;
     private long startedTick, pearlTick, finishedTick, frameNanos;
     private State pearl;
@@ -60,6 +61,10 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
         if (stage != Stage.IDLE && (client.player != player || client.world != world)) {
             clear(client, false);
             return;
+        }
+        if (stage != Stage.IDLE && player.isGliding() != glidingSequence) {
+            clear(client, true);
+            return; // Changing pose changes eye height and travel; retry with a fresh pearl.
         }
         if (stage != Stage.IDLE && client.player.getInventory().getSelectedSlot() != visibleSlot) {
             clear(client, false); // A genuine scroll/hotbar key always wins, including silent mode.
@@ -90,7 +95,9 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
         }
         if (aim != null) RotationManager.getInstance().submit(RotationTask.builder(this, aim)
             .priority(PRIORITY).lifetimeTicks(1).smoothing(180, 90)
-            .sensitivityQuantized(false).moveFix(MoveFixMode.STRICT).build());
+            // Strict movefix also replaces elytra pitch/vector, steering the flight
+            // toward the charge instead of the camera and invalidating our forecast.
+            .sensitivityQuantized(false).moveFix(glidingSequence ? MoveFixMode.OFF : MoveFixMode.STRICT).build());
     }
 
     private void begin(ModuleContext context, long tick) {
@@ -102,6 +109,7 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
         }
         player = client.player;
         world = client.world;
+        glidingSequence = player.isGliding();
         silentAim = context.toggle("Silent aim", false);
         silentSwap = context.toggle("Silent swap", true);
         returnSlot = context.toggle("Return slot", true);
@@ -122,13 +130,15 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
         if (stage != Stage.PEARL && stage != Stage.CHARGE) return;
         MinecraftClient client = context.client();
         RotationManager rotations = RotationManager.getInstance();
-        if (!ready(client) || !rotations.isOwnedBy(this) || aim == null
+        if (!ready(client) || client.player != player || client.world != world || player.isGliding() != glidingSequence
+            || !rotations.isOwnedBy(this) || aim == null
             || rotations.serverRotation().angularDistanceTo(aim) > .01) return;
         if (stage == Stage.CHARGE && solution == null) return;
         if (!silentAim && new Rotation(player.getYaw(), player.getPitch()).angularDistanceTo(aim) > .75) return;
         Stage expected = stage;
         ActionScheduler.getInstance().submit(this, PRIORITY, actionClient -> {
             if (stage != expected || !ready(actionClient) || actionClient.player != player || actionClient.world != world
+                || player.isGliding() != glidingSequence
                 || !rotations.isOwnedBy(this) || slotsContended()
                 || player.getInventory().getSelectedSlot() != visibleSlot) return;
             int slot = usableSlot(actionClient, expected == Stage.PEARL);
@@ -180,6 +190,7 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
         double seconds = frameNanos == 0 ? 0 : Math.min(.1, Math.max(0, (now - frameNanos) / 1e9));
         frameNanos = now;
         if (silentAim || stage != Stage.CHARGE || aim == null || client.player != player || client.world != world
+            || player.isGliding() != glidingSequence
             || !ready(client) || !RotationManager.getInstance().isOwnedBy(this)) return;
         float blend = (float) -Math.expm1(-75 * seconds);
         player.setYaw(player.getYaw() + MathHelper.wrapDegrees(aim.yaw() - player.getYaw()) * blend);
@@ -190,9 +201,22 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
     private Solution preflight(MinecraftClient client, State predicted) {
         Vec eyes = vec(player.getEyePos()), movement = vec(player.getMovement());
         Vec inherited = inherited(movement, player.isOnGround());
+        Vec flightOrigin = eyes, flightMovement = movement;
+        boolean slowFalling = player.hasStatusEffect(StatusEffects.SLOW_FALLING);
         for (int delay = 1; delay <= 2; delay++) {
-            Vec origin = eyes.add(movement.scale(delay));
-            Solution forecast = solve(predicted, delay, origin, inherited);
+            Vec origin, chargeMovement;
+            if (glidingSequence) {
+                flightMovement = glideVelocity(flightMovement, player.getYaw(), player.getPitch(),
+                    player.getFinalGravity(), slowFalling);
+                if (flightMovement == null) return null;
+                flightOrigin = flightOrigin.add(flightMovement);
+                origin = flightOrigin;
+                chargeMovement = flightMovement; // Elytra inherits all three axes, including lift/dive speed.
+            } else {
+                origin = eyes.add(movement.scale(delay));
+                chargeMovement = inherited;
+            }
+            Solution forecast = solve(predicted, delay, origin, chargeMovement);
             if (forecast != null && clearPaths(client, predicted, delay, origin, forecast)) return forecast;
         }
         return null;
@@ -271,6 +295,7 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
         solution = null;
         aim = null;
         frameNanos = 0;
+        glidingSequence = false;
     }
 
     private static int usableSlot(MinecraftClient client, boolean pearl) {

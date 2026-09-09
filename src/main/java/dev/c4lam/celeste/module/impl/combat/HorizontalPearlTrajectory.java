@@ -7,6 +7,7 @@ public final class HorizontalPearlTrajectory {
     public static final double GRAVITY = 0.03;
     public static final double PEARL_EYE_OFFSET = (double) 0.1F;
     public static final int MAX_FLIGHT_TICKS = 48;
+    public static final int MAX_DELAYED_THROW_TICKS = 30;
     // Wind charge dimensions: .3125 x .3125, box bottom is entity Y - .15F.
     private static final double HALF = 0.15625;
     private static final Vec CENTER_OFFSET = new Vec(0, HALF - (double) 0.15F, 0);
@@ -55,13 +56,59 @@ public final class HorizontalPearlTrajectory {
         return pearl;
     }
 
+    /** One unobstructed 1.21.11 elytra travel step; prediction only, never applied to the player. */
+    public static Vec glideVelocity(Vec movement, float yaw, float pitch, double gravity, boolean slowFalling) {
+        if (movement == null || !movement.finite() || !Float.isFinite(yaw) || !Float.isFinite(pitch)
+            || !Double.isFinite(gravity) || gravity < 0) return null;
+        // Elytra travel uses Entity's float/sine-table look, not a double-trig projectile ray.
+        // At exactly -90 degrees the horizontal look is zero, so vanilla skips climb lift.
+        float pitchRadians = pitch * .017453292F;
+        float yawRadians = -yaw * .017453292F;
+        float cosPitch = glideTrig(pitchRadians, true);
+        Vec look = new Vec(glideTrig(yawRadians, false) * cosPitch,
+            -glideTrig(pitchRadians, false), glideTrig(yawRadians, true) * cosPitch);
+        double horizontalLook = Math.hypot(look.x, look.z);
+        double horizontalSpeed = Math.hypot(movement.x, movement.z);
+        double radians = pitchRadians;
+        double lift = Math.cos(radians);
+        lift *= lift;
+        if (slowFalling && movement.y <= 0) gravity = Math.min(gravity, .01);
+        Vec next = movement.add(new Vec(0, gravity * (-1 + lift * .75), 0));
+        if (next.y < 0 && horizontalLook > 0) {
+            double rise = next.y * -.1 * lift;
+            next = next.add(new Vec(look.x / horizontalLook * rise, rise, look.z / horizontalLook * rise));
+        }
+        if (radians < 0 && horizontalLook > 0) {
+            double rise = horizontalSpeed * -glideTrig(radians, false) * .04;
+            next = next.add(new Vec(-look.x / horizontalLook * rise, rise * 3.2, -look.z / horizontalLook * rise));
+        }
+        if (horizontalLook > 0) {
+            next = next.add(new Vec((look.x / horizontalLook * horizontalSpeed - next.x) * .1, 0,
+                (look.z / horizontalLook * horizontalSpeed - next.z) * .1));
+        }
+        return new Vec(next.x * (double) .99F, next.y * (double) .98F, next.z * (double) .99F);
+    }
+
+    private static float glideTrig(double angle, boolean cosine) {
+        // Equivalent to 1.21.11 MathHelper's lookup, without allocating a 65,536-entry table.
+        double scale = 10430.378350470453;
+        long index = (long) (angle * scale + (cosine ? 16384 : 0)) & 65535L;
+        return (float) Math.sin(index / scale);
+    }
+
     /**
      * Vanilla pearls cannot be hit by wind charges. The catch occurs when the older pearl's
      * movement ray hits the younger wind charge's box. Search that discrete tick order, not
      * merely two simultaneous points. A wind charge has zero acceleration and drag 1.
      */
     public static Solution solve(State thrownPearl, int throwDelay, Vec windOrigin, Vec windInherited) {
-        if (thrownPearl == null || !thrownPearl.valid() || !throwWindow(throwDelay)
+        if (!throwWindow(throwDelay)) return null;
+        return solveDelayed(thrownPearl, throwDelay, windOrigin, windInherited);
+    }
+
+    /** The upward Catch macro has a configurable wait; horizontal catches still use solve's 1–2 ticks. */
+    public static Solution solveDelayed(State thrownPearl, int throwDelay, Vec windOrigin, Vec windInherited) {
+        if (thrownPearl == null || !thrownPearl.valid() || throwDelay < 1 || throwDelay > MAX_DELAYED_THROW_TICKS
             || windOrigin == null || windInherited == null || !windOrigin.finite() || !windInherited.finite()) return null;
         State pearl = advance(thrownPearl, throwDelay);
         // At the first pearl tick after charge spawn, the charge has not moved yet.
