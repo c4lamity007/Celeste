@@ -97,6 +97,40 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(data['runtime']['status'], 'pending')
         self.assertEqual(data['evidence'], [])
 
+    def test_shield_break_suite_runs_behavior_and_neighbor_checks_once(self):
+        code, calls, data = self.planned_check('shield-break')
+        self.assertEqual(code, 0)
+        self.assertEqual([call.args[1] for call in calls],
+                         ['build', 'shield-break', 'sword-aura-range', 'mace-selection'])
+        self.assertEqual([Path(call.args[2][call.args[2].index('-File') + 1]).name for call in calls[1:]],
+                         ['run-shield-break.ps1', 'run-sword-aura-range.ps1', 'check_mace_selection.ps1'])
+        self.assertEqual(data['status'], 'checks-passed')
+        self.assertEqual(data['runtime']['status'], 'pending')
+        self.assertEqual(data['evidence'], [])
+        for call in calls[1:]:
+            command = call.args[2]
+            self.assertEqual(command[command.index('-ProjectRoot') + 1], str(self.project.resolve()))
+            self.assertEqual(command[command.index('-JdkHome') + 1], str((self.root / 'jdk 21').resolve()))
+
+    def test_shield_break_suite_stops_at_each_failure(self):
+        names = ['build', 'shield-break', 'sword-aura-range', 'mace-selection']
+        for failed in names:
+            with self.subTest(failed=failed):
+                code, calls, data = self.planned_check('shield-break', failure=failed)
+                self.assertEqual(code, 1)
+                self.assertEqual([call.args[1] for call in calls], names[:names.index(failed) + 1])
+                self.assertEqual(data['status'], 'fail')
+                self.assertEqual(data['runtime']['status'], 'pending')
+
+    def test_shield_break_suite_requires_explicit_jdk_before_starting(self):
+        args = qa.parser().parse_args(['check', '--project', str(self.project), '--output', str(self.outputs),
+                                      '--module', 'Shield Break', '--suite', 'shield-break'])
+        with patch.object(qa, 'run_step') as steps:
+            with self.assertRaisesRegex(ValueError, 'shield-break suite requires --java-home'):
+                args.func(args)
+            steps.assert_not_called()
+        self.assertFalse(self.outputs.exists())
+
     def test_crystal_suite_passes_selected_paths_and_jdk_to_every_check(self):
         _, calls, _ = self.planned_check('crystal-visuals')
         scripts = ['run-visuals.ps1', 'run-chams-aurora.ps1', 'run-prism-material.ps1',

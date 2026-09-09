@@ -179,7 +179,7 @@ def check(args):
     project = args.project.resolve()
     if not (project / "gradlew.bat").is_file():
         raise ValueError("Project must be the Celeste source root containing gradlew.bat")
-    if args.suite in ("combat", "pearl-catches", "trajectories", "ambient-vfx", "sky-lyrics", "sky-lyrics-sword", "player-visuals", "crystal-visuals", "atmosphere", "fog-compatibility") and not args.java_home:
+    if args.suite in ("combat", "shield-break", "pearl-catches", "trajectories", "ambient-vfx", "sky-lyrics", "sky-lyrics-sword", "player-visuals", "crystal-visuals", "atmosphere", "fog-compatibility") and not args.java_home:
         raise ValueError(f"The {args.suite} suite requires --java-home pointing to JDK 21")
     root = args.output.resolve() if args.output else project / "build/module-qa"
     run = root / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid4().hex[:8])
@@ -217,6 +217,10 @@ def check(args):
         if args.suite == "combat":
             plan = [("auras", "check_auras.ps1", []),
                     ("horizontal-pearl", "check_horizontal_pearl.ps1", [])]
+        if args.suite == "shield-break":
+            plan = [("shield-break", "run-shield-break.ps1", []),
+                    ("sword-aura-range", "run-sword-aura-range.ps1", []),
+                    ("mace-selection", "check_mace_selection.ps1", [])]
         if args.suite == "pearl-catches":
             plan = [("pearl-catches", "check_horizontal_pearl.ps1", []),
                     ("elytra-silent-aim", "check_elytra_silent_aim.ps1", [])]
@@ -315,7 +319,7 @@ def parser():
     p = sub.add_parser("check", help="Incremental build plus relevant regression suite; full logs stay local")
     p.add_argument("--project", type=Path, default=Path(__file__).resolve().parents[2])
     p.add_argument("--module", action="append", required=True, help="Repeat for several changed modules")
-    p.add_argument("--suite", choices=("build", "combat", "pearl-catches", "trajectories", "ambient-vfx", "sky-lyrics", "sky-lyrics-sword", "jump", "visuals", "player-visuals", "crystal-visuals", "atmosphere", "fog-compatibility"), default="build")
+    p.add_argument("--suite", choices=("build", "combat", "shield-break", "pearl-catches", "trajectories", "ambient-vfx", "sky-lyrics", "sky-lyrics-sword", "jump", "visuals", "player-visuals", "crystal-visuals", "atmosphere", "fog-compatibility"), default="build")
     p.add_argument("--output", type=Path)
     p.add_argument("--java-home", type=Path)
     p.add_argument("--sodium-jar", type=Path, help="Installed Sodium artifact for the fog-compatibility regression suite")

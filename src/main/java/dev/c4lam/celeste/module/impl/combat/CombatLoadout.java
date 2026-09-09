@@ -40,15 +40,8 @@ final class CombatLoadout {
         }
         int visible = client.player.getInventory().getSelectedSlot();
 
-        boolean shieldRaised = target != null && target.isBlocking();
-        if (shieldRaised && enabled("Shield Break")
-            && (maceAuraActive() || requested == Weapon.MACE && enabled("Mace Swap"))) {
-            shieldRaised = false;
-        }
-        if (shieldRaised && enabled("Shield Break")) {
-            int axe = bestSlot(client, Weapon.AXE);
-            return axe >= 0 && (axe == visible || swapDelayElapsed(client)) ? axe : -1;
-        }
+        // Shield breaking is an explicit scheduled intent. Do not force an axe into unrelated
+        // attacks merely because its module is enabled (which bypassed its miss/stun policy).
 
         if (requested == Weapon.MACE) {
             if (enabled("Mace Swap")) {
@@ -134,9 +127,6 @@ final class CombatLoadout {
         // a separate axe intent and must not overwrite the mace setting.
         if (requested == Weapon.MACE && enabled("Mace Swap")) {
             return maceSwapSilent();
-        }
-        if (target != null && target.isBlocking() && enabled("Shield Break")) {
-            return toggle("Shield Break", "Silent swap", true);
         }
         if ((requested == Weapon.SWORD || requested == Weapon.CURRENT) && enabled("Auto Sword")) {
             return toggle("Auto Sword", "Silent swap", true);
@@ -240,6 +230,14 @@ final class CombatLoadout {
     }
 
     private static int bestSlot(MinecraftClient client, Weapon weapon) {
+        return bestSlot(client, weapon, false);
+    }
+
+    static int shieldBreakerSlot(MinecraftClient client) {
+        return bestSlot(client, Weapon.AXE, true);
+    }
+
+    private static int bestSlot(MinecraftClient client, Weapon weapon, boolean disablingOnly) {
         if (weapon == Weapon.MACE) {
             return bestMaceSlot(client, null);
         }
@@ -251,7 +249,7 @@ final class CombatLoadout {
         int visible = client.player.getInventory().getSelectedSlot();
         for (int slot = 0; slot < 9; slot++) {
             ItemStack stack = client.player.getInventory().getStack(slot);
-            if (!isWeapon(stack, weapon)) {
+            if (!isWeapon(stack, weapon) || disablingOnly && !ShieldBreakSupport.disablingAxe(stack)) {
                 continue;
             }
             int score = score(stack, weapon) + (slot == visible ? 1 : 0);
