@@ -7,6 +7,8 @@ case "$platform" in
   *) printf 'Unsupported Mac platform: %s\n' "$platform" >&2; exit 1 ;;
 esac
 
+bash tools/runtime-macos/check.sh
+
 mkdir -p dist/Celeste.app/Contents/{MacOS,Resources}
 install -m 755 native-verifier/target/release/CelesteLauncher dist/Celeste.app/Contents/MacOS/Celeste
 
@@ -33,6 +35,20 @@ codesign --force --sign - --timestamp=none dist/Celeste.app
 codesign --verify --deep --strict --verbose=2 dist/Celeste.app
 file dist/Celeste.app/Contents/MacOS/Celeste
 otool -L dist/Celeste.app/Contents/MacOS/Celeste
+otool -l dist/Celeste.app/Contents/MacOS/Celeste | grep -A6 LC_BUILD_VERSION
+
+dist/Celeste.app/Contents/MacOS/Celeste > "$RUNNER_TEMP/celeste-gui.log" 2>&1 &
+gui_pid=$!
+sleep 5
+if ! kill -0 "$gui_pid" 2>/dev/null; then
+  cat "$RUNNER_TEMP/celeste-gui.log"
+  printf '%s\n' 'The macOS app exited during its GUI launch smoke test.' >&2
+  exit 1
+fi
+screencapture -x dist/Celeste-GUI-smoke.png || true
+kill "$gui_pid"
+wait "$gui_pid" || true
+printf '%s\n' 'macOS GUI launch smoke passed.'
 
 printf '%s\n' 'Celeste for macOS' 'Open Celeste.app, activate, and select the folder where Celeste.jar should be downloaded.' 'Move the downloaded JAR into your Fabric 1.21.11 mods folder.' 'This application is ad-hoc signed, not Apple-notarized. If macOS blocks it, approve Celeste in System Settings > Privacy & Security > Open Anyway.' 'Allow Keychain access when prompted so your activation can be saved.' > dist/README.txt
 ditto -c -k --sequesterRsrc --keepParent dist/Celeste.app "dist/Celeste-${platform}.zip"

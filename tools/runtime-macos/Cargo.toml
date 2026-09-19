@@ -1,0 +1,14 @@
+[package]
+name = "celeste-macos-runtime-check"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+aes-gcm = "0.10"
+anyhow = "1.0"
+base64 = "0.22"
+rand = "0.8"
+
+[[bin]]
+name = "celeste-macos-runtime-check"
+path = "runtime.rs"
