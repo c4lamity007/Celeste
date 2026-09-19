@@ -19,7 +19,7 @@ mod user_profile;
 #[cfg(windows)]
 mod windows_profile;
 
-pub(crate) const SETUP_BUILD: &str = "20260919.2";
+pub(crate) const SETUP_BUILD: &str = "20260919.3";
 
 use crate::ui::UiEvent;
 use aes_gcm::aead::{Aead, Payload};
