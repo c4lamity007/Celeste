@@ -3,29 +3,21 @@ use anyhow::{Result, bail};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::path::PathBuf;
-
 pub(crate) struct Candidate {
     pub path: PathBuf,
     pub selected_instance: bool,
 }
-
 #[derive(Debug)]
 struct LicenseRequired(&'static str);
-
 impl std::fmt::Display for LicenseRequired {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.0)
     }
 }
-
 impl std::error::Error for LicenseRequired {}
-
 pub(crate) fn license_required(error: &anyhow::Error) -> bool {
     error.is::<LicenseRequired>()
 }
-
-// Loading only validates the local, DPAPI-protected, server-signed certificate.
-// Every candidate still has to authenticate with the current hardware on the server.
 pub(crate) fn reuse<L, A>(
     candidates: Vec<Candidate>,
     load: L,
@@ -37,7 +29,6 @@ where
 {
     reuse_for_key(candidates, false, load, authenticate)
 }
-
 pub(crate) fn reuse_for_key<L, A>(
     candidates: Vec<Candidate>,
     explicit_key: bool,
@@ -76,8 +67,6 @@ where
         ));
     }
     if explicit_key {
-        // The server checks the supplied key against every candidate identity.
-        // Stale local UID selection must not prevent a deliberate license change.
     } else if let Some(uid) = selected_uids.iter().next() {
         loaded.retain(|credential| credential.uid == *uid);
     } else if loaded
@@ -106,31 +95,25 @@ where
         }
     }
     if let Some(error) = rejected {
-        return Err(
-            error.context("The saved activation was rejected. Enter your current Celeste license")
-        );
+        return Err(error.context(native_protection::text!(
+            "The saved activation was rejected. Enter your current Celeste license"
+        )));
     }
     if let Some(error) = protection_error.filter(|_| !explicit_key) {
-        // Preserve this diagnostic even if another candidate had a different
-        // corruption error. A Windows profile failure is not a license denial.
-        return Err(error.context(
-            "The saved activation could not be opened; retry from its original account",
-        ));
+        return Err(error.context(native_protection::text!(
+            "The saved activation could not be opened; retry from its original account"
+        )));
     }
     if let Some(error) = load_error.filter(|_| !explicit_key) {
-        return Err(
-            error.context(LicenseRequired("The saved activation could not be opened under this account. Enter your Celeste license"))
-        );
+        return Err (error . context (LicenseRequired (native_protection :: text ! ("The saved activation could not be opened under this account. Enter your Celeste license")))) ;
     }
     Ok(None)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use anyhow::anyhow;
     use serde_json::json;
-
     fn credential(id: &str, uid: u64) -> InstallCredential {
         InstallCredential {
             device_id: id.into(),
@@ -143,7 +126,6 @@ mod tests {
             game_name: String::new(),
         }
     }
-
     fn candidates(paths: &[(&str, bool)]) -> Vec<Candidate> {
         paths
             .iter()
@@ -153,7 +135,6 @@ mod tests {
             })
             .collect()
     }
-
     #[test]
     fn stale_installer_recovers_valid_runtime_without_enrollment() {
         let mut attempts = Vec::new();
@@ -165,7 +146,7 @@ mod tests {
                 if saved.device_id == "installer" {
                     Err(crate::http_failure(401, "/v1/installer/start", "denied"))
                 } else {
-                    Ok(json!({"grant":"verified"}))
+                    Ok(json ! ({ "grant" : "verified" }))
                 }
             },
         )
@@ -174,7 +155,6 @@ mod tests {
         assert_eq!(found.0.device_id, "runtime");
         assert_eq!(attempts, ["installer", "runtime"]);
     }
-
     #[test]
     fn another_instance_or_user_cache_reuses_same_device() {
         let found = reuse(
@@ -186,7 +166,6 @@ mod tests {
         .unwrap();
         assert_eq!(found.0.device_id, "same-device");
     }
-
     #[test]
     fn corrupt_installer_does_not_hide_valid_legacy_runtime() {
         let found = reuse(
@@ -204,7 +183,6 @@ mod tests {
         .unwrap();
         assert_eq!(found.0.device_id, "runtime");
     }
-
     #[test]
     fn duplicate_device_is_authenticated_once() {
         let mut count = 0;
@@ -219,7 +197,6 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(count, 1);
     }
-
     #[test]
     fn selected_instance_never_switches_to_another_license() {
         let mut attempts = Vec::new();
@@ -243,7 +220,6 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(attempts, [10]);
     }
-
     #[test]
     fn ambiguous_licenses_require_explicit_key_before_instance_selection() {
         let result = reuse(
@@ -264,7 +240,6 @@ mod tests {
         assert!(license_required(&error));
         assert!(error.to_string().contains("Enter the Celeste license"));
     }
-
     #[test]
     fn network_error_does_not_attempt_other_devices() {
         let mut count = 0;
@@ -279,13 +254,11 @@ mod tests {
         assert_eq!(result.unwrap_err().to_string(), "offline");
         assert_eq!(count, 1);
     }
-
     #[test]
     fn no_saved_binding_can_enroll() {
         let result = reuse(Vec::new(), |_| panic!("no load"), |_| panic!("no auth"));
         assert!(result.unwrap().is_none());
     }
-
     #[test]
     fn unreadable_unrelated_profile_does_not_block_first_activation() {
         let result = reuse(
@@ -320,7 +293,7 @@ mod tests {
                         "/v1/installer/start",
                         "product denied",
                     )),
-                    _ => Ok(json!({"product":"celeste"})),
+                    _ => Ok(json ! ({ "product" : "celeste" })),
                 }
             },
         )
@@ -353,7 +326,6 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.to_string(), "offline");
     }
-
     #[test]
     fn selected_windows_protection_error_is_retryable_despite_another_corrupt_copy() {
         for paths in [

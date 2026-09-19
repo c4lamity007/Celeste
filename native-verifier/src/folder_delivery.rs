@@ -1,56 +1,72 @@
-//! Save the signed normal Fabric mod to an explicitly selected directory.
-//! No instance discovery, game configuration, migration, or process operations.
-
+#![doc = " Save the signed normal Fabric mod to an explicitly selected directory."]
+#![doc = " No instance discovery, game configuration, migration, or process operations."]
 use anyhow::{Context, Result, bail};
 use rand::{RngCore, rngs::OsRng};
 use serde_json::Value;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Cursor, Read, Write};
 use std::path::{Path, PathBuf};
-
 pub(crate) fn validate_folder(folder: &Path) -> Result<PathBuf> {
     if !folder.is_absolute() || !folder.is_dir() {
-        bail!("Choose an existing folder using Browse, or enter its full path");
+        bail!(
+            "{}",
+            native_protection::text!(
+                "Choose an existing folder using Browse, or enter its full path"
+            )
+        );
     }
-    fs::canonicalize(folder).context("Could not open the selected download folder")
+    fs::canonicalize(folder).context(native_protection::text!(
+        "Could not open the selected download folder"
+    ))
 }
-
 fn validate_mod(bytes: &[u8]) -> Result<()> {
-    let mut jar = zip::ZipArchive::new(Cursor::new(bytes))
-        .context("The signed download is not a valid Fabric JAR")?;
+    let mut jar = zip::ZipArchive::new(Cursor::new(bytes)).context(native_protection::text!(
+        "The signed download is not a valid Fabric JAR"
+    ))?;
     let file = jar
-        .by_name("fabric.mod.json")
-        .context("The signed download has no Fabric mod metadata")?;
+        .by_name(native_protection::text!("fabric.mod.json"))
+        .context(native_protection::text!(
+            "The signed download has no Fabric mod metadata"
+        ))?;
     let mut metadata = Vec::new();
     file.take(65_537).read_to_end(&mut metadata)?;
     if metadata.len() > 65_536 {
-        bail!("The signed mod metadata is too large");
+        bail!(
+            "{}",
+            native_protection::text!("The signed mod metadata is too large")
+        );
     }
     let metadata: Value = serde_json::from_slice(&metadata)?;
-    if metadata.get("id").and_then(Value::as_str) != Some("celeste_bootstrap") {
-        bail!("The signed download is not the Celeste Fabric mod");
-    }
-    // Older server artifacts require credentials inside a game instance.
-    // Do not report a successful movable download for those incompatible JARs.
     if metadata
-        .pointer("/custom/celeste:delivery")
+        .get(native_protection::text!("id"))
         .and_then(Value::as_str)
-        != Some("shared-activation-v1")
+        != Some(native_protection::text!("celeste_bootstrap"))
     {
         bail!(
-            "The server's Celeste mod does not support folder downloads yet. A signed shared-activation release must be published before this downloader can be used"
+            "{}",
+            native_protection::text!("The signed download is not the Celeste Fabric mod")
+        );
+    }
+    if metadata
+        .pointer(native_protection::text!("/custom/celeste:delivery"))
+        .and_then(Value::as_str)
+        != Some(native_protection::text!("shared-activation-v1"))
+    {
+        bail!(
+            "{}",
+            native_protection::text!(
+                "The server's Celeste mod does not support folder downloads yet. A signed shared-activation release must be published before this downloader can be used"
+            )
         );
     }
     Ok(())
 }
-
 struct Pending(PathBuf);
 impl Drop for Pending {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
     }
 }
-
 pub(crate) fn save_mod(folder: &Path, bytes: &[u8]) -> Result<PathBuf> {
     validate_mod(bytes)?;
     let folder = validate_folder(folder)?;
@@ -62,34 +78,32 @@ pub(crate) fn save_mod(folder: &Path, bytes: &[u8]) -> Result<PathBuf> {
         .write(true)
         .create_new(true)
         .open(&path)
-        .context("Could not write to the selected folder")?;
+        .context(native_protection::text!(
+            "Could not write to the selected folder"
+        ))?;
     let pending = Pending(path);
     file.write_all(bytes)?;
     file.sync_all()?;
     drop(file);
     for number in 1..=999 {
         let name = if number == 1 {
-            "Celeste.jar".to_owned()
+            native_protection::text!("Celeste.jar").to_owned()
         } else {
             format!("Celeste-{number}.jar")
         };
         let destination = folder.join(name);
-        // Publishing a complete same-volume file through a hard link is
-        // atomic and never replaces an existing file or follows its symlink.
-        match fs::hard_link(&pending.0, &destination) {
-            Ok(()) => return Ok(destination),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error).context(
-                "Could not save the mod without replacing existing files. Choose a local folder on a filesystem that supports hard links"),
-        }
+        match fs :: hard_link (& pending . 0 , & destination) { Ok (()) => return Ok (destination) , Err (error) if error . kind () == io :: ErrorKind :: AlreadyExists => continue , Err (error) => return Err (error) . context (native_protection :: text ! ("Could not save the mod without replacing existing files. Choose a local folder on a filesystem that supports hard links")) , }
     }
-    bail!("This folder already contains 999 Celeste downloads. Choose another folder")
+    bail!(
+        "{}",
+        native_protection::text!(
+            "This folder already contains 999 Celeste downloads. Choose another folder"
+        )
+    )
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     struct Fixture(PathBuf);
     impl Fixture {
         fn new() -> Self {
@@ -119,7 +133,8 @@ mod tests {
         } else {
             "legacy"
         };
-        let metadata = serde_json::json!({"id":id,"custom":{"celeste:delivery":marker}});
+        let metadata =
+            serde_json :: json ! ({ "id" : id , "custom" : { "celeste:delivery" : marker } });
         archive.write_all(metadata.to_string().as_bytes()).unwrap();
         archive.finish().unwrap().into_inner()
     }
@@ -173,7 +188,6 @@ mod tests {
         assert!(validate_folder(&file).is_err());
         assert_eq!(fs::read(file).unwrap(), b"keep");
     }
-
     #[test]
     #[ignore = "Requires CELESTE_FOLDER_QA_JAR pointing to the locally built bootstrap"]
     fn built_bootstrap_exports_unchanged_into_a_plain_folder() {

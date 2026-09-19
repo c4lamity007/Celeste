@@ -1,0 +1,23 @@
+[package]
+name = "native-protection"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+aes-gcm = "=0.10.3"
+native-protection-macros = { path = "../native-protection-macros" }
+
+[dev-dependencies]
+rand = "=0.8.8"
+
+[[example]]
+name = "protected_probe"
+path = "examples/protected_probe.rs"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+

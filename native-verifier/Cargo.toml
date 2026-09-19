@@ -9,6 +9,7 @@ name = "CelesteLauncher"
 path = "src/main.rs"
 
 [dependencies]
+native-protection = { path = "../tools/native-protection" }
 aes-gcm = "0.10"
 anyhow = "1.0"
 base64 = "0.22"

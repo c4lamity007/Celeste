@@ -1,13 +1,11 @@
-//! Ordinary Fabric installation. Legacy launcher injection is never used here.
+#![doc = " Ordinary Fabric installation. Legacy launcher injection is never used here."]
 use super::*;
 use std::io::{Cursor, Read};
-
 #[derive(Clone, Debug)]
 pub struct InstallTarget {
     pub launcher: DetectedLauncher,
     pub instance: GameInstance,
 }
-
 fn read_json(path: &Path) -> Option<Value> {
     let file = fs::File::open(path).ok()?;
     let mut bytes = Vec::new();
@@ -18,32 +16,32 @@ fn read_json(path: &Path) -> Option<Value> {
         .then(|| serde_json::from_slice(&bytes).ok())
         .flatten()
 }
-
 fn same_path(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
         _ => a == b,
     }
 }
-
 fn loader_kind(loader: &str) -> &str {
     loader.split([' ', '-']).next().unwrap_or("")
 }
-
 fn check_metadata(instance: &GameInstance) -> Result<()> {
     let loader = instance.loader.to_ascii_lowercase();
     if instance.version.is_empty() || loader.is_empty() {
         bail!(
-            "Could not verify this folder's Minecraft and loader settings. Select the configured instance folder in your launcher."
+            "{}",
+            native_protection::text!(
+                "Could not verify this folder's Minecraft and loader settings. Select the configured instance folder in your launcher."
+            )
         );
     }
-    if loader_kind(&loader) != "fabric" {
+    if loader_kind(&loader) != native_protection::text!("fabric") {
         bail!(
             "This instance uses {}. Celeste requires Fabric; Quilt and other loaders are not supported.",
             instance.loader
         );
     }
-    if instance.version != "1.21.11" {
+    if instance.version != native_protection::text!("1.21.11") {
         bail!(
             "This instance uses Minecraft {}. Celeste requires Minecraft 1.21.11.",
             instance.version
@@ -51,17 +49,25 @@ fn check_metadata(instance: &GameInstance) -> Result<()> {
     }
     Ok(())
 }
-
 fn version_metadata(root: &Path, id: &str) -> Option<(String, String)> {
     let mut id = id.to_owned();
     let mut visited = std::collections::HashSet::new();
     let mut game = String::new();
     let mut loader = String::new();
     for _ in 0..16 {
-        if id.is_empty() || !visited.insert(id.clone()) || id.contains(['/', '\\']) || id == ".." {
+        if id.is_empty()
+            || !visited.insert(id.clone())
+            || id.contains(['/', '\\'])
+            || id == native_protection::text!("..")
+        {
             return None;
         }
-        let value = read_json(&root.join("versions").join(&id).join(format!("{id}.json")))?;
+        let value = read_json(
+            &root
+                .join(native_protection::text!("versions"))
+                .join(&id)
+                .join(format!("{id}.json")),
+        )?;
         let (mc, detected) = json_version_metadata(&value);
         if !mc.is_empty() {
             game = mc;
@@ -69,11 +75,13 @@ fn version_metadata(root: &Path, id: &str) -> Option<(String, String)> {
         if !detected.is_empty() {
             loader = detected;
         }
-        let Some(parent) = value.get("inheritsFrom").and_then(Value::as_str) else {
+        let Some(parent) = value
+            .get(native_protection::text!("inheritsFrom"))
+            .and_then(Value::as_str)
+        else {
             break;
         };
-        // Fabric version JSON has the exact vanilla version as inheritsFrom.
-        if parent == "1.21.11" {
+        if parent == native_protection::text!("1.21.11") {
             game = parent.to_owned();
             break;
         }
@@ -81,15 +89,14 @@ fn version_metadata(root: &Path, id: &str) -> Option<(String, String)> {
     }
     Some((game, loader))
 }
-
 fn json_version_metadata(value: &Value) -> (String, String) {
     let mut game = value
-        .get("inheritsFrom")
+        .get(native_protection::text!("inheritsFrom"))
         .and_then(Value::as_str)
         .filter(|s| s.bytes().all(|b| b.is_ascii_digit() || b == b'.'))
         .or_else(|| {
             value
-                .get("id")
+                .get(native_protection::text!("id"))
                 .and_then(Value::as_str)
                 .filter(|s| s.bytes().all(|b| b.is_ascii_digit() || b == b'.'))
         })
@@ -99,27 +106,34 @@ fn json_version_metadata(value: &Value) -> (String, String) {
         game = first_str(
             value,
             &[
-                "/minecraftVersion",
-                "/gameVersion",
-                "/mcVersion",
-                "/baseModLoader/minecraftVersion",
-                "/loader/mcVersion",
+                native_protection::text!("/minecraftVersion"),
+                native_protection::text!("/gameVersion"),
+                native_protection::text!("/mcVersion"),
+                native_protection::text!("/baseModLoader/minecraftVersion"),
+                native_protection::text!("/loader/mcVersion"),
             ],
         )
         .unwrap_or_default();
     }
     let mut loader = String::new();
     for lib in value
-        .get("libraries")
+        .get(native_protection::text!("libraries"))
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
     {
-        let name = lib.get("name").and_then(Value::as_str).unwrap_or("");
-        if let Some(version) = name.strip_prefix("net.fabricmc:fabric-loader:") {
+        let name = lib
+            .get(native_protection::text!("name"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if let Some(version) =
+            name.strip_prefix(native_protection::text!("net.fabricmc:fabric-loader:"))
+        {
             loader = format!("fabric {version}");
         }
-        if let Some(version) = name.strip_prefix("org.quiltmc:quilt-loader:") {
+        if let Some(version) =
+            name.strip_prefix(native_protection::text!("org.quiltmc:quilt-loader:"))
+        {
             return (game, format!("quilt {version}"));
         }
     }
@@ -127,19 +141,18 @@ fn json_version_metadata(value: &Value) -> (String, String) {
         loader = first_str(
             value,
             &[
-                "/loaderVersion/type",
-                "/modLoader",
-                "/modloader",
-                "/loader/loaderType",
-                "/loaderType",
-                "/baseModLoader/name",
+                native_protection::text!("/loaderVersion/type"),
+                native_protection::text!("/modLoader"),
+                native_protection::text!("/modloader"),
+                native_protection::text!("/loader/loaderType"),
+                native_protection::text!("/loaderType"),
+                native_protection::text!("/baseModLoader/name"),
             ],
         )
         .unwrap_or_default();
     }
     (game, loader)
 }
-
 fn inspected_instances(launcher: &DetectedLauncher) -> Vec<GameInstance> {
     let mut instances = list_instances(launcher);
     if matches!(
@@ -155,7 +168,6 @@ fn inspected_instances(launcher: &DetectedLauncher) -> Vec<GameInstance> {
     }
     instances
 }
-
 pub fn discover_install_targets() -> Vec<InstallTarget> {
     let mut out = Vec::<InstallTarget>::new();
     for launcher in detect_installed() {
@@ -180,16 +192,21 @@ pub fn discover_install_targets() -> Vec<InstallTarget> {
     });
     out
 }
-
 pub fn inspect_folder(folder: &Path) -> Result<Vec<InstallTarget>> {
     if !folder.is_absolute() || !folder.is_dir() {
-        bail!("Choose an existing absolute instance folder.");
+        bail!(
+            "{}",
+            native_protection::text!("Choose an existing absolute instance folder.")
+        );
     }
-    let prism_root = if folder.join("mmc-pack.json").is_file() {
+    let prism_root = if folder
+        .join(native_protection::text!("mmc-pack.json"))
+        .is_file()
+    {
         Some(folder)
     } else {
         folder.parent().filter(|p| {
-            p.join("mmc-pack.json").is_file()
+            p.join(native_protection::text!("mmc-pack.json")).is_file()
                 && matches!(
                     folder.file_name().and_then(|n| n.to_str()),
                     Some("minecraft" | ".minecraft")
@@ -225,8 +242,6 @@ pub fn inspect_folder(folder: &Path) -> Result<Vec<InstallTarget>> {
             instance,
         }]);
     }
-    // Resolve game directories referenced by launcher metadata, including custom
-    // Modrinth paths. Never open its database for write access.
     let found: Vec<_> = discover_install_targets()
         .into_iter()
         .filter(|t| same_path(&t.instance.game_dir, folder))
@@ -251,11 +266,11 @@ pub fn inspect_folder(folder: &Path) -> Result<Vec<InstallTarget>> {
         return Ok(found);
     }
     for file in [
-        "version.json",
-        "instance.json",
-        "minecraftinstance.json",
-        "config.json",
-        "metadata.json",
+        native_protection::text!("version.json"),
+        native_protection::text!("instance.json"),
+        native_protection::text!("minecraftinstance.json"),
+        native_protection::text!("config.json"),
+        native_protection::text!("metadata.json"),
     ] {
         if let Some(value) = read_json(&folder.join(file)) {
             let (version, loader) = json_version_metadata(&value);
@@ -263,7 +278,7 @@ pub fn inspect_folder(folder: &Path) -> Result<Vec<InstallTarget>> {
                 continue;
             }
             let name = value
-                .get("name")
+                .get(native_protection::text!("name"))
                 .and_then(Value::as_str)
                 .map(str::to_owned)
                 .unwrap_or_else(|| {
@@ -287,12 +302,13 @@ pub fn inspect_folder(folder: &Path) -> Result<Vec<InstallTarget>> {
         }
     }
     bail!(
-        "Could not verify this folder. Choose a Fabric 1.21.11 instance folder, or the .minecraft folder containing its launcher profiles."
+        "{}",
+        native_protection::text!(
+            "Could not verify this folder. Choose a Fabric 1.21.11 instance folder, or the .minecraft folder containing its launcher profiles."
+        )
     )
 }
-
 pub fn validate_install_target(launcher: &DetectedLauncher, instance: &GameInstance) -> Result<()> {
-    // Refresh metadata immediately before enrollment and again before writing.
     let effective = instance.host.as_ref().unwrap_or(launcher);
     if let Some(current) = inspected_instances(effective)
         .into_iter()
@@ -302,7 +318,10 @@ pub fn validate_install_target(launcher: &DetectedLauncher, instance: &GameInsta
     }
     let targets = inspect_folder(&instance.game_dir).or_else(|e| {
         let root = prism_instance_root(instance);
-        if root.join("mmc-pack.json").is_file() {
+        if root
+            .join(native_protection::text!("mmc-pack.json"))
+            .is_file()
+        {
             inspect_folder(&root)
         } else {
             Err(e)
@@ -313,18 +332,23 @@ pub fn validate_install_target(launcher: &DetectedLauncher, instance: &GameInsta
     }) {
         Ok(())
     } else {
-        bail!("The selected instance changed. Refresh the instance list before installing.")
+        bail!(
+            "{}",
+            native_protection::text!(
+                "The selected instance changed. Refresh the instance list before installing."
+            )
+        )
     }
 }
-
 const LEGACY_BOOTSTRAPS: [&str; 2] = [
     "296a93f81180ed2821ae53aa5a2d563d7dcff198d2adf4cb9bba2352315808fe",
     "31029b20f974fcfc9fddd0256eceb61073f7eac0127de299348e708b3e7d2dcd",
 ];
-
 fn jar_metadata(bytes: &[u8]) -> Option<Value> {
     let mut jar = zip::ZipArchive::new(Cursor::new(bytes)).ok()?;
-    let mut file = jar.by_name("fabric.mod.json").ok()?;
+    let mut file = jar
+        .by_name(native_protection::text!("fabric.mod.json"))
+        .ok()?;
     if file.size() > 1024 * 1024 {
         return None;
     }
@@ -332,7 +356,6 @@ fn jar_metadata(bytes: &[u8]) -> Option<Value> {
     file.read_to_end(&mut json).ok()?;
     serde_json::from_slice(&json).ok()
 }
-
 fn read_jar(path: &Path) -> Result<Vec<u8>> {
     let file = fs::File::open(path)?;
     if file.metadata()?.len() > 64 * 1024 * 1024 {
@@ -341,11 +364,13 @@ fn read_jar(path: &Path) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     file.take(64 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
     if bytes.len() > 64 * 1024 * 1024 {
-        bail!("JAR changed while inspecting it");
+        bail!(
+            "{}",
+            native_protection::text!("JAR changed while inspecting it")
+        );
     }
     Ok(bytes)
 }
-
 fn backup(path: &Path, bytes: &[u8], backup_dir: &Path) -> Result<()> {
     if fs::read(path)? != bytes {
         bail!(
@@ -357,7 +382,10 @@ fn backup(path: &Path, bytes: &[u8], backup_dir: &Path) -> Result<()> {
     let destination = backup_dir.join(format!("{name}-{}.backup", crate::hex_sha256(bytes)));
     if destination.exists() {
         if fs::read(&destination)? != bytes {
-            bail!("A Celeste migration backup differs; no file was removed");
+            bail!(
+                "{}",
+                native_protection::text!("A Celeste migration backup differs; no file was removed")
+            );
         }
     } else {
         crate::atomic_write(&destination, bytes)?;
@@ -370,7 +398,6 @@ fn backup(path: &Path, bytes: &[u8], backup_dir: &Path) -> Result<()> {
     })?;
     Ok(())
 }
-
 pub fn install_mod(
     launcher: &DetectedLauncher,
     instance: &GameInstance,
@@ -378,23 +405,25 @@ pub fn install_mod(
 ) -> Result<PathBuf> {
     validate_install_target(launcher, instance)?;
     if jar_metadata(bytes)
-        .and_then(|v| v.get("id").cloned())
+        .and_then(|v| v.get(native_protection::text!("id")).cloned())
         .and_then(|v| v.as_str().map(str::to_owned))
         .as_deref()
-        != Some("celeste_bootstrap")
+        != Some(native_protection::text!("celeste_bootstrap"))
     {
         bail!(
-            "The signed download is not the Celeste Fabric bootstrap. Update the installer/server release before installing."
+            "{}",
+            native_protection::text!(
+                "The signed download is not the Celeste Fabric bootstrap. Update the installer/server release before installing."
+            )
         );
     }
     install_verified_mod(&instance.game_dir, bytes)
 }
-
 fn install_verified_mod(game: &Path, bytes: &[u8]) -> Result<PathBuf> {
-    let mods = game.join("mods");
-    let jar = mods.join("Celeste.jar");
-    let config = game.join("config/celeste");
-    let receipt_path = config.join("installer.json");
+    let mods = game.join(native_protection::text!("mods"));
+    let jar = mods.join(native_protection::text!("Celeste.jar"));
+    let config = game.join(native_protection::text!("config/celeste"));
+    let receipt_path = config.join(native_protection::text!("installer.json"));
     let receipt = read_json(&receipt_path).unwrap_or(Value::Null);
     let original_jar = if jar.exists() {
         Some(read_jar(&jar)?)
@@ -402,33 +431,34 @@ fn install_verified_mod(game: &Path, bytes: &[u8]) -> Result<PathBuf> {
         None
     };
     let mut retire = Vec::<(PathBuf, Vec<u8>)>::new();
-    // Only exact published legacy bytes or our verified previous installation
-    // receipt prove ownership. Filenames and mod IDs alone never authorize deletion.
     if let Ok(entries) = fs::read_dir(&mods) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path
                 .extension()
                 .and_then(|e| e.to_str())
-                .is_none_or(|e| !e.eq_ignore_ascii_case("jar"))
+                .is_none_or(|e| !e.eq_ignore_ascii_case(native_protection::text!("jar")))
             {
                 continue;
             }
             if fs::metadata(&path)?.len() > 64 * 1024 * 1024 {
                 let mut archive = zip::ZipArchive::new(fs::File::open(&path)?)
                     .with_context(|| format!("Could not inspect {}", path.display()))?;
-                let id = archive.by_name("fabric.mod.json").ok().and_then(|entry| {
-                    let mut data = Vec::new();
-                    entry.take(1024 * 1024 + 1).read_to_end(&mut data).ok()?;
-                    if data.len() > 1024 * 1024 {
-                        return None;
-                    }
-                    serde_json::from_slice::<Value>(&data)
-                        .ok()?
-                        .get("id")?
-                        .as_str()
-                        .map(str::to_owned)
-                });
+                let id = archive
+                    .by_name(native_protection::text!("fabric.mod.json"))
+                    .ok()
+                    .and_then(|entry| {
+                        let mut data = Vec::new();
+                        entry.take(1024 * 1024 + 1).read_to_end(&mut data).ok()?;
+                        if data.len() > 1024 * 1024 {
+                            return None;
+                        }
+                        serde_json::from_slice::<Value>(&data)
+                            .ok()?
+                            .get(native_protection::text!("id"))?
+                            .as_str()
+                            .map(str::to_owned)
+                    });
                 if path == jar || matches!(id.as_deref(), Some("celeste" | "celeste_bootstrap")) {
                     bail!(
                         "Another unverified Celeste JAR is present at {}",
@@ -441,16 +471,28 @@ fn install_verified_mod(game: &Path, bytes: &[u8]) -> Result<PathBuf> {
             let hash = crate::hex_sha256(&existing);
             let owned = LEGACY_BOOTSTRAPS.contains(&hash.as_str())
                 || (path == jar
-                    && receipt.get("product").and_then(Value::as_str) == Some("celeste")
-                    && ["sha256", "pending_sha256"].iter().any(|key| {
-                        receipt.get(key).and_then(Value::as_str) == Some(hash.as_str())
-                    }));
-            let id = jar_metadata(&existing)
-                .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_owned));
+                    && receipt
+                        .get(native_protection::text!("product"))
+                        .and_then(Value::as_str)
+                        == Some(native_protection::text!("celeste"))
+                    && [
+                        native_protection::text!("sha256"),
+                        native_protection::text!("pending_sha256"),
+                    ]
+                    .iter()
+                    .any(|key| receipt.get(key).and_then(Value::as_str) == Some(hash.as_str())));
+            let id = jar_metadata(&existing).and_then(|v| {
+                v.get(native_protection::text!("id"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+            });
             if path == jar {
                 if existing != bytes && !owned {
                     bail!(
-                        "mods/Celeste.jar already exists and is not a verified Celeste installation. Move it aside before installing."
+                        "{}",
+                        native_protection::text!(
+                            "mods/Celeste.jar already exists and is not a verified Celeste installation. Move it aside before installing."
+                        )
                     );
                 }
             } else if owned {
@@ -463,8 +505,14 @@ fn install_verified_mod(game: &Path, bytes: &[u8]) -> Result<PathBuf> {
             }
         }
     }
-    for name in ["mixinextras-0.5.4.jar", "CelesteLoader.jar"] {
-        for dir in [game.join("natives/runtime-cache"), game.join("natives-tmp")] {
+    for name in [
+        native_protection::text!("mixinextras-0.5.4.jar"),
+        native_protection::text!("CelesteLoader.jar"),
+    ] {
+        for dir in [
+            game.join(native_protection::text!("natives/runtime-cache")),
+            game.join(native_protection::text!("natives-tmp")),
+        ] {
             let path = dir.join(name);
             if path.is_file() {
                 let old = read_jar(&path)?;
@@ -474,19 +522,24 @@ fn install_verified_mod(game: &Path, bytes: &[u8]) -> Result<PathBuf> {
             }
         }
     }
-    let pointer = config.join("mods.dir");
+    let pointer = config.join(native_protection::text!("mods.dir"));
     if pointer.is_file() {
         let old = fs::read(&pointer)?;
         let target = String::from_utf8_lossy(&old).trim().to_owned();
-        if same_path(Path::new(&target), &game.join("natives/runtime-cache")) {
+        if same_path(
+            Path::new(&target),
+            &game.join(native_protection::text!("natives/runtime-cache")),
+        ) {
             retire.push((pointer, old));
         } else {
             bail!(
-                "This instance has a custom Celeste mods.dir entry. Review it before installing to avoid loading duplicate mods."
+                "{}",
+                native_protection::text!(
+                    "This instance has a custom Celeste mods.dir entry. Review it before installing to avoid loading duplicate mods."
+                )
             );
         }
     }
-    // Validate the complete migration before writing anything.
     let root = game.parent().filter(|_| {
         matches!(
             game.file_name().and_then(|n| n.to_str()),
@@ -495,30 +548,49 @@ fn install_verified_mod(game: &Path, bytes: &[u8]) -> Result<PathBuf> {
     });
     let mut pack_edit = None;
     if let Some(root) = root {
-        let patch = root.join("patches/dev.celeste.loader.json");
+        let patch = root.join(native_protection::text!("patches/dev.celeste.loader.json"));
         if patch.is_file() {
             let old = fs::read(&patch)?;
-            let expected = json!({"formatVersion":1,"name":"Celeste","uid":HOOK_UID,"version":"1.0.0","mainClass":HOOK_MAIN,"+libraries":[{"name":HOOK_NAME,"MMC-hint":"local","MMC-filename":"celeste-hook.jar"}]});
+            let expected = json ! ({ (native_protection :: text ! ("formatVersion")) : 1 , (native_protection :: text ! ("name")) : (native_protection :: text ! ("Celeste")) , (native_protection :: text ! ("uid")) : HOOK_UID , (native_protection :: text ! ("version")) : (native_protection :: text ! ("1.0.0")) , (native_protection :: text ! ("mainClass")) : HOOK_MAIN , (native_protection :: text ! ("+libraries")) : [{ (native_protection :: text ! ("name")) : HOOK_NAME , (native_protection :: text ! ("MMC-hint")) : (native_protection :: text ! ("local")) , (native_protection :: text ! ("MMC-filename")) : (native_protection :: text ! ("celeste-hook.jar")) }] });
             if serde_json::from_slice::<Value>(&old)? != expected {
-                bail!("The Celeste Prism component was customized. Review it before installing.");
+                bail!(
+                    "{}",
+                    native_protection::text!(
+                        "The Celeste Prism component was customized. Review it before installing."
+                    )
+                );
             }
-            let path = root.join("mmc-pack.json");
+            let path = root.join(native_protection::text!("mmc-pack.json"));
             let original = fs::read(&path)?;
-            let mut pack: Value =
-                serde_json::from_slice(&original).context("Prism component list is invalid")?;
+            let mut pack: Value = serde_json::from_slice(&original)
+                .context(native_protection::text!("Prism component list is invalid"))?;
             let components = pack
-                .get_mut("components")
+                .get_mut(native_protection::text!("components"))
                 .and_then(Value::as_array_mut)
-                .ok_or_else(|| anyhow!("Prism component list is invalid"))?;
-            components.retain(|v| v.get("uid").and_then(Value::as_str) != Some(HOOK_UID));
+                .ok_or_else(|| {
+                    anyhow!(
+                        "{}",
+                        native_protection::text!("Prism component list is invalid")
+                    )
+                })?;
+            components.retain(|v| {
+                v.get(native_protection::text!("uid"))
+                    .and_then(Value::as_str)
+                    != Some(HOOK_UID)
+            });
             pack_edit = Some((path, original, serde_json::to_vec_pretty(&pack)?));
             retire.push((patch, old));
         }
     }
-    let backup_dir = config.join("installer-backups");
+    let backup_dir = config.join(native_protection::text!("installer-backups"));
     if let Some((path, original, updated)) = pack_edit {
         if fs::read(&path)? != original {
-            bail!("The launcher changed its instance configuration. Close it and retry.");
+            bail!(
+                "{}",
+                native_protection::text!(
+                    "The launcher changed its instance configuration. Close it and retry."
+                )
+            );
         }
         let saved = backup_dir.join(format!(
             "mmc-pack.json-{}.backup",
@@ -531,26 +603,30 @@ fn install_verified_mod(game: &Path, bytes: &[u8]) -> Result<PathBuf> {
         backup(&path, &old, &backup_dir)?;
     }
     if fs::read(&jar).ok() != original_jar {
-        bail!("mods/Celeste.jar changed during installation. Close Minecraft and retry.");
+        bail!(
+            "{}",
+            native_protection::text!(
+                "mods/Celeste.jar changed during installation. Close Minecraft and retry."
+            )
+        );
     }
-    // Write a recovery receipt before the atomic JAR replacement. On a failed
-    // replacement include both hashes so the prior verified JAR stays updateable.
     let old_hash = fs::read(&jar).ok().map(|b| crate::hex_sha256(&b));
     let hash = crate::hex_sha256(bytes);
     crate::atomic_write(
         &receipt_path,
         &serde_json::to_vec_pretty(
-            &json!({"format":1,"product":"celeste","sha256":old_hash.as_deref().unwrap_or(&hash),"pending_sha256":hash}),
+            &json ! ({ (native_protection :: text ! ("format")) : 1 , (native_protection :: text ! ("product")) : (native_protection :: text ! ("celeste")) , (native_protection :: text ! ("sha256")) : old_hash . as_deref () . unwrap_or (& hash) , (native_protection :: text ! ("pending_sha256")) : hash }),
         )?,
     )?;
     crate::atomic_write(&jar, bytes)?;
     crate::atomic_write(
         &receipt_path,
-        &serde_json::to_vec_pretty(&json!({"format":1,"product":"celeste","sha256":hash}))?,
+        &serde_json::to_vec_pretty(
+            &json ! ({ (native_protection :: text ! ("format")) : 1 , (native_protection :: text ! ("product")) : (native_protection :: text ! ("celeste")) , (native_protection :: text ! ("sha256")) : hash }),
+        )?,
     )?;
     Ok(jar)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,7 +646,7 @@ mod tests {
         fn prism(&self) -> InstallTarget {
             let root = self.0.join("instances/Portable profile");
             fs::create_dir_all(&root).unwrap();
-            crate::atomic_write(&root.join("mmc-pack.json"),&serde_json::to_vec(&json!({"formatVersion":1,"components":[{"uid":"net.minecraft","version":"1.21.11"},{"uid":"net.fabricmc.fabric-loader","version":"0.19.3"}]})).unwrap()).unwrap();
+            crate :: atomic_write (& root . join ("mmc-pack.json") , & serde_json :: to_vec (& json ! ({ "formatVersion" : 1 , "components" : [{ "uid" : "net.minecraft" , "version" : "1.21.11" } , { "uid" : "net.fabricmc.fabric-loader" , "version" : "0.19.3" }] })) . unwrap ()) . unwrap () ;
             inspect_folder(&root).unwrap().remove(0)
         }
     }
@@ -584,7 +660,7 @@ mod tests {
         z.start_file("fabric.mod.json", zip::write::SimpleFileOptions::default())
             .unwrap();
         z.write_all(
-            serde_json::to_string(&json!({"id":id,"version":version}))
+            serde_json::to_string(&json ! ({ "id" : id , "version" : version }))
                 .unwrap()
                 .as_bytes(),
         )
@@ -642,11 +718,11 @@ mod tests {
         edit_prism_component(&t.instance, Path::new("unused")).unwrap();
         let pack = root.join("mmc-pack.json");
         let mut value = read_json(&pack).unwrap();
-        value["custom"] = json!({"keep":true});
+        value["custom"] = json ! ({ "keep" : true });
         value["components"]
             .as_array_mut()
             .unwrap()
-            .push(json!({"uid":"other.mod","extra":{"keep":[1,2]}}));
+            .push(json ! ({ "uid" : "other.mod" , "extra" : { "keep" : [1 , 2] } }));
         crate::atomic_write(&pack, &serde_json::to_vec(&value).unwrap()).unwrap();
         let hidden = t.instance.game_dir.join("natives/runtime-cache");
         fs::create_dir_all(&hidden).unwrap();
@@ -724,15 +800,17 @@ mod tests {
     fn official_inheritance_uses_metadata_and_rejects_cycles() {
         let f = Fixture::new();
         let path = f.0.join("versions/fabric-profile/fabric-profile.json");
-        crate::atomic_write(&path,&serde_json::to_vec(&json!({"id":"fabric-profile","inheritsFrom":"1.21.11","libraries":[{"name":"net.fabricmc:fabric-loader:0.19.3"}]})).unwrap()).unwrap();
+        crate :: atomic_write (& path , & serde_json :: to_vec (& json ! ({ "id" : "fabric-profile" , "inheritsFrom" : "1.21.11" , "libraries" : [{ "name" : "net.fabricmc:fabric-loader:0.19.3" }] })) . unwrap ()) . unwrap () ;
         assert_eq!(
             version_metadata(&f.0, "fabric-profile"),
             Some(("1.21.11".into(), "fabric 0.19.3".into()))
         );
         crate::atomic_write(
             &path,
-            &serde_json::to_vec(&json!({"id":"Fabric 1.21.11","inheritsFrom":"fabric-profile"}))
-                .unwrap(),
+            &serde_json::to_vec(
+                &json ! ({ "id" : "Fabric 1.21.11" , "inheritsFrom" : "fabric-profile" }),
+            )
+            .unwrap(),
         )
         .unwrap();
         assert_eq!(version_metadata(&f.0, "fabric-profile"), None);
@@ -744,14 +822,7 @@ mod tests {
         let bytes = jar("celeste_bootstrap", "1");
         let target = install_mod(&t.launcher, &t.instance, &bytes).unwrap();
         let hash = crate::hex_sha256(&bytes);
-        crate::atomic_write(
-            &t.instance.game_dir.join("config/celeste/installer.json"),
-            &serde_json::to_vec(
-                &json!({"format":1,"product":"celeste","sha256":"previous","pending_sha256":hash}),
-            )
-            .unwrap(),
-        )
-        .unwrap();
+        crate :: atomic_write (& t . instance . game_dir . join ("config/celeste/installer.json") , & serde_json :: to_vec (& json ! ({ "format" : 1 , "product" : "celeste" , "sha256" : "previous" , "pending_sha256" : hash }) ,) . unwrap () ,) . unwrap () ;
         let next = jar("celeste_bootstrap", "2");
         install_mod(&t.launcher, &t.instance, &next).unwrap();
         assert_eq!(fs::read(target).unwrap(), next);

@@ -8,6 +8,7 @@ aes-gcm = "0.10"
 anyhow = "1.0"
 base64 = "0.22"
 rand = "0.8"
+native-protection = { path = "../native-protection" }
 
 [[bin]]
 name = "celeste-macos-runtime-check"
