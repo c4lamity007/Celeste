@@ -534,6 +534,7 @@ dependencies = [
  "eframe",
  "hkdf",
  "image",
+ "native-protection",
  "rand 0.8.8",
  "rfd",
  "rusqlite",
@@ -1949,6 +1950,24 @@ dependencies = [
  "strum",
  "thiserror 2.0.20",
  "unicode-ident",
+]
+
+[[package]]
+name = "native-protection"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "native-protection-macros",
+]
+
+[[package]]
+name = "native-protection-macros"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "quote",
+ "rand 0.8.8",
+ "syn 2.0.119",
 ]
 
 [[package]]

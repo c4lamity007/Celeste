@@ -1,18 +1,16 @@
-//! Hardware facts shared with the normal mod's HardwareFingerprint.java.
-//! Keep the source order and fallbacks in this file aligned with that class.
-
-use crate::{canonical, hex_sha256, HardwareProfile};
+#![doc = " Hardware facts shared with the normal mod's HardwareFingerprint.java."]
+#![doc = " Keep the source order and fallbacks in this file aligned with that class."]
+use crate::{HardwareProfile, canonical, hex_sha256};
 use anyhow::Result;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use anyhow::bail;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-
 pub(super) fn collect() -> Result<HardwareProfile> {
     #[cfg(target_os = "linux")]
     {
-        collect_linux(Path::new("/"))
+        collect_linux(Path::new(native_protection::text!("/")))
     }
     #[cfg(target_os = "macos")]
     {
@@ -23,7 +21,6 @@ pub(super) fn collect() -> Result<HardwareProfile> {
         unreachable!("Portable hardware is never collected on Windows")
     }
 }
-
 fn profile(
     system: &[Option<&str>],
     board: &[Option<&str>],
@@ -49,13 +46,11 @@ fn profile(
         monitors,
     }
 }
-
 fn read_text(path: &Path) -> Option<String> {
     let value = fs::read_to_string(path).ok()?;
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_owned())
 }
-
 fn command_text(program: &str, arguments: &[&str]) -> Option<String> {
     let output = Command::new(program).args(arguments).output().ok()?;
     if !output.status.success() {
@@ -65,7 +60,6 @@ fn command_text(program: &str, arguments: &[&str]) -> Option<String> {
     let value = value.trim();
     (!value.is_empty()).then(|| value.to_owned())
 }
-
 fn meaningful(value: Option<&str>) -> bool {
     let Some(value) = value else { return false };
     let value = value.trim().to_ascii_lowercase();
@@ -81,14 +75,14 @@ fn meaningful(value: Option<&str>) -> bool {
         )
         && value.chars().any(|c| c.is_ascii_alphanumeric() && c != '0')
 }
-
 #[cfg(target_os = "linux")]
 fn collect_linux(root: &Path) -> Result<HardwareProfile> {
     let read = |relative: &str| read_text(&root.join(relative));
-    let machine_id = read("etc/machine-id").or_else(|| read("var/lib/dbus/machine-id"));
-    let uuid = read("sys/class/dmi/id/product_uuid");
-    let serial = read("sys/class/dmi/id/product_serial");
-    let board_serial = read("sys/class/dmi/id/board_serial");
+    let machine_id = read(native_protection::text!("etc/machine-id"))
+        .or_else(|| read(native_protection::text!("var/lib/dbus/machine-id")));
+    let uuid = read(native_protection::text!("sys/class/dmi/id/product_uuid"));
+    let serial = read(native_protection::text!("sys/class/dmi/id/product_serial"));
+    let board_serial = read(native_protection::text!("sys/class/dmi/id/board_serial"));
     if ![
         machine_id.as_deref(),
         uuid.as_deref(),
@@ -98,38 +92,60 @@ fn collect_linux(root: &Path) -> Result<HardwareProfile> {
     .into_iter()
     .any(meaningful)
     {
-        bail!("No stable Linux machine identity is available for Celeste activation");
+        bail!(
+            "{}",
+            native_protection::text!(
+                "No stable Linux machine identity is available for Celeste activation"
+            )
+        );
     }
-
-    let board_vendor = read("sys/class/dmi/id/board_vendor");
-    let board_name = read("sys/class/dmi/id/board_name");
-    let board_version = read("sys/class/dmi/id/board_version");
-    let cpuinfo = read("proc/cpuinfo").unwrap_or_default();
-    let vendor = cpuinfo_value(&cpuinfo, &["vendor_id", "CPU implementer"]);
-    let model = cpuinfo_value(&cpuinfo, &["model name", "Processor", "Hardware"]);
-    let arch = command_text("uname", &["-m"]);
-    let edids = fs::read_dir(root.join("sys/class/drm"))
+    let board_vendor = read(native_protection::text!("sys/class/dmi/id/board_vendor"));
+    let board_name = read(native_protection::text!("sys/class/dmi/id/board_name"));
+    let board_version = read(native_protection::text!("sys/class/dmi/id/board_version"));
+    let cpuinfo = read(native_protection::text!("proc/cpuinfo")).unwrap_or_default();
+    let vendor = cpuinfo_value(
+        &cpuinfo,
+        &[
+            native_protection::text!("vendor_id"),
+            native_protection::text!("CPU implementer"),
+        ],
+    );
+    let model = cpuinfo_value(
+        &cpuinfo,
+        &[
+            native_protection::text!("model name"),
+            native_protection::text!("Processor"),
+            native_protection::text!("Hardware"),
+        ],
+    );
+    let arch = command_text(
+        native_protection::text!("uname"),
+        &[native_protection::text!("-m")],
+    );
+    let edids = fs::read_dir(root.join(native_protection::text!("sys/class/drm")))
         .ok()
         .into_iter()
         .flatten()
-        .filter_map(|entry| fs::read(entry.ok()?.path().join("edid")).ok())
+        .filter_map(|entry| {
+            fs::read(entry.ok()?.path().join(native_protection::text!("edid"))).ok()
+        })
         .collect::<Vec<_>>();
     Ok(profile(
         &[
-            Some("linux"),
+            Some(native_protection::text!("linux")),
             machine_id.as_deref(),
             uuid.as_deref(),
             serial.as_deref(),
         ],
         &[
-            Some("linux"),
+            Some(native_protection::text!("linux")),
             board_vendor.as_deref(),
             board_name.as_deref(),
             board_version.as_deref(),
             board_serial.as_deref(),
         ],
         &[
-            Some("linux"),
+            Some(native_protection::text!("linux")),
             vendor.as_deref(),
             model.as_deref(),
             arch.as_deref(),
@@ -137,7 +153,6 @@ fn collect_linux(root: &Path) -> Result<HardwareProfile> {
         edids,
     ))
 }
-
 #[cfg(target_os = "linux")]
 fn cpuinfo_value(text: &str, names: &[&str]) -> Option<String> {
     for name in names {
@@ -152,45 +167,85 @@ fn cpuinfo_value(text: &str, names: &[&str]) -> Option<String> {
     }
     None
 }
-
 #[cfg(target_os = "macos")]
 fn collect_macos() -> Result<HardwareProfile> {
-    let platform =
-        command_text("ioreg", &["-rd1", "-c", "IOPlatformExpertDevice"]).unwrap_or_default();
-    let serial = ioreg_value(&platform, "IOPlatformSerialNumber");
-    let uuid = ioreg_value(&platform, "IOPlatformUUID");
+    let platform = command_text(
+        native_protection::text!("ioreg"),
+        &[
+            native_protection::text!("-rd1"),
+            native_protection::text!("-c"),
+            native_protection::text!("IOPlatformExpertDevice"),
+        ],
+    )
+    .unwrap_or_default();
+    let serial = ioreg_value(
+        &platform,
+        native_protection::text!("IOPlatformSerialNumber"),
+    );
+    let uuid = ioreg_value(&platform, native_protection::text!("IOPlatformUUID"));
     if ![serial.as_deref(), uuid.as_deref()]
         .into_iter()
         .any(meaningful)
     {
-        bail!("No stable macOS machine identity is available for Celeste activation");
+        bail!(
+            "{}",
+            native_protection::text!(
+                "No stable macOS machine identity is available for Celeste activation"
+            )
+        );
     }
-    let model =
-        command_text("sysctl", &["-n", "hw.model"]).or_else(|| ioreg_value(&platform, "model"));
-    let board_id = ioreg_value(&platform, "board-id");
-    let arch = command_text("sysctl", &["-n", "hw.machine"]);
-    let brand = command_text("sysctl", &["-n", "machdep.cpu.brand_string"]);
-    let display =
-        command_text("ioreg", &["-l", "-w0", "-c", "IODisplayConnect"]).unwrap_or_default();
+    let model = command_text(
+        native_protection::text!("sysctl"),
+        &[
+            native_protection::text!("-n"),
+            native_protection::text!("hw.model"),
+        ],
+    )
+    .or_else(|| ioreg_value(&platform, native_protection::text!("model")));
+    let board_id = ioreg_value(&platform, native_protection::text!("board-id"));
+    let arch = command_text(
+        native_protection::text!("sysctl"),
+        &[
+            native_protection::text!("-n"),
+            native_protection::text!("hw.machine"),
+        ],
+    );
+    let brand = command_text(
+        native_protection::text!("sysctl"),
+        &[
+            native_protection::text!("-n"),
+            native_protection::text!("machdep.cpu.brand_string"),
+        ],
+    );
+    let display = command_text(
+        native_protection::text!("ioreg"),
+        &[
+            native_protection::text!("-l"),
+            native_protection::text!("-w0"),
+            native_protection::text!("-c"),
+            native_protection::text!("IODisplayConnect"),
+        ],
+    )
+    .unwrap_or_default();
     let edids = display
         .lines()
-        .filter_map(|line| ioreg_hex_value(line, "IODisplayEDID"))
+        .filter_map(|line| ioreg_hex_value(line, native_protection::text!("IODisplayEDID")))
         .collect::<Vec<_>>();
     Ok(profile(
         &[
-            Some("macos"),
+            Some(native_protection::text!("macos")),
             serial.as_deref(),
             uuid.as_deref(),
             model.as_deref(),
         ],
         &[
-            Some("macos"),
+            Some(native_protection::text!("macos")),
             board_id.as_deref(),
             model.as_deref(),
             serial.as_deref(),
         ],
         &[
-            Some("macos"),
+            Some(native_protection::text!("macos")),
             arch.as_deref(),
             brand.as_deref(),
             model.as_deref(),
@@ -198,7 +253,6 @@ fn collect_macos() -> Result<HardwareProfile> {
         edids,
     ))
 }
-
 fn ioreg_value(text: &str, name: &str) -> Option<String> {
     let prefix = format!("\"{name}\"");
     for line in text.lines() {
@@ -220,7 +274,6 @@ fn ioreg_value(text: &str, name: &str) -> Option<String> {
     }
     None
 }
-
 fn ioreg_hex_value(line: &str, name: &str) -> Option<Vec<u8>> {
     let value = ioreg_value(line, name)?;
     let value = value.strip_prefix('<')?.strip_suffix('>')?;
@@ -236,11 +289,9 @@ fn ioreg_hex_value(line: &str, name: &str) -> Option<Vec<u8>> {
         .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).ok())
         .collect()
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn profile_has_server_shape_and_stable_monitor_fallback() {
         let profile = profile(
@@ -253,7 +304,6 @@ mod tests {
         assert_eq!(profile.board.len(), 64);
         assert_eq!(profile.processor.len(), 64);
     }
-
     #[test]
     fn rust_and_java_fixture_hashes_match() {
         let edid = (0..128).map(|byte| byte as u8).collect::<Vec<_>>();
@@ -296,7 +346,6 @@ mod tests {
             vec!["471fb943aa23c511f6f72f8d1652d9c880cfa392ad80503120547703e56a2be5"]
         );
     }
-
     #[test]
     fn parses_ioreg_quoted_and_binary_values() {
         let input = "| | \"IOPlatformUUID\" = \"abc-def\"\n| | \"board-id\" = <414243>";

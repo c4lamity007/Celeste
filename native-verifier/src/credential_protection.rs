@@ -1,6 +1,5 @@
-//! Current-user DPAPI protection and a credential-free persistence preflight.
-//! Keep this implementation identical in the standard and Celeste+ launchers.
-
+#![doc = " Current-user DPAPI protection and a credential-free persistence preflight."]
+#![doc = " Keep this implementation identical in the standard and Celeste+ launchers."]
 use anyhow::{Context, Result, anyhow, bail};
 use rand::{RngCore, rngs::OsRng};
 use std::fs::{self, OpenOptions};
@@ -11,14 +10,10 @@ use winapi::shared::minwindef::DWORD;
 use winapi::um::dpapi::{CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData};
 use winapi::um::winbase::LocalFree;
 use winapi::um::wincrypt::DATA_BLOB;
-
-// Credentials and launch tickets are small. Bound both allocations and Win32's
-// DWORD conversion, allowing ample room for DPAPI's protected-envelope overhead.
 const MAX_PLAINTEXT_BYTES: usize = 1024 * 1024;
 const MAX_PROTECTED_BYTES: usize = MAX_PLAINTEXT_BYTES + 64 * 1024;
-
-/// Kept typed so callers can distinguish a local Windows protection failure
-/// from a missing binding or a server rejection. Never contains credential data.
+#[doc = " Kept typed so callers can distinguish a local Windows protection failure"]
+#[doc = " from a missing binding or a server rejection. Never contains credential data."]
 #[derive(Debug)]
 pub(crate) struct ProtectionError {
     operation: &'static str,
@@ -26,7 +21,6 @@ pub(crate) struct ProtectionError {
     os_error: io::Error,
     profile_diagnostics: Option<String>,
 }
-
 impl std::fmt::Display for ProtectionError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -52,55 +46,64 @@ impl std::fmt::Display for ProtectionError {
         Ok(())
     }
 }
-
 impl std::error::Error for ProtectionError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         Some(&self.os_error)
     }
 }
-
 #[derive(Clone, Copy)]
 enum Operation {
     Protect,
     Unprotect,
 }
-
 impl Operation {
     fn description(self) -> (&'static str, &'static str) {
         match self {
-            Self::Protect => ("CryptProtectData", "protect"),
-            Self::Unprotect => ("CryptUnprotectData", "open"),
+            Self::Protect => (
+                native_protection::text!("CryptProtectData"),
+                native_protection::text!("protect"),
+            ),
+            Self::Unprotect => (
+                native_protection::text!("CryptUnprotectData"),
+                native_protection::text!("open"),
+            ),
         }
     }
 }
-
 fn checked_length(length: usize, limit: usize) -> Result<DWORD> {
-    let win32_length = DWORD::try_from(length)
-        .map_err(|_| anyhow!("Credential data exceeds the Windows DPAPI length limit"))?;
+    let win32_length = DWORD::try_from(length).map_err(|_| {
+        anyhow!(
+            "{}",
+            native_protection::text!("Credential data exceeds the Windows DPAPI length limit")
+        )
+    })?;
     if length == 0 || length > limit {
-        bail!("Credential data is empty or exceeds the supported size bounds");
+        bail!(
+            "{}",
+            native_protection::text!(
+                "Credential data is empty or exceeds the supported size bounds"
+            )
+        );
     }
     Ok(win32_length)
 }
-
-/// Owns only a buffer returned by a successful DPAPI operation. The OS owns the
-/// allocation mechanism, so neither Vec::from_raw_parts nor Rust deallocation
-/// may be used for this pointer.
+#[doc = " Owns only a buffer returned by a successful DPAPI operation. The OS owns the"]
+#[doc = " allocation mechanism, so neither Vec::from_raw_parts nor Rust deallocation"]
+#[doc = " may be used for this pointer."]
 struct DpapiBuffer(DATA_BLOB);
-
 impl DpapiBuffer {
     fn copy(&self, limit: usize) -> Result<Vec<u8>> {
         let length = self.0.cbData as usize;
         checked_length(length, limit)?;
         if self.0.pbData.is_null() {
-            bail!("Windows DPAPI returned an invalid output buffer");
+            bail!(
+                "{}",
+                native_protection::text!("Windows DPAPI returned an invalid output buffer")
+            );
         }
-        // A successful DPAPI call owns `cbData` initialized bytes at `pbData`.
-        // Validate non-null/nonempty/bounded output before constructing a slice.
         Ok(unsafe { std::slice::from_raw_parts(self.0.pbData, length) }.to_vec())
     }
 }
-
 impl Drop for DpapiBuffer {
     fn drop(&mut self) {
         if !self.0.pbData.is_null() {
@@ -110,7 +113,6 @@ impl Drop for DpapiBuffer {
         }
     }
 }
-
 fn transform(value: &[u8], operation: Operation) -> Result<Vec<u8>> {
     let (input_limit, output_limit) = match operation {
         Operation::Protect => (MAX_PLAINTEXT_BYTES, MAX_PROTECTED_BYTES),
@@ -118,8 +120,6 @@ fn transform(value: &[u8], operation: Operation) -> Result<Vec<u8>> {
     };
     let mut input = DATA_BLOB {
         cbData: checked_length(value.len(), input_limit)?,
-        // The API declares BYTE*, but documents pDataIn as input-only. The
-        // borrowed slice remains alive and unchanged for the entire call.
         pbData: value.as_ptr() as *mut u8,
     };
     let mut output = DATA_BLOB {
@@ -149,8 +149,6 @@ fn transform(value: &[u8], operation: Operation) -> Result<Vec<u8>> {
         }
     };
     if result == 0 {
-        // Capture before formatting, allocation, cleanup, or any other Win32
-        // operation can replace the calling thread's last-error value.
         let os_error = io::Error::last_os_error();
         let profile_diagnostics = (os_error.raw_os_error() == Some(3))
             .then(crate::windows_profile::current_profile_diagnostics);
@@ -163,29 +161,26 @@ fn transform(value: &[u8], operation: Operation) -> Result<Vec<u8>> {
         }
         .into());
     }
-    // On failure the output is unspecified. Only take ownership on success.
     DpapiBuffer(output).copy(output_limit)
 }
-
 pub(crate) fn protect(value: &[u8]) -> Result<Vec<u8>> {
     transform(value, Operation::Protect)
 }
-
 pub(crate) fn unprotect(value: &[u8]) -> Result<Vec<u8>> {
     transform(value, Operation::Unprotect)
 }
-
-/// The path is owned only after a successful create_new reservation. Cleanup
-/// never enumerates files, touches an activation filename, or removes a folder.
+#[doc = " The path is owned only after a successful create_new reservation. Cleanup"]
+#[doc = " never enumerates files, touches an activation filename, or removes a folder."]
 struct ProbeFile(Option<PathBuf>);
-
 impl ProbeFile {
     fn reserve(directory: &Path) -> Result<Self> {
         for _ in 0..32 {
             let mut random = [0u8; 16];
             OsRng
                 .try_fill_bytes(&mut random)
-                .context("Windows randomness is unavailable for the storage check")?;
+                .context(native_protection::text!(
+                    "Windows randomness is unavailable for the storage check"
+                ))?;
             let suffix: String = random.iter().map(|byte| format!("{byte:02x}")).collect();
             let path = directory.join(format!(
                 ".celeste-storage-check-{}-{suffix}.probe",
@@ -198,17 +193,22 @@ impl ProbeFile {
                 }
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(error) => {
-                    return Err(error).context("Could not reserve an activation storage probe");
+                    return Err(error).context(native_protection::text!(
+                        "Could not reserve an activation storage probe"
+                    ));
                 }
             }
         }
-        bail!("Could not reserve a unique activation storage probe")
+        bail!(
+            "{}",
+            native_protection::text!("Could not reserve a unique activation storage probe")
+        )
     }
-
     fn path(&self) -> &Path {
-        self.0.as_deref().expect("owned probe before cleanup")
+        self.0
+            .as_deref()
+            .expect(native_protection::text!("owned probe before cleanup"))
     }
-
     fn remove(&mut self) -> io::Result<()> {
         if let Some(path) = &self.0 {
             match fs::remove_file(path) {
@@ -221,44 +221,59 @@ impl ProbeFile {
         Ok(())
     }
 }
-
 impl Drop for ProbeFile {
     fn drop(&mut self) {
-        // Also runs on read, validation, and write errors. Explicit successful-
-        // path cleanup reports errors; Drop retries only this exact owned path.
         let _ = self.remove();
     }
 }
-
-/// Call before a new remote enrollment. Checks current-user DPAPI and the same
-/// atomic persistence/readback path used for credentials, using random nonsecret
-/// bytes only. This never reads, replaces, or removes an existing activation.
+#[doc = " Call before a new remote enrollment. Checks current-user DPAPI and the same"]
+#[doc = " atomic persistence/readback path used for credentials, using random nonsecret"]
+#[doc = " bytes only. This never reads, replaces, or removes an existing activation."]
 pub(crate) fn preflight(directory: &Path) -> Result<()> {
     if !directory.is_absolute() {
-        bail!("Activation storage check requires an absolute Windows directory");
+        bail!(
+            "{}",
+            native_protection::text!(
+                "Activation storage check requires an absolute Windows directory"
+            )
+        );
     }
-    // Resolve redirected current-account AppData and let Windows prepare its
-    // known folders before DPAPI needs the profile's Roaming AppData path.
     let _folders = crate::windows_profile::prepare_current_user_folders()?;
     let mut sample = [0u8; 64];
     OsRng
         .try_fill_bytes(&mut sample)
-        .context("Windows randomness is unavailable for the protection check")?;
+        .context(native_protection::text!(
+            "Windows randomness is unavailable for the protection check"
+        ))?;
     let protected = protect(&sample)?;
     if unprotect(&protected)? != sample {
-        bail!("Windows credential protection did not pass its round-trip check");
+        bail!(
+            "{}",
+            native_protection::text!(
+                "Windows credential protection did not pass its round-trip check"
+            )
+        );
     }
-    fs::create_dir_all(directory)
-        .context("Could not create the activation storage directory; enrollment was not started")?;
+    fs::create_dir_all(directory).context(native_protection::text!(
+        "Could not create the activation storage directory; enrollment was not started"
+    ))?;
     let mut probe = ProbeFile::reserve(directory)?;
     let result = (|| -> Result<()> {
         crate::atomic_store::atomic_write(probe.path(), &protected).context(
-            "Could not persist the activation storage check; enrollment was not started",
+            native_protection::text!(
+                "Could not persist the activation storage check; enrollment was not started"
+            ),
         )?;
-        let stored =
-            fs::read(probe.path()).context("Could not read the activation storage check")?;
+        let stored = fs::read(probe.path()).context(native_protection::text!(
+            "Could not read the activation storage check"
+        ))?;
         if stored != protected || unprotect(&stored)? != sample {
-            bail!("The activation storage check did not preserve its protected data");
+            bail!(
+                "{}",
+                native_protection::text!(
+                    "The activation storage check did not preserve its protected data"
+                )
+            );
         }
         Ok(())
     })();
@@ -266,21 +281,18 @@ pub(crate) fn preflight(directory: &Path) -> Result<()> {
     match (result, cleanup) {
         (Ok(()), Ok(())) => Ok(()),
         (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(error)) => {
-            Err(error).context("Could not remove the temporary activation storage check")
-        }
+        (Ok(()), Err(error)) => Err(error).context(native_protection::text!(
+            "Could not remove the temporary activation storage check"
+        )),
         (Err(error), Err(cleanup_error)) => Err(error.context(format!(
             "The temporary activation storage check also could not be removed: {cleanup_error}"
         ))),
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
     struct TestDirectory(PathBuf);
-
     impl TestDirectory {
         fn new() -> Self {
             for _ in 0..32 {
@@ -300,10 +312,8 @@ mod tests {
             panic!("Could not reserve a fixture directory");
         }
     }
-
     impl Drop for TestDirectory {
         fn drop(&mut self) {
-            // The tests create direct fixture files only. No recursive cleanup.
             if let Ok(entries) = fs::read_dir(&self.0) {
                 for entry in entries.flatten() {
                     let _ = fs::remove_file(entry.path());
@@ -312,7 +322,6 @@ mod tests {
             let _ = fs::remove_dir(&self.0);
         }
     }
-
     #[test]
     fn nonsecret_fixture_round_trips_for_the_current_windows_user() {
         let fixture = b"Celeste DPAPI fixture: not a license, key, token, or credential";
@@ -320,7 +329,6 @@ mod tests {
         assert_ne!(protected, fixture);
         assert_eq!(unprotect(&protected).unwrap(), fixture);
     }
-
     #[test]
     fn corrupted_and_invalid_protected_envelopes_are_rejected() {
         let mut protected = protect(b"nonsecret corruption fixture").unwrap();
@@ -331,7 +339,6 @@ mod tests {
         let error = unprotect(b"not a Windows DPAPI envelope").unwrap_err();
         assert!(error.downcast_ref::<ProtectionError>().is_some());
     }
-
     #[test]
     fn empty_and_oversize_input_is_rejected_before_calling_windows() {
         assert!(protect(&[]).is_err());
@@ -342,7 +349,6 @@ mod tests {
             assert!(checked_length(too_large, usize::MAX).is_err());
         }
     }
-
     #[test]
     fn null_and_empty_output_is_rejected_without_forming_a_slice() {
         let empty = DpapiBuffer(DATA_BLOB {
@@ -356,7 +362,6 @@ mod tests {
         });
         assert!(invalid.copy(MAX_PLAINTEXT_BYTES).is_err());
     }
-
     #[test]
     fn windows_error_keeps_numeric_code_and_safe_recovery_advice() {
         let error = ProtectionError {
@@ -371,7 +376,6 @@ mod tests {
         assert!(detail.contains("normal signed-in Windows account"));
         assert!(detail.contains("Do not delete saved activation files"));
     }
-
     #[test]
     fn missing_path_error_explains_profile_recovery_without_exposing_credentials() {
         let error = ProtectionError {
@@ -386,7 +390,6 @@ mod tests {
         assert!(text.contains("same Windows account"));
         assert!(text.contains("fixture path (missing)"));
     }
-
     #[test]
     fn writable_preflight_leaves_existing_files_unchanged_and_removes_probe() {
         let directory = TestDirectory::new();
@@ -396,7 +399,6 @@ mod tests {
         assert_eq!(fs::read(&existing).unwrap(), b"existing nonsecret fixture");
         assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 1);
     }
-
     #[test]
     fn blocked_directory_preflight_preserves_the_blocking_file() {
         let directory = TestDirectory::new();
@@ -406,7 +408,6 @@ mod tests {
         assert_eq!(fs::read(&blocked).unwrap(), b"nonsecret blocking fixture");
         assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 1);
     }
-
     #[test]
     fn probe_guard_cleans_up_after_an_early_failure() {
         let directory = TestDirectory::new();
@@ -420,7 +421,6 @@ mod tests {
         assert!(!path.exists());
         assert_eq!(fs::read_dir(&directory.0).unwrap().count(), 0);
     }
-
     #[test]
     fn relative_preflight_path_is_rejected_without_creating_a_directory() {
         assert!(preflight(Path::new("relative-storage-probe")).is_err());
