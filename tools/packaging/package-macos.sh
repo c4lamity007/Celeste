@@ -19,7 +19,7 @@ install -m 755 native-verifier/target/release/CelesteLauncher dist/Celeste.app/C
 /usr/libexec/PlistBuddy -c 'Add :CFBundleDisplayName string Celeste' dist/Celeste.app/Contents/Info.plist
 /usr/libexec/PlistBuddy -c 'Add :CFBundlePackageType string APPL' dist/Celeste.app/Contents/Info.plist
 /usr/libexec/PlistBuddy -c 'Add :CFBundleShortVersionString string 1.0.0' dist/Celeste.app/Contents/Info.plist
-/usr/libexec/PlistBuddy -c 'Add :CFBundleVersion string 20260919.3' dist/Celeste.app/Contents/Info.plist
+/usr/libexec/PlistBuddy -c 'Add :CFBundleVersion string 20260920.1' dist/Celeste.app/Contents/Info.plist
 /usr/libexec/PlistBuddy -c 'Add :LSMinimumSystemVersion string 11.0' dist/Celeste.app/Contents/Info.plist
 /usr/libexec/PlistBuddy -c 'Add :NSHighResolutionCapable bool true' dist/Celeste.app/Contents/Info.plist
 /usr/libexec/PlistBuddy -c 'Add :CFBundleIconFile string Celeste.icns' dist/Celeste.app/Contents/Info.plist

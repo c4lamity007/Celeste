@@ -37,6 +37,11 @@ impl SetupState {
     fn allows_download(self) -> bool {
         self == Self::Ready
     }
+    fn footer_label(self) -> Option<&'static str> {
+        self.allows_download().then_some(native_protection::text!(
+            "Fabric 1.21.11 · Move the JAR yourself"
+        ))
+    }
     fn primary_label(self, busy: bool) -> &'static str {
         match self {
             Self::Checking => native_protection::text!("Checking activation..."),
@@ -119,10 +124,8 @@ impl LauncherApp {
             let event = match crate::verify_activation(license) {
                 Ok(Some(credential)) => UiEvent::ActivationVerified(credential),
                 Ok(None) => UiEvent::ActivationRequired(
-                    native_protection::text!(
-                        "Enter your Celeste or Both license to activate this computer."
-                    )
-                    .into(),
+                    native_protection::text!("Enter your license to activate this computer.")
+                        .into(),
                 ),
                 Err(error) if crate::activation_key_required(&error) => {
                     UiEvent::ActivationRequired(format!("{error:#}"))
@@ -274,10 +277,8 @@ impl LauncherApp {
                 {
                     self.setup = SetupState::NeedsKey;
                     self.credential = None;
-                    self.status = native_protection::text!(
-                        "Enter the Celeste or Both license you want to use."
-                    )
-                    .into();
+                    self.status =
+                        native_protection::text!("Enter the license you want to use.").into();
                     self.status_color = MUTED;
                 }
             });
@@ -297,8 +298,7 @@ impl LauncherApp {
                 .clicked()
             {
                 self.setup = SetupState::NeedsKey;
-                self.status =
-                    native_protection::text!("Enter your Celeste or Both license.").into();
+                self.status = native_protection::text!("Enter your license.").into();
                 self.status_color = MUTED;
             }
         } else {
@@ -311,7 +311,7 @@ impl LauncherApp {
                 self.setup == SetupState::NeedsKey && !self.busy,
                 TextEdit::singleline(&mut self.license)
                     .password(true)
-                    .hint_text(native_protection::text!("Celeste or Both license"))
+                    .hint_text(native_protection::text!("Enter License Here"))
                     .desired_width(ui.available_width()),
             );
             if response.lost_focus()
@@ -404,7 +404,11 @@ impl eframe::App for LauncherApp {
                                 );
                             });
                             ui.add_space(10.0);
-                            let footer_h = 67.0;
+                            let footer_h = if self.setup.allows_download() {
+                                67.0
+                            } else {
+                                44.0
+                            };
                             let body_h = (ui.available_height() - footer_h - 8.0).max(60.0);
                             egui::ScrollArea::vertical()
                                 .id_salt(native_protection::text!("celeste-install-body"))
@@ -412,17 +416,9 @@ impl eframe::App for LauncherApp {
                                 .max_height(body_h)
                                 .show(ui, |ui| self.body(ui));
                             ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
-                                ui.label(
-                                    RichText::new(if self.setup.allows_download() {
-                                        native_protection::text!(
-                                            "Fabric 1.21.11 · Move the JAR yourself"
-                                        )
-                                    } else {
-                                        native_protection::text!("Celeste / Both license required")
-                                    })
-                                    .size(11.0)
-                                    .color(MUTED),
-                                );
+                                if let Some(label) = self.setup.footer_label() {
+                                    ui.label(RichText::new(label).size(11.0).color(MUTED));
+                                }
                                 let enabled = self.setup.primary_enabled(
                                     self.busy,
                                     self.discovering,
@@ -563,6 +559,21 @@ pub fn launch_gui() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn activation_screens_have_no_license_requirement_footer() {
+        for state in [
+            SetupState::Checking,
+            SetupState::Activating,
+            SetupState::NeedsKey,
+            SetupState::Retry,
+        ] {
+            assert_eq!(state.footer_label(), None);
+        }
+        assert_eq!(
+            SetupState::Ready.footer_label(),
+            Some("Fabric 1.21.11 · Move the JAR yourself")
+        );
+    }
     #[test]
     fn all_unverified_states_hide_folder_selection_and_download() {
         for state in [
