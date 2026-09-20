@@ -6,7 +6,8 @@ Run from the repository root with the auth-service Python environment:
 
 This uses no environment settings, actual credentials, database, or network.
 Only temporary synthetic artifact files are written; stdout is the vector.
-The deterministic seed below is PUBLIC TEST MATERIAL, never a deployment key.
+The deterministic seeds below are PUBLIC TEST MATERIAL, never deployment keys.
+The installation seed is emitted solely so clients can create offline proofs.
 """
 from __future__ import annotations
 
@@ -24,6 +25,8 @@ sys.path.insert(0, str(REPOSITORY / "auth-service"))
 
 from starlette.requests import Request  # noqa: E402
 from fastapi import HTTPException  # noqa: E402
+from cryptography.hazmat.primitives import serialization  # noqa: E402
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: E402
 
 from app.beta_delivery import (  # noqa: E402
     ARTIFACT_FILENAMES,
@@ -81,6 +84,14 @@ class FixtureEntitledRecord:
 def generate() -> dict:
     # A reproducible public test seed, not a credential and never emitted.
     signer = GrantSigner(hashlib.sha256(b"CELESTE PUBLIC OFFLINE GOLDEN TEST SEED v1").digest())
+    # This public, deterministic installation seed exists only for offline proof checks.
+    installation_seed = hashlib.sha256(b"CELESTE PUBLIC OFFLINE DPOP INSTALLATION SEED v1").digest()
+    installation_key = Ed25519PrivateKey.from_private_bytes(installation_seed)
+    installation_public = installation_key.public_key().public_bytes(
+        serialization.Encoding.Raw, serialization.PublicFormat.Raw
+    )
+    jwk = {"crv": "Ed25519", "kty": "OKP", "x": b64e(installation_public)}
+    confirmation = {"jkt": b64e(hashlib.sha256(canonical_json(jwk)).digest())}
     artifact_bytes = {
         artifact_id: b"CELESTE OFFLINE FIXTURE ONLY\x00" + artifact_id.encode("ascii") + b"\n\xff"
         for artifact_id in ARTIFACT_ROLES
@@ -100,6 +111,7 @@ def generate() -> dict:
         "iat": NOW - 30,
         "nbf": NOW - 35,
         "exp": NOW + 600,
+        "cnf": confirmation,
     }
     installer_token = signer.sign(installer_claims)
     with tempfile.TemporaryDirectory(prefix="celeste-offline-golden-") as temporary:
@@ -155,7 +167,7 @@ def generate() -> dict:
                 "type": "http", "method": "GET", "scheme": "https",
                 "path": "/v1/beta/manifest", "query_string": b"",
                 "server": ("offline.invalid", 443), "client": ("127.0.0.1", 0),
-                "headers": [(b"authorization", f"Bearer {token}".encode("ascii"))],
+                "headers": [(b"authorization", f"DPoP {token}".encode("ascii"))],
             })
         # Direct endpoint invocation, not TestClient, HTTP, or an actual server.
         with patch("time.time", return_value=NOW):
@@ -198,6 +210,8 @@ def generate() -> dict:
             "fixture_schema": "celeste-beta-delivery-golden-1",
             "now": NOW,
             "public_key": signer.public_key_b64(),
+            "installation_test_seed": b64e(installation_seed),
+            "installation_public_key": b64e(installation_public),
             "expected_uid": LICENSE_UID,
             "expected_device": DEVICE,
             "installer_token": installer_token,

@@ -12,13 +12,14 @@ public final class GatewayBridge {
     private static final String[] STAGE_TWO_CONTRACT = {
         "baseUrl", "serverKey", "releaseId", "releaseDigest", "clientVersion",
         "deviceId", "uid", "gameUuid", "gameName", "hardwareJson",
-        "signInstall", "signToken", "contextProof"
+        "signInstall", "signToken", "contextProof", "dpopProof", "dpopThumbprint"
     };
 
     private final AuthConfig config;
     private final InstallCredential credential;
     private final HardwareFingerprint hardware;
     private final GameIdentity identity;
+    private DpopProofSigner proofSigner;
 
     GatewayBridge(
         AuthConfig config,
@@ -91,5 +92,22 @@ public final class GatewayBridge {
         byte[] message = ("celeste-stage-bridge-v1\n" + credential.deviceId() + "\n"
             + config.releaseId() + "\n" + config.releaseDigest()).getBytes(StandardCharsets.UTF_8);
         return Crypto.b64(Crypto.sign(credential.tokenKey(), message));
+    }
+
+    public String dpopThumbprint() throws Exception { return signer().thumbprint(); }
+
+    public String dpopProof(String method, String url, String grant) throws Exception {
+        java.net.URI endpoint = java.net.URI.create(url), base = config.baseUri();
+        if (!"https".equalsIgnoreCase(endpoint.getScheme()) || endpoint.getRawUserInfo() != null
+            || !base.getHost().equalsIgnoreCase(endpoint.getHost())
+            || (base.getPort() < 0 ? 443 : base.getPort()) != (endpoint.getPort() < 0 ? 443 : endpoint.getPort())) {
+            throw new SecurityException("Refusing to sign a request outside the authentication origin");
+        }
+        return signer().proof(method, endpoint, grant);
+    }
+
+    private synchronized DpopProofSigner signer() throws Exception {
+        if (proofSigner == null) proofSigner = new AuthServiceClient(config, identity).bindCredential(credential);
+        return proofSigner;
     }
 }

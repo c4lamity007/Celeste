@@ -51,6 +51,7 @@ public final class BootstrapACheck {
     public static void main(String[] args) throws Exception {
         if (args.length != 1) throw new IllegalArgumentException("Expected isolated fixture output directory");
         plusProtocolBoundary();
+        dev.c4lam.celeste.beta.delivery.RuntimeInstallationSignerCheck.run();
         interactionApiPresence();
         classIdentity();
         archive();

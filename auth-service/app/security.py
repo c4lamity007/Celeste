@@ -115,18 +115,22 @@ class GrantSigner:
 
     def verify(self, token: str) -> dict[str, Any] | None:
         try:
+            if not isinstance(token, str) or not 1 <= len(token) <= 16384:
+                return None
             first, second, signature = token.split(".", 2)
             signed = f"{first}.{second}".encode("ascii")
             self._private.public_key().verify(b64d(signature, 64), signed)
             header = json.loads(b64d(first))
             claims = json.loads(b64d(second))
+            if not isinstance(header, dict) or not isinstance(claims, dict):
+                return None
             now = int(time.time())
             if header.get("alg") != "EdDSA" or header.get("typ") != "CST":
                 return None
             if int(claims.get("nbf", 0)) > now + 5 or int(claims.get("exp", 0)) <= now:
                 return None
             return claims
-        except (ValueError, TypeError, InvalidSignature, json.JSONDecodeError):
+        except (ValueError, TypeError, InvalidSignature, json.JSONDecodeError, UnicodeError, OverflowError, RecursionError):
             return None
 
 

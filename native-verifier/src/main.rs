@@ -1,17 +1,28 @@
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod atomic_store;
 pub(crate) use atomic_store::atomic_write;
 mod bindings;
+#[path = "../../shared-auth/dpop.rs"]
+mod dpop;
+#[cfg(windows)]
 mod credential_protection;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+#[path = "portable_credential_protection.rs"]
+mod credential_protection;
+mod folder_delivery;
+#[cfg(windows)]
 mod launchers;
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+mod portable_hardware;
 mod release;
 mod ui;
+mod user_profile;
+#[cfg(windows)]
 mod windows_profile;
 
-pub(crate) const SETUP_BUILD: &str = "20260908.1";
+pub(crate) const SETUP_BUILD: &str = "20260920.2";
 
-use crate::launchers::{DetectedLauncher, GameInstance};
 use crate::ui::UiEvent;
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -30,8 +41,11 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+#[cfg(windows)]
 use winreg::RegKey;
+#[cfg(windows)]
 use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
+#[cfg(windows)]
 use wmi::{COMLibrary, WMIConnection};
 use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
 
@@ -61,6 +75,7 @@ struct HardwareProfile {
     monitors: Vec<String>,
 }
 
+#[cfg(windows)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct ComputerSystem {
@@ -68,18 +83,21 @@ struct ComputerSystem {
     model: Option<String>,
 }
 
+#[cfg(windows)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct ComputerProduct {
     uuid: Option<String>,
 }
 
+#[cfg(windows)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct Bios {
     serial_number: Option<String>,
 }
 
+#[cfg(windows)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct BaseBoard {
@@ -89,6 +107,7 @@ struct BaseBoard {
     serial_number: Option<String>,
 }
 
+#[cfg(windows)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 struct Processor {
@@ -123,39 +142,34 @@ fn main() {
     }
 }
 
-pub(crate) fn verify_and_install(
+pub(crate) fn verify_and_download(
     credential: InstallCredential,
-    launcher: DetectedLauncher,
-    instance: GameInstance,
+    folder: PathBuf,
     tx: &mpsc::Sender<UiEvent>,
-) -> Result<()> {
+) -> Result<PathBuf> {
     let send = |message: &str| {
         let _ = tx.send(UiEvent::Status(message.to_owned()));
     };
-    launchers::validate_install_target(&launcher, &instance)?;
+    let folder = folder_delivery::validate_folder(&folder)?;
     send("Authenticating");
-    let runtime_stored = runtime_credential_path(&instance.game_dir);
     let hardware = collect_hardware()?;
     // Setup does not authorize delivery. Recheck the exact selected identity
-    // with a new server challenge immediately before every installation.
+    // with a new server challenge immediately before every download.
     let session = authenticate_installer(&credential, &hardware, None)?;
-    persist_binding(&instance.game_dir, &credential)?;
+    persist_user_binding(&credential)?;
 
     send("Downloading");
     let loader = get_bytes(
         required_text(&session, "/bootstrap/url")?,
-        Some(required_text(&session, "/grant")?),
+        required_text(&session, "/grant")?,
+        &signing_key(&credential.signing_private)?,
     )?;
     let expected = required_text(&session, "/bootstrap/sha256")?.to_ascii_lowercase();
     require_digest(&loader, &expected)?;
-    send("Installing");
-    // The bootstrap and every remote stage perform their own signed challenge.
-    // Give them the same DPAPI-bound credential only after the native verifier
-    // has completed its independent authentication and verified the bootstrap.
-    save_credential(&runtime_stored, &credential)?;
-    let _jar = launchers::install_mod(&launcher, &instance, &loader)?;
-    send("Installed. Open this instance in your launcher.");
-    Ok(())
+    send("Saving Celeste.jar");
+    // The movable bootstrap reads the selected activation from the current
+    // user's shared cache. The chosen destination receives only the JAR.
+    folder_delivery::save_mod(&folder, &loader)
 }
 
 fn license_looks_valid(license: &str) -> bool {
@@ -280,6 +294,7 @@ fn credential_candidates(game_dir: &Path) -> Vec<bindings::Candidate> {
             add(path, false);
         }
     }
+    #[cfg(windows)]
     for launcher in launchers::detect_installed() {
         for instance in launchers::list_instances(&launcher) {
             add(credential_path(&instance.game_dir), false);
@@ -298,14 +313,8 @@ fn credential_candidates(game_dir: &Path) -> Vec<bindings::Candidate> {
     candidates
 }
 
-fn persist_binding(game_dir: &Path, credential: &InstallCredential) -> Result<()> {
-    persist_user_binding(credential)?;
-    save_credential(&credential_path(game_dir), credential)
-        .context("Could not save activation for the selected Minecraft instance")
-}
-
 fn required_user_binding_dir() -> Result<PathBuf> {
-    Ok(windows_profile::current_local_app_data()?
+    Ok(user_profile::current_local_app_data()?
         .join("Celeste")
         .join("auth")
         .join(release::LAUNCHER_CHANNEL_ID))
@@ -313,13 +322,15 @@ fn required_user_binding_dir() -> Result<PathBuf> {
 
 fn persist_user_binding(credential: &InstallCredential) -> Result<()> {
     let cache = required_user_binding_dir()?;
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    user_profile::ensure_private_activation_dir(&cache)?;
     save_credential(
         &cache.join(format!("uid-{}.bin", credential.uid)),
         credential,
     )
-    .context("Could not save this PC's activation in the Windows user profile")?;
+    .context("Could not save this account's Celeste activation")?;
     save_credential(&cache.join("celeste-active.bin"), credential)
-        .context("Could not save the selected activation in the Windows user profile")
+        .context("Could not save the selected Celeste activation")
 }
 
 fn credential_path(game_root: &Path) -> PathBuf {
@@ -372,6 +383,7 @@ fn http_failure(status: u16, path: &str, detail: &str) -> anyhow::Error {
     .into()
 }
 
+#[cfg(windows)]
 fn collect_hardware() -> Result<HardwareProfile> {
     let com = COMLibrary::new().context("Windows hardware services are unavailable")?;
     let wmi = WMIConnection::new(com).context("Could not connect to Windows hardware services")?;
@@ -424,6 +436,11 @@ fn collect_hardware() -> Result<HardwareProfile> {
     })
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn collect_hardware() -> Result<HardwareProfile> {
+    portable_hardware::collect()
+}
+
 fn canonical(values: &[Option<&str>]) -> String {
     values
         .iter()
@@ -439,6 +456,7 @@ fn canonical(values: &[Option<&str>]) -> String {
         .join("\n")
 }
 
+#[cfg(windows)]
 fn monitor_edids() -> Vec<Vec<u8>> {
     let mut values = Vec::new();
     let root = RegKey::predef(HKEY_LOCAL_MACHINE);
@@ -471,7 +489,7 @@ fn monitor_edids() -> Vec<Vec<u8>> {
 }
 
 fn enroll(license: &str, hardware: &HardwareProfile) -> Result<InstallCredential> {
-    // Never bind a new server identity before Windows protection and the
+    // Never bind a new server identity before account protection and the
     // mandatory, game-independent cache have passed a real write/read check.
     enroll_after_preflight(
         || credential_protection::preflight(&required_user_binding_dir()?),
@@ -507,21 +525,23 @@ fn enroll_remote(license: &str, hardware: &HardwareProfile) -> Result<InstallCre
         }),
     ).map_err(|error| {
         if error.downcast_ref::<HttpFailure>().is_some_and(|failure| failure.status == 409) {
-            error.context("This license is already activated. Use the original Windows account, or contact support if its saved activation was lost")
+            error.context("This license is already activated. Use the original account and computer, or contact support if its saved activation was lost")
         } else {
             error.context("License activation failed")
         }
     })?;
     let message = decode(required_text(&start, "/message")?)?;
-    let complete = post_json(
+    let complete = post_json_with_dpop(
         "/v1/enroll/complete",
         &json!({
             "challenge_id": required_text(&start, "/challenge_id")?,
             "install_signature": encode(&signing.sign(&message).to_bytes()),
         }),
+        Some(&signing),
     )?;
     let certificate = required_text(&complete, "/device_certificate")?.to_owned();
     let certificate_claims = verify_token(&certificate, "celeste-installation")?;
+    dpop::require_binding(&certificate_claims, &signing)?;
     let device_id = required_text(&complete, "/device_id")?.to_owned();
     let uid = complete
         .pointer("/uid")
@@ -575,16 +595,18 @@ fn authenticate_installer(
         }),
     )?;
     let message = decode(required_text(&start, "/message")?)?;
-    let complete = post_json(
+    let complete = post_json_with_dpop(
         "/v1/installer/complete",
         &json!({
             "challenge_id": required_text(&start, "/challenge_id")?,
             "install_signature": encode(&signing.sign(&message).to_bytes()),
             "token_signature": encode(&token.sign(&message).to_bytes()),
         }),
+        Some(&signing),
     )?;
     let grant = required_text(&complete, "/grant")?;
     let claims = verify_token(grant, "celeste-installer")?;
+    dpop::require_binding(&claims, &signing)?;
     let bootstrap_url = required_text(&complete, "/bootstrap/url")?;
     let bootstrap_id = bootstrap_url.rsplit('/').next().unwrap_or("");
     let bootstrap_sha = required_text(&complete, "/bootstrap/sha256")?;
@@ -634,16 +656,24 @@ fn decrypt_token(envelope: &Value, private: &StaticSecret, message: &[u8]) -> Re
 }
 
 fn post_json(path: &str, body: &Value) -> Result<Value> {
+    post_json_with_dpop(path, body, None)
+}
+
+fn post_json_with_dpop(path: &str, body: &Value, signing: Option<&SigningKey>) -> Result<Value> {
     let url = endpoint(path)?;
     let agent = ureq::AgentBuilder::new()
+        .https_only(true)
         .redirects(0)
         .timeout(std::time::Duration::from_secs(25))
         .build();
-    let result = agent
+    let mut request = agent
         .post(&url)
         .set("Content-Type", "application/json")
-        .set("Accept", "application/json")
-        .send_json(body.clone());
+        .set("Accept", "application/json");
+    if let Some(signing) = signing {
+        request = request.set("DPoP", &dpop::proof(signing, "POST", &url, None)?);
+    }
+    let result = request.send_json(body.clone());
     match result {
         Ok(response) => {
             let mut bytes = Vec::new();
@@ -668,17 +698,18 @@ fn post_json(path: &str, body: &Value) -> Result<Value> {
     }
 }
 
-fn get_bytes(path: &str, bearer: Option<&str>) -> Result<Vec<u8>> {
+fn get_bytes(path: &str, grant: &str, signing: &SigningKey) -> Result<Vec<u8>> {
+    dpop::require_binding(&verify_token(grant, "celeste-installer")?, signing)?;
     let url = endpoint(path)?;
     let agent = ureq::AgentBuilder::new()
+        .https_only(true)
         .redirects(0)
         .timeout(std::time::Duration::from_secs(25))
         .build();
-    let mut request = agent.get(&url).set("Accept", "application/octet-stream");
-    if let Some(value) = bearer {
-        request = request.set("Authorization", &format!("Bearer {value}"));
-    }
-    let response = request
+    let response = agent.get(&url)
+        .set("Accept", "application/octet-stream")
+        .set("Authorization", &format!("DPoP {grant}"))
+        .set("DPoP", &dpop::proof(signing, "GET", &url, Some(grant))?)
         .call()
         .map_err(|error| anyhow!("Loader delivery failed: {error}"))?;
     let mut bytes = Vec::new();
@@ -697,6 +728,7 @@ fn endpoint(path: &str) -> Result<String> {
         || !path.starts_with("/v1/")
         || path.contains("://")
         || path.contains("..")
+        || path.contains(['?', '#', '%', '\\'])
     {
         bail!("Server response referenced an untrusted endpoint");
     }
@@ -753,6 +785,11 @@ fn load_credential(path: &Path) -> Result<InstallCredential> {
     let signing = signing_key(&credential.signing_private)?;
     signing_key(&credential.token_seed)?;
     let claims = verify_token(&credential.certificate, "celeste-installation")?;
+    // Older signed certificates already bind install_key. All fresh grants are
+    // required to have cnf; upgrading does not discard existing protected keys.
+    if claims.get("cnf").is_some() {
+        dpop::require_binding(&claims, &signing)?;
+    }
     let public_key = encode(signing.verifying_key().as_bytes());
     if required_text(&claims, "/sub")? != credential.uid.to_string()
         || required_text(&claims, "/device")? != credential.device_id

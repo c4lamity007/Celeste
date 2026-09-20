@@ -37,6 +37,7 @@ from .config import Settings
 from .database import Database
 from .products import PLUS, require_entitlement, require_claim_product
 from .security import GrantSigner, canonical_json
+from .dpop import access_token
 
 
 RELEASE_SCHEMA = "celeste-beta-release-2"
@@ -214,17 +215,12 @@ def create_beta_router(
 
     def plus_installer(request: Request, *, touch: bool = True) -> tuple[str, dict]:
         enabled()
-        authorization = request.headers.get("authorization", "")
-        if not authorization.startswith("Bearer "):
-            raise HTTPException(401, "missing grant")
-        token = authorization[7:].strip()
+        token = access_token(request)
         claims = verified(token)
         # Match the existing installer/bootstrap gate without changing production.
         digest = claims.get("client_sha256")
         if (claims.get("aud") != "celeste-installer"
-                or claims.get("release") != (settings.installer_channel_id or settings.release_id)
-                or not isinstance(digest, str)
-                or digest not in (settings.installer_compatible_sha256 | {settings.release_sha256})
+                or not settings.accepts_installer_identity(claims.get("release"), digest)
                 or claims.get("payload_release") != settings.release_id
                 or claims.get("payload_sha256") != settings.release_sha256
                 or claims.get("bootstrap") != settings.bootstrap_id
@@ -276,6 +272,7 @@ def create_beta_router(
             "product": PLUS,
             "sub": installer["sub"],
             "device": installer["device"],
+            "cnf": installer["cnf"],
             "iat": now,
             "nbf": now,
             "exp": expires_at,
@@ -297,6 +294,7 @@ def create_beta_router(
                 or manifest.get("product") != PLUS
                 or manifest.get("sub") != installer["sub"]
                 or manifest.get("device") != installer["device"]
+                or manifest.get("cnf") != installer["cnf"]
                 or manifest.get("installer_jti") != installer["jti"]
                 or manifest.get("installer_sha256") != hashlib.sha256(installer_token.encode("ascii")).hexdigest()
                 or type(manifest.get("iat")) is not int or type(manifest.get("exp")) is not int

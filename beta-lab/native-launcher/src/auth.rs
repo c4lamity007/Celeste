@@ -263,15 +263,17 @@ fn enroll_remote(license: &str, hardware: &HardwareProfile) -> Result<InstallCre
     if required_text(&transcript, "/product")? != "celeste_plus" {
         bail!("Authentication challenge belongs to another product");
     }
-    let complete = post_json(
+    let complete = post_json_with_dpop(
         "/v1/enroll/complete",
         &json!({
             "challenge_id": required_text(&start, "/challenge_id")?,
             "install_signature": encode(&signing.sign(&message).to_bytes()),
         }),
+        Some(&signing),
     )?;
     let certificate = required_text(&complete, "/device_certificate")?.to_owned();
     let certificate_claims = verify_token(&certificate, "celeste-installation")?;
+    crate::dpop::require_binding(&certificate_claims, &signing)?;
     let device_id = required_text(&complete, "/device_id")?.to_owned();
     let uid = complete
         .pointer("/uid")
@@ -329,16 +331,18 @@ fn authenticate_installer(
     if required_text(&transcript, "/product")? != "celeste_plus" {
         bail!("Authentication challenge belongs to another product");
     }
-    let complete = post_json(
+    let complete = post_json_with_dpop(
         "/v1/installer/complete",
         &json!({
             "challenge_id": required_text(&start, "/challenge_id")?,
             "install_signature": encode(&signing.sign(&message).to_bytes()),
             "token_signature": encode(&token.sign(&message).to_bytes()),
         }),
+        Some(&signing),
     )?;
     let grant = required_text(&complete, "/grant")?;
     let claims = verify_token(grant, "celeste-installer")?;
+    crate::dpop::require_binding(&claims, &signing)?;
     let bootstrap_url = required_text(&complete, "/bootstrap/url")?;
     let bootstrap_id = bootstrap_url.rsplit('/').next().unwrap_or("");
     let bootstrap_sha = required_text(&complete, "/bootstrap/sha256")?;
@@ -387,16 +391,24 @@ fn decrypt_token(envelope: &Value, private: &StaticSecret, message: &[u8]) -> Re
 }
 
 fn post_json(path: &str, body: &Value) -> Result<Value> {
+    post_json_with_dpop(path, body, None)
+}
+
+fn post_json_with_dpop(path: &str, body: &Value, signing: Option<&SigningKey>) -> Result<Value> {
     let url = endpoint(path)?;
     let agent = ureq::AgentBuilder::new()
+        .https_only(true)
         .redirects(0)
         .timeout(std::time::Duration::from_secs(25))
         .build();
-    let result = agent
+    let mut request = agent
         .post(&url)
         .set("Content-Type", "application/json")
-        .set("Accept", "application/json")
-        .send_json(body.clone());
+        .set("Accept", "application/json");
+    if let Some(signing) = signing {
+        request = request.set("DPoP", &crate::dpop::proof(signing, "POST", &url, None)?);
+    }
+    let result = request.send_json(body.clone());
     match result {
         Ok(response) => {
             let mut bytes = Vec::new();
@@ -426,6 +438,7 @@ fn endpoint(path: &str) -> Result<String> {
         || !path.starts_with("/v1/")
         || path.contains("://")
         || path.contains("..")
+        || path.contains(['?', '#', '%', '\\'])
     {
         bail!("Server response referenced an untrusted endpoint");
     }
@@ -482,6 +495,11 @@ fn load_credential(path: &Path) -> Result<InstallCredential> {
     let signing = signing_key(&credential.signing_private)?;
     signing_key(&credential.token_seed)?;
     let claims = verify_token(&credential.certificate, "celeste-installation")?;
+    // Existing signed install_key certificates remain reusable; fresh grants
+    // always require cnf and cannot fall back to bearer authorization.
+    if claims.get("cnf").is_some() {
+        crate::dpop::require_binding(&claims, &signing)?;
+    }
     let public_key = encode(signing.verifying_key().as_bytes());
     if required_text(&claims, "/sub")? != credential.uid.to_string()
         || required_text(&claims, "/device")? != credential.device_id
@@ -944,6 +962,7 @@ pub(crate) fn needs_activation(error: &anyhow::Error) -> bool {
 fn product_session(credential: InstallCredential, value: Value) -> Result<Session> {
     let grant = required_text(&value, "/grant")?.to_owned();
     let claims = verify_token(&grant, "celeste-installer")?;
+    crate::dpop::require_binding(&claims, &signing_key(&credential.signing_private)?)?;
     if credential.uid == 0
         || required_text(&claims, "/sub")? != credential.uid.to_string()
         || required_text(&claims, "/product")? != "celeste_plus"
@@ -960,6 +979,15 @@ fn product_session(credential: InstallCredential, value: Value) -> Result<Sessio
 }
 
 impl Session {
+    /// Only the proof leaves this capability; no installation key is handed to
+    /// delivery code or added to attach IPC, logs, or a new credential file.
+    pub(crate) fn delivery_proof(&self, method: &str, url: &str) -> Result<String> {
+        let key = signing_key(&self.credential.signing_private)?;
+        let claims = verify_token(&self.grant, "celeste-installer")?;
+        crate::dpop::require_binding(&claims, &key)?;
+        crate::dpop::proof(&key, method, url, Some(&self.grant))
+    }
+
     /// Caller must first verify the selected PID's canonical game directory.
     pub fn prepare_runtime_credential(&self, game: &Path) -> Result<()> {
         let target = game

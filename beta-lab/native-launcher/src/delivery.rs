@@ -25,6 +25,7 @@ const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RELEASE_BYTES: u64 = 128 * 1024 * 1024;
 const IDS: [&str; 4] = ["bootstrap-a", "bootstrap-b", "payload-a", "payload-b"];
 const INSTALLER_KEYS: &[&str] = &[
+    "cnf",
     "product",
     "aud",
     "sub",
@@ -41,6 +42,7 @@ const INSTALLER_KEYS: &[&str] = &[
     "bootstrap_sha256",
 ];
 const MANIFEST_KEYS: &[&str] = &[
+    "cnf",
     "product",
     "aud",
     "sub",
@@ -89,14 +91,15 @@ struct Catalog {
 }
 
 /// Obtain a fresh Celeste+ manifest and atomically persist its verified Bootstrap A.
-/// Neither the bearer grant, manifest, Bootstrap B, nor either payload is written to disk.
+/// Neither the DPoP-bound grant, manifest, Bootstrap B, nor either payload is written to disk.
 /// All network/parse failures are reduced to fixed messages so credentials cannot enter logs.
 pub fn download_bootstrap(
-    installer: &str,
-    device: &str,
+    session: &crate::auth::Session,
     directory: &Path,
-    uid: u64,
 ) -> Result<VerifiedBootstrap> {
+    let installer = session.grant.as_str();
+    let device = session.device.as_str();
+    let uid = session.uid;
     let raw_key = decode(crate::release::SERVER_KEY)?;
     let raw_key: [u8; 32] = raw_key
         .try_into()
@@ -109,7 +112,7 @@ pub fn download_bootstrap(
 
     let mut wrapper = transport.fetch(
         "/v1/beta/manifest",
-        installer,
+        session,
         None,
         MAX_MANIFEST_RESPONSE_BYTES,
         "application/json",
@@ -133,7 +136,7 @@ pub fn download_bootstrap(
     }
     let mut bytes = transport.fetch(
         &bootstrap.url,
-        installer,
+        session,
         Some(&manifest),
         bootstrap.size,
         "application/octet-stream",
@@ -287,6 +290,7 @@ fn verify_installer(
     ensure!(identifier(device, 32, 48), "Invalid beta device binding");
     let claims = signed(installer, "celeste-installer", key)?;
     exact(&claims, INSTALLER_KEYS)?;
+    crate::dpop::confirmation(&Value::Object(claims.clone()))?;
     identity(&claims, device)?;
     ensure!(
         integer(&claims, "iat")? <= time.saturating_add(5)
@@ -318,6 +322,12 @@ fn verify_manifest(
     let installer_claims = verify_installer(installer, device, key, time)?;
     let claims = signed(manifest, "celeste-beta-manifest", key)?;
     exact(&claims, MANIFEST_KEYS)?;
+    let manifest_value = Value::Object(claims.clone());
+    let installer_value = Value::Object(installer_claims.clone());
+    ensure!(
+        crate::dpop::confirmation(&manifest_value)? == crate::dpop::confirmation(&installer_value)?,
+        "Manifest belongs to another installation signing key"
+    );
     identity(&claims, device)?;
     ensure!(text(&claims, "sub")? == text(&installer_claims, "sub")?, "Manifest belongs to another license");
     let issued = integer(&claims, "iat")?;
@@ -718,7 +728,7 @@ impl HttpsTransport {
     fn fetch(
         &self,
         path: &str,
-        installer: &str,
+        session: &crate::auth::Session,
         manifest: Option<&str>,
         limit: usize,
         media_type: &str,
@@ -738,7 +748,8 @@ impl HttpsTransport {
         let mut request = self
             .agent
             .get(&url)
-            .set("Authorization", &format!("Bearer {installer}"))
+            .set("Authorization", &format!("DPoP {}", session.grant))
+            .set("DPoP", &session.delivery_proof("GET", &url)?)
             .set("Accept", media_type)
             .set("Accept-Encoding", "identity")
             .set("Cache-Control", "no-store");
@@ -911,6 +922,17 @@ mod tests {
     #[test]
     fn actual_server_schema2_golden_verifies_offline() {
         let fixture = golden();
+        // The fixture's explicitly PUBLIC TEST key is also consumed by the
+        // Python server and Java client: catch cross-language RFC 7638 drift.
+        let installation_seed: [u8; 32] = decode(fixture["installation_test_seed"].as_str().unwrap())
+            .unwrap().try_into().unwrap();
+        let installation = SigningKey::from_bytes(&installation_seed);
+        assert_eq!(
+            URL_SAFE_NO_PAD.encode(installation.verifying_key().as_bytes()),
+            fixture["installation_public_key"].as_str().unwrap()
+        );
+        crate::dpop::require_binding(&fixture["installer_claims"], &installation).unwrap();
+        crate::dpop::require_binding(&fixture["manifest_claims"], &installation).unwrap();
         let catalog = verify_fixture(&fixture).unwrap();
         assert_eq!(catalog.release, "owner-beta-golden-1");
         assert_eq!(
@@ -945,6 +967,24 @@ mod tests {
     }
 
     #[test]
+    fn installer_and_manifest_cannot_omit_dpop_confirmation() {
+        let (base, key) = synthetic();
+        for target in ["installer", "manifest"] {
+            let mut fixture = base.clone();
+            let claims = format!("{target}_claims");
+            let token = format!("{target}_token");
+            fixture[&claims].as_object_mut().unwrap().remove("cnf");
+            fixture[&token] = json!(sign(&fixture[&claims], &key));
+            if target == "installer" {
+                fixture["manifest_claims"]["installer_sha256"] =
+                    json!(sha256(fixture[&token].as_str().unwrap().as_bytes()));
+                resign_manifest(&mut fixture, &key);
+            }
+            assert!(verify_fixture(&fixture).is_err(), "accepted unbound {target}");
+        }
+    }
+
+    #[test]
     fn catalog_identity_changes_when_only_internal_bootstrap_changes() {
         let (mut fixture, key) = synthetic();
         let initial = verify_fixture(&fixture).unwrap();
@@ -961,6 +1001,8 @@ mod tests {
         let (base, key) = synthetic();
         verify_fixture(&base).unwrap();
         let mutations = [
+            ("cnf", json!({"jkt":"A".repeat(43)})),
+            ("cnf", json!({"jkt":base["manifest_claims"]["cnf"]["jkt"], "extra":true})),
             ("schema", json!("celeste-beta-release-1")),
             ("aud", json!("celeste-client")),
             ("sub", json!("8")),
@@ -1043,6 +1085,8 @@ mod tests {
     fn installer_current_time_and_exact_bytes_binding() {
         let (base, key) = synthetic();
         for (field, value) in [
+            ("cnf", json!({"jkt":"bad"})),
+            ("cnf", json!({"jkt":base["installer_claims"]["cnf"]["jkt"], "extra":true})),
             ("sub", json!("08")),
             ("sub", json!("0")),
             ("sub", json!("9223372036854775808")),

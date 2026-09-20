@@ -41,6 +41,7 @@ class Settings:
     installer_channel_id: str = ""
     installer_channel_version: str = ""
     installer_compatible_sha256: frozenset[str] = frozenset()
+    installer_allow_runtime_digest: bool = False
     cloud_config_dir: str = "/data/cloud-configs"
     bootstrap_id: str = "bootstrap"
     bootstrap_sha256: str = "0" * 64
@@ -58,6 +59,15 @@ class Settings:
     challenge_ttl_seconds: int = 90
     plus_enabled: bool = False
     beta_release_dir: str = ""
+    public_origin: str = ""
+
+    def accepts_installer_identity(self, release_id: object, digest: object) -> bool:
+        if not isinstance(release_id, str) or not isinstance(digest, str):
+            return False
+        return release_id == (self.installer_channel_id or self.release_id) and (
+            digest in self.installer_compatible_sha256
+            or (self.installer_allow_runtime_digest and digest == self.release_sha256)
+        )
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -78,7 +88,10 @@ class Settings:
         release_sha256 = _required("CELESTE_RELEASE_SHA256").lower()
         if len(release_sha256) != 64 or any(c not in "0123456789abcdef" for c in release_sha256):
             raise RuntimeError("CELESTE_RELEASE_SHA256 must be a lowercase SHA-256 hex digest")
-        installer_compatible = {release_sha256}
+        installer_allow_runtime = os.getenv("CELESTE_INSTALLER_ALLOW_RUNTIME_DIGEST", "false").strip().lower()
+        if installer_allow_runtime not in {"true", "false", "1", "0"}:
+            raise RuntimeError("CELESTE_INSTALLER_ALLOW_RUNTIME_DIGEST must be true or false")
+        installer_compatible = set()
         for digest in os.getenv("CELESTE_INSTALLER_COMPAT_SHA256", "").split(","):
             digest = digest.strip().lower()
             if not digest:
@@ -86,6 +99,8 @@ class Settings:
             if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
                 raise RuntimeError("CELESTE_INSTALLER_COMPAT_SHA256 contains an invalid SHA-256 digest")
             installer_compatible.add(digest)
+        if not installer_compatible and installer_allow_runtime not in {"true", "1"}:
+            raise RuntimeError("CELESTE_INSTALLER_COMPAT_SHA256 must explicitly allow a native launcher digest")
         chunk_a_sha256 = _required("CELESTE_CHUNK_A_SHA256").lower()
         chunk_b_sha256 = _required("CELESTE_CHUNK_B_SHA256").lower()
         for name, digest in (("CELESTE_CHUNK_A_SHA256", chunk_a_sha256), ("CELESTE_CHUNK_B_SHA256", chunk_b_sha256)):
@@ -121,6 +136,7 @@ class Settings:
             installer_channel_id=installer_channel_id,
             installer_channel_version=installer_channel_version,
             installer_compatible_sha256=frozenset(installer_compatible),
+            installer_allow_runtime_digest=installer_allow_runtime in {"true", "1"},
             cloud_config_dir=os.getenv("CELESTE_CLOUD_CONFIG_DIR", "/data/cloud-configs"),
             bootstrap_id=_required("CELESTE_BOOTSTRAP_ID"),
             bootstrap_sha256=bootstrap_sha256,
@@ -136,4 +152,5 @@ class Settings:
             loader_four_filename=os.getenv("CELESTE_LOADER_FOUR_FILENAME", "stage-four.bin"),
             plus_enabled=plus_enabled in {"true", "1"},
             beta_release_dir=os.getenv("CELESTE_BETA_RELEASE_DIR", "").strip(),
+            public_origin=os.getenv("CELESTE_PUBLIC_ORIGIN", "").strip(),
         )

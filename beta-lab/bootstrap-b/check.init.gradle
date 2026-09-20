@@ -11,6 +11,7 @@ allprojects { project ->
             project.tasks.register('compileBetaBootstrapB', JavaCompile) {
                 source project.fileTree('beta-lab/bootstrap-b/src') { include '**/*.java' }
                 source project.fileTree('beta-lab/delivery-client/src') { include '**/*.java' }
+                source project.file('src/main/java/dev/c4lam/celeste/auth/DpopProofSigner.java')
                 source project.fileTree('beta-lab/memory-runtime/src/main/java') { include '**/*.java' }
                 classpath = project.sourceSets.main.compileClasspath + inlineMe
                 destinationDirectory = output

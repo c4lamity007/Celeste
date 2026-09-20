@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
-from fastapi.testclient import TestClient
+from dpop_client import TestClient, register_key
 from app.main import create_app
 from app.beta_delivery import beta_runtime_catalog
 from app.products import CELESTE, PLUS, issue_license, selected_products
@@ -37,7 +37,7 @@ def issue(env, selection, uid=None, label="fixture"):
 
 
 def begin_enroll(env, key, product):
-    signing = ed25519.Ed25519PrivateKey.generate()
+    signing = register_key(ed25519.Ed25519PrivateKey.generate())
     body = {**release(), "product": product, "license_key": key, "hardware": hardware(),
             "install_signing_key": raw_public(signing), "install_encryption_key": raw_public(x25519.X25519PrivateKey.generate())}
     return env.client.post("/v1/enroll/start", json=body), signing

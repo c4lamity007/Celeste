@@ -47,7 +47,8 @@ public final class StageTwoLoader {
         completeBody.addProperty("challenge_id", required(start, "challenge_id"));
         completeBody.addProperty("install_signature", bridge.sign("signInstall", message));
         completeBody.addProperty("token_signature", bridge.sign("signToken", message));
-        JsonObject complete = post(http, base, "/v1/stage2/complete", completeBody);
+        JsonObject complete = post(http, base, "/v1/stage2/complete", completeBody,
+            bridge.proof("POST", sameOrigin(base, "/v1/stage2/complete"), null));
 
         String grant = required(complete, "grant");
         JsonObject claims = verifyGrant(grant, bridge, "celeste-stage-two");
@@ -60,7 +61,7 @@ public final class StageTwoLoader {
             throw new SecurityException("Third-stage authorization is not bound to this installation");
         }
 
-        byte[] content = get(http, base, required(loader, "url"), grant);
+        byte[] content = get(http, base, required(loader, "url"), grant, bridge);
         requireDigest(content, digest, "third-stage loader");
         Path path = writeRuntimeFile("stage-three-" + bridge.text("releaseId") + ".jar", content);
         FabricLauncherBase.getLauncher().addToClassPath(path);
@@ -97,12 +98,17 @@ public final class StageTwoLoader {
     }
 
     private static JsonObject post(HttpClient http, URI base, String path, JsonObject body) throws Exception {
-        HttpRequest request = HttpRequest.newBuilder(sameOrigin(base, path))
+        return post(http, base, path, body, null);
+    }
+
+    private static JsonObject post(HttpClient http, URI base, String path, JsonObject body, String proof) throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(sameOrigin(base, path))
             .timeout(Duration.ofSeconds(12))
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body), StandardCharsets.UTF_8))
-            .build();
+            .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body), StandardCharsets.UTF_8));
+        if (proof != null) builder.header("DPoP", proof);
+        HttpRequest request = builder.build();
         HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new SecurityException("Third-stage gate rejected the installation (" + response.statusCode() + ")");
@@ -110,11 +116,12 @@ public final class StageTwoLoader {
         return GSON.fromJson(response.body(), JsonObject.class);
     }
 
-    private static byte[] get(HttpClient http, URI base, String path, String grant) throws Exception {
+    private static byte[] get(HttpClient http, URI base, String path, String grant, Bridge bridge) throws Exception {
         HttpRequest request = HttpRequest.newBuilder(sameOrigin(base, path))
             .timeout(Duration.ofSeconds(20))
             .header("Accept", "application/octet-stream")
-            .header("Authorization", "Bearer " + grant)
+            .header("Authorization", "DPoP " + grant)
+            .header("DPoP", bridge.proof("GET", sameOrigin(base, path), grant))
             .GET()
             .build();
         HttpResponse<byte[]> response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
@@ -155,6 +162,9 @@ public final class StageTwoLoader {
             throw new SecurityException("Staged grant signature is invalid");
         }
         JsonObject claims = GSON.fromJson(new String(decode(parts[1]), StandardCharsets.UTF_8), JsonObject.class);
+        if (!bridge.text("dpopThumbprint").equals(required(requiredObject(claims, "cnf"), "jkt"))) {
+            throw new SecurityException("Staged grant has the wrong DPoP installation binding");
+        }
         long now = Instant.now().getEpochSecond();
         if (!audience.equals(required(claims, "aud"))
             || claims.get("nbf").getAsLong() > now + 5
@@ -233,6 +243,11 @@ public final class StageTwoLoader {
 
         private String sign(String method, String message) throws Exception {
             return String.valueOf(target.getClass().getMethod(method, String.class).invoke(target, message));
+        }
+
+        private String proof(String method, URI endpoint, String grant) throws Exception {
+            return String.valueOf(target.getClass().getMethod("dpopProof", String.class, String.class, String.class)
+                .invoke(target, method, endpoint.toString(), grant));
         }
     }
 }

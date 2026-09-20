@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519, x25519
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-from fastapi.testclient import TestClient
+from dpop_client import TestClient, register_key, proof
 
 from app.config import Settings
 from app.database import Database
@@ -49,6 +49,7 @@ def settings(tmp_path) -> Settings:
         chunk_a_sha256=hashlib.sha256(first).hexdigest(),
         chunk_b_sha256=hashlib.sha256(second).hexdigest(),
         artifact_dir=str(release_dir),
+        installer_compatible_sha256=frozenset({"a" * 64}),
         cloud_config_dir=str(tmp_path / "cloud-configs"),
         bootstrap_id="bootstrap-test",
         bootstrap_sha256=hashlib.sha256(bootstrap).hexdigest(),
@@ -107,7 +108,7 @@ def enroll(
     client_version: str | None = None,
     product: str = "celeste",
 ):
-    install_signing = ed25519.Ed25519PrivateKey.generate()
+    install_signing = register_key(ed25519.Ed25519PrivateKey.generate())
     install_encryption = x25519.X25519PrivateKey.generate()
     start = client.post(
         "/v1/enroll/start",
@@ -128,6 +129,7 @@ def enroll(
     message = b64d(challenge["message"])
     complete = client.post(
         "/v1/enroll/complete",
+        headers={"DPoP": proof(install_signing, "POST", str(client.base_url).rstrip("/") + "/v1/enroll/complete")},
         json={
             "challenge_id": challenge["challenge_id"],
             "install_signature": b64e(install_signing.sign(message)),
@@ -161,6 +163,10 @@ def test_enrollment_dual_proof_monitor_lock_and_reset(tmp_path):
         installer_channel_version=launcher_version,
         installer_compatible_sha256=frozenset({legacy_digest}),
     )
+    assert not config.accepts_installer_identity(launcher_id, config.release_sha256)
+    assert replace(config, installer_allow_runtime_digest=True).accepts_installer_identity(
+        launcher_id, config.release_sha256
+    )
     app = create_app(config)
     license_key = "CST-ABCDE-FGHIJ-KLMNO-PQRST-UVWXY-12345"
     uid = create_license(config, license_key)
@@ -180,6 +186,20 @@ def test_enrollment_dual_proof_monitor_lock_and_reset(tmp_path):
             },
         )
         assert unknown_enroll.status_code == 409
+
+        runtime_digest_enroll = client.post(
+            "/v1/enroll/start",
+            json={
+                **release(),
+                "release_id": launcher_id,
+                "client_version": launcher_version,
+                "license_key": license_key,
+                "install_signing_key": raw_public(ed25519.Ed25519PrivateKey.generate()),
+                "install_encryption_key": raw_public(x25519.X25519PrivateKey.generate()),
+                "hardware": hardware(),
+            },
+        )
+        assert runtime_digest_enroll.status_code == 409
 
         enrolled, install_key, token_key = enroll(
             client,

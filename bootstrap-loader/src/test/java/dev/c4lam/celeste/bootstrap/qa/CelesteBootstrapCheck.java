@@ -43,6 +43,9 @@ public final class CelesteBootstrapCheck {
             metadata = metadata(jar.getInputStream(jar.getEntry("fabric.mod.json")), installed, root);
             check(metadata.getId().equals("celeste_bootstrap"), "bootstrap has its own identity distinct from the runtime and MixinExtras");
             check(metadata.getName().equals("Celeste"), "normal product has the Celeste display name");
+            check(metadata.getCustomValue("celeste:delivery") != null
+                && metadata.getCustomValue("celeste:delivery").getAsString().equals("shared-activation-v1"),
+                "movable bootstrap advertises shared activation for the folder downloader");
             check(!metadata.getVersion().getFriendlyString().contains("${"), "artifact version is expanded");
             check(jar.stream().noneMatch(e -> e.getName().startsWith("com/llamalad7/mixinextras/")), "bootstrap does not shadow the loader's canonical MixinExtras classes");
             check(jar.getEntry("mixinextras.init.mixins.json") == null, "bootstrap does not initialize a copied library mixin configuration");

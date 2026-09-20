@@ -43,7 +43,7 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
     private int originalSlot = -1, visibleSlot = -1;
     private long startedTick, pearlTick, finishedTick, frameNanos;
     private State pearl;
-    private Rotation aim;
+    private Rotation aim, pearlAim;
     private Solution solution;
 
     @Override public String name() { return "Horizontal Pearl Catch"; }
@@ -93,7 +93,7 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
                 if (delay > 2) { note(client, "Catch cancelled: the two-tick throw window passed."); clear(client, true); }
                 return;
             }
-            solution = solve(pearl, (int) delay, vec(player.getEyePos()), inherited(vec(player.getMovement()), player.isOnGround()));
+            solution = solveCharge(pearl, (int) delay, vec(player.getEyePos()), inherited(vec(player.getMovement()), player.isOnGround()));
             if (solution == null || !clearPaths(client, pearl, (int) delay, vec(player.getEyePos()), solution)) {
                 solution = null;
                 // One more tick can yield a valid route, but never send a late blind charge.
@@ -124,7 +124,7 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
         silentSwap = context.toggle("Silent swap", true);
         returnSlot = context.toggle("Return slot", true);
         originalSlot = visibleSlot = player.getInventory().getSelectedSlot();
-        aim = new Rotation(player.getYaw(), player.getPitch());
+        aim = pearlAim = new Rotation(player.getYaw(), player.getPitch());
         State predicted = launch(vec(player.getEyePos()), vec(player.getMovement()), player.isOnGround(), aim.yaw(), aim.pitch());
         if (preflight(client, predicted) == null) {
             note(client, "No clear catch trajectory. Try more open space or aim slightly higher.");
@@ -162,7 +162,7 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
                 if (!throwWindow(tick - pearlTick)) { clear(actionClient, true); return; }
                 // Other START hooks may have changed motion since our planning hook. Item use
                 // inherits the movement at execution, so never send an angle for an old state.
-                Solution fresh = solve(pearl, (int) (tick - pearlTick), vec(player.getEyePos()),
+                Solution fresh = solveCharge(pearl, (int) (tick - pearlTick), vec(player.getEyePos()),
                     inherited(vec(player.getMovement()), player.isOnGround()));
                 if (fresh == null || !clearPaths(actionClient, pearl, (int) (tick - pearlTick), vec(player.getEyePos()), fresh)) return;
                 Rotation freshAim = new Rotation(fresh.yaw(), fresh.pitch());
@@ -242,10 +242,14 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
                 origin = eyes.add(movement.scale(delay));
                 chargeMovement = inherited;
             }
-            Solution forecast = solve(predicted, delay, origin, chargeMovement);
+            Solution forecast = solveCharge(predicted, delay, origin, chargeMovement);
             if (forecast != null && clearPaths(client, predicted, delay, origin, forecast)) return forecast;
         }
         return null;
+    }
+
+    private Solution solveCharge(State thrown, int delay, Vec origin, Vec movement) {
+        return solve(thrown, delay, origin, movement, pearlAim.yaw(), pearlAim.pitch());
     }
 
     private boolean useSlot(MinecraftClient client, int slot) {
@@ -319,7 +323,7 @@ public final class HorizontalPearlCatchFeature implements ModuleFeature {
         originalSlot = visibleSlot = -1;
         pearl = null;
         solution = null;
-        aim = null;
+        aim = pearlAim = null;
         frameNanos = 0;
         glidingSequence = false;
     }

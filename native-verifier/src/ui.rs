@@ -1,4 +1,3 @@
-use crate::launchers::{self, InstallTarget};
 use eframe::egui::{
     self, Align, Align2, Color32, FontId, Frame, Layout, Margin, RichText, Stroke, TextEdit, Vec2,
     Visuals,
@@ -21,12 +20,11 @@ pub const FAILURE: Color32 = Color32::from_rgb(255, 110, 120);
 
 pub enum UiEvent {
     Status(String),
-    Success,
+    Success(PathBuf),
     Failure(String, bool),
     ActivationVerified(crate::InstallCredential),
     ActivationRequired(String),
     ActivationRetry(String),
-    Instances(Vec<InstallTarget>),
     Folder(Option<PathBuf>),
 }
 
@@ -40,8 +38,13 @@ enum SetupState {
 }
 
 impl SetupState {
-    fn allows_instances(self) -> bool {
+    fn allows_download(self) -> bool {
         self == Self::Ready
+    }
+
+    fn footer_label(self) -> Option<&'static str> {
+        self.allows_download()
+            .then_some("Fabric 1.21.11 · Move the JAR yourself")
     }
 
     fn primary_label(self, busy: bool) -> &'static str {
@@ -50,8 +53,8 @@ impl SetupState {
             Self::Activating => "Activating...",
             Self::NeedsKey => "Activate Celeste",
             Self::Retry => "Retry verification",
-            Self::Ready if busy => "Installing...",
-            Self::Ready => "Install Celeste",
+            Self::Ready if busy => "Downloading...",
+            Self::Ready => "Download Celeste",
         }
     }
 
@@ -82,8 +85,6 @@ pub struct LauncherApp {
     status_color: Color32,
     busy: bool,
     discovering: bool,
-    instances: Vec<InstallTarget>,
-    selected: Option<usize>,
     folder: String,
     events: Receiver<UiEvent>,
     event_tx: mpsc::Sender<UiEvent>,
@@ -101,41 +102,12 @@ impl LauncherApp {
             status_color: MUTED,
             busy: false,
             discovering: false,
-            instances: Vec::new(),
-            selected: None,
             folder: String::new(),
             events,
             event_tx,
         };
         app.start_verification(None);
         app
-    }
-
-    fn refresh(&mut self) {
-        if !self.setup.allows_instances() || self.busy || self.discovering {
-            return;
-        }
-        self.discovering = true;
-        let tx = self.event_tx.clone();
-        thread::spawn(move || {
-            let _ = tx.send(UiEvent::Instances(launchers::discover_install_targets()));
-        });
-    }
-
-    fn inspect_folder(&mut self, folder: PathBuf) {
-        if !self.setup.allows_instances() || self.busy || self.discovering {
-            return;
-        }
-        self.folder = folder.display().to_string();
-        self.discovering = true;
-        let tx = self.event_tx.clone();
-        thread::spawn(move || {
-            let event = match launchers::inspect_folder(&folder) {
-                Ok(instances) => UiEvent::Instances(instances),
-                Err(e) => UiEvent::Failure(format!("{e:#}"), false),
-            };
-            let _ = tx.send(event);
-        });
     }
 
     fn start_verification(&mut self, license: Option<String>) {
@@ -160,7 +132,7 @@ impl LauncherApp {
             let event = match crate::verify_activation(license) {
                 Ok(Some(credential)) => UiEvent::ActivationVerified(credential),
                 Ok(None) => UiEvent::ActivationRequired(
-                    "Enter your Celeste or Both license to activate this PC.".into(),
+                    "Enter your license to activate this computer.".into(),
                 ),
                 Err(error) if crate::activation_key_required(&error) => {
                     UiEvent::ActivationRequired(format!("{error:#}"))
@@ -178,10 +150,13 @@ impl LauncherApp {
                     self.status = line;
                     self.status_color = TEXT;
                 }
-                UiEvent::Success => {
+                UiEvent::Success(path) => {
                     self.busy = false;
                     self.license.clear();
-                    self.status = "Installed. Open this instance in your launcher.".into();
+                    self.status = format!(
+                        "Saved to {}. Move this JAR into your Fabric 1.21.11 mods folder, then launch Minecraft normally.",
+                        path.display()
+                    );
                     self.status_color = SUCCESS;
                 }
                 UiEvent::Failure(error, activation_required) => {
@@ -199,9 +174,8 @@ impl LauncherApp {
                     self.setup = SetupState::Ready;
                     self.credential = Some(credential);
                     self.license.clear();
-                    self.status = "Activation verified. Choose your Minecraft instance.".into();
+                    self.status = "Activation verified. Choose where to save Celeste.jar.".into();
                     self.status_color = SUCCESS;
-                    self.refresh();
                 }
                 UiEvent::ActivationRequired(message) => {
                     self.busy = false;
@@ -217,55 +191,41 @@ impl LauncherApp {
                     self.status = message;
                     self.status_color = FAILURE;
                 }
-                UiEvent::Instances(instances) => {
-                    let previous = self
-                        .selected
-                        .and_then(|i| self.instances.get(i))
-                        .map(|t| t.instance.game_dir.clone());
-                    self.selected = previous
-                        .and_then(|p| instances.iter().position(|t| t.instance.game_dir == p));
-                    self.instances = instances;
-                    self.discovering = false;
-                    self.status = if self.instances.is_empty() {
-                        "No Fabric 1.21.11 instances found. Choose a folder below.".into()
-                    } else {
-                        String::new()
-                    };
-                    self.status_color = MUTED;
-                }
                 UiEvent::Folder(folder) => {
                     self.discovering = false;
                     if let Some(folder) = folder {
-                        self.inspect_folder(folder);
+                        self.folder = folder.display().to_string();
+                        self.status.clear();
                     }
                 }
             }
         }
     }
 
-    fn start_install(&mut self) {
-        if !self.setup.allows_instances() || self.busy || self.discovering {
+    fn start_download(&mut self) {
+        if !self.setup.allows_download() || self.busy || self.discovering {
             return;
         }
-        let Some(target) = self.selected.and_then(|i| self.instances.get(i)).cloned() else {
-            return;
-        };
+        let folder =
+            match crate::folder_delivery::validate_folder(&PathBuf::from(self.folder.trim())) {
+                Ok(folder) => folder,
+                Err(error) => {
+                    self.status = format!("{error:#}");
+                    self.status_color = FAILURE;
+                    return;
+                }
+            };
         let Some(credential) = self.credential.clone() else {
             self.setup = SetupState::NeedsKey;
             return;
         };
         self.busy = true;
-        self.status = "Checking this instance...".into();
+        self.status = "Authenticating your download...".into();
         self.status_color = TEXT;
         let tx = self.event_tx.clone();
         thread::spawn(move || {
-            let event = match crate::verify_and_install(
-                credential,
-                target.launcher,
-                target.instance,
-                &tx,
-            ) {
-                Ok(()) => UiEvent::Success,
+            let event = match crate::verify_and_download(credential, folder, &tx) {
+                Ok(path) => UiEvent::Success(path),
                 Err(e) => UiEvent::Failure(format!("{e:#}"), crate::activation_key_required(&e)),
             };
             let _ = tx.send(event);
@@ -273,95 +233,37 @@ impl LauncherApp {
     }
 
     fn body(&mut self, ui: &mut egui::Ui) {
-        if !self.setup.allows_instances() {
+        if !self.setup.allows_download() {
             self.activation_body(ui);
             return;
         }
         let width = ui.available_width();
-        ui.label(RichText::new("Minecraft instance").color(MUTED).size(12.0));
-        let selected_text = self
-            .selected
-            .and_then(|i| self.instances.get(i))
-            .map(|t| format!("{} · {}", t.launcher.label(), t.instance.name))
-            .unwrap_or_else(|| {
-                if self.discovering {
-                    "Finding instances...".into()
-                } else {
-                    "Choose your instance".into()
-                }
-            });
+        ui.label(RichText::new("Save location").color(MUTED).size(12.0));
         ui.add_enabled_ui(!self.busy && !self.discovering, |ui| {
-            egui::ComboBox::from_id_salt("celeste-instance")
-                .width(width)
-                .truncate()
-                .selected_text(RichText::new(selected_text).size(13.0))
-                .show_ui(ui, |ui| {
-                    ui.set_width(width - 16.0);
-                    for (i, target) in self.instances.iter().enumerate() {
-                        let label =
-                            format!("{} · {}", target.launcher.label(), target.instance.name);
-                        let response = ui.add(
-                            egui::Button::selectable(
-                                self.selected == Some(i),
-                                RichText::new(label).size(13.0),
-                            )
-                            .wrap(),
-                        );
-                        if response.clicked() {
-                            self.selected = Some(i);
-                            self.status.clear();
-                        }
-                        response.on_hover_text(target.instance.game_dir.display().to_string());
-                    }
-                });
-        });
-        if let Some(target) = self.selected.and_then(|i| self.instances.get(i)) {
             ui.add(
-                egui::Label::new(
-                    RichText::new(target.instance.game_dir.display().to_string())
-                        .size(11.5)
-                        .color(MUTED),
-                )
-                .wrap(),
+                TextEdit::singleline(&mut self.folder)
+                    .desired_width(width)
+                    .hint_text("Full path to your download folder"),
             );
-        }
+            if ui.button("Browse...").clicked() {
+                self.discovering = true;
+                let tx = self.event_tx.clone();
+                thread::spawn(move || {
+                    let picked = rfd::FileDialog::new()
+                        .set_title("Choose where to save Celeste.jar")
+                        .pick_folder();
+                    let _ = tx.send(UiEvent::Folder(picked));
+                });
+            }
+        });
+        ui.label(RichText::new("Save the mod here, then move the JAR into your Minecraft mods folder yourself. Use Fabric for Minecraft 1.21.11 on this activated computer.").size(12.0).color(MUTED));
         ui.add_space(2.0);
-        egui::CollapsingHeader::new("Other folder / details")
+        egui::CollapsingHeader::new("License details")
             .id_salt("celeste-details")
             .show(ui, |ui| {
                 ui.set_width(width - 18.0);
                 ui.label(
-                    RichText::new("Fabric · Minecraft 1.21.11")
-                        .size(12.0)
-                        .color(MUTED),
-                );
-                ui.add_enabled_ui(!self.busy && !self.discovering, |ui| {
-                    ui.horizontal(|ui| {
-                        if ui.button("Browse...").clicked() {
-                            self.discovering = true;
-                            let tx = self.event_tx.clone();
-                            thread::spawn(move || {
-                                let picked = rfd::FileDialog::new()
-                                    .set_title("Choose your Minecraft instance folder")
-                                    .pick_folder();
-                                let _ = tx.send(UiEvent::Folder(picked));
-                            });
-                        }
-                        if ui.button("Refresh").clicked() {
-                            self.refresh();
-                        }
-                    });
-                    ui.add(
-                        TextEdit::singleline(&mut self.folder)
-                            .desired_width(ui.available_width())
-                            .hint_text("Full path to instance or .minecraft"),
-                    );
-                    if ui.button("Use this folder").clicked() {
-                        self.inspect_folder(PathBuf::from(self.folder.trim()));
-                    }
-                });
-                ui.label(
-                    RichText::new("Celeste activation verified for this Windows account.")
+                    RichText::new("Celeste activation verified for this account.")
                         .size(11.5)
                         .color(SUCCESS),
                 );
@@ -374,7 +276,7 @@ impl LauncherApp {
                 {
                     self.setup = SetupState::NeedsKey;
                     self.credential = None;
-                    self.status = "Enter the Celeste or Both license you want to use.".into();
+                    self.status = "Enter the license you want to use.".into();
                     self.status_color = MUTED;
                 }
             });
@@ -382,13 +284,17 @@ impl LauncherApp {
     }
 
     fn activation_body(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Activate this PC").size(18.0).color(TEXT));
-        ui.label(RichText::new("Verify your license before choosing a Minecraft instance. Your activation is encrypted for this Windows account; the license key is not saved.").size(12.0).color(MUTED));
+        ui.label(
+            RichText::new("Activate this computer")
+                .size(18.0)
+                .color(TEXT),
+        );
+        ui.label(RichText::new("Verify your license before choosing a save location. Your activation is protected for this account; the license key is not saved.").size(12.0).color(MUTED));
         if self.setup == SetupState::Retry {
             ui.label(RichText::new("Verification could not finish. Retry checks your saved activation without enrolling again.").size(12.0).color(MUTED));
             if ui.button("Use a different license").clicked() {
                 self.setup = SetupState::NeedsKey;
-                self.status = "Enter your Celeste or Both license.".into();
+                self.status = "Enter your license.".into();
                 self.status_color = MUTED;
             }
         } else {
@@ -397,7 +303,7 @@ impl LauncherApp {
                 self.setup == SetupState::NeedsKey && !self.busy,
                 TextEdit::singleline(&mut self.license)
                     .password(true)
-                    .hint_text("Celeste or Both license")
+                    .hint_text("Enter License Here")
                     .desired_width(ui.available_width()),
             );
             if response.lost_focus()
@@ -427,7 +333,11 @@ impl LauncherApp {
             if self.status_color == FAILURE {
                 ui.horizontal(|ui| {
                     if ui.small_button("Copy error").clicked() {
-                        ui.ctx().copy_text(format!("Celeste setup build {}\n{}", crate::SETUP_BUILD, self.status));
+                        ui.ctx().copy_text(format!(
+                            "Celeste setup build {}\n{}",
+                            crate::SETUP_BUILD,
+                            self.status
+                        ));
                     }
                     ui.label(RichText::new(crate::SETUP_BUILD).size(10.0).color(MUTED));
                 });
@@ -470,8 +380,8 @@ impl eframe::App for LauncherApp {
                                     RichText::new("Celeste").size(29.0).strong().color(ACCENT),
                                 );
                                 ui.label(
-                                    RichText::new(if self.setup.allows_instances() {
-                                        "Install once. Launch normally."
+                                    RichText::new(if self.setup.allows_download() {
+                                        "Choose a folder. Download your mod."
                                     } else {
                                         "Activate once. Launch normally."
                                     })
@@ -480,7 +390,11 @@ impl eframe::App for LauncherApp {
                                 );
                             });
                             ui.add_space(10.0);
-                            let footer_h = 67.0;
+                            let footer_h = if self.setup.allows_download() {
+                                67.0
+                            } else {
+                                44.0
+                            };
                             let body_h = (ui.available_height() - footer_h - 8.0).max(60.0);
                             egui::ScrollArea::vertical()
                                 .id_salt("celeste-install-body")
@@ -488,20 +402,14 @@ impl eframe::App for LauncherApp {
                                 .max_height(body_h)
                                 .show(ui, |ui| self.body(ui));
                             ui.with_layout(Layout::bottom_up(Align::Center), |ui| {
-                                ui.label(
-                                    RichText::new(if self.setup.allows_instances() {
-                                        "Fabric 1.21.11 · mods/Celeste.jar"
-                                    } else {
-                                        "Celeste / Both license required"
-                                    })
-                                    .size(11.0)
-                                    .color(MUTED),
-                                );
+                                if let Some(label) = self.setup.footer_label() {
+                                    ui.label(RichText::new(label).size(11.0).color(MUTED));
+                                }
                                 let enabled = self.setup.primary_enabled(
                                     self.busy,
                                     self.discovering,
                                     crate::license_looks_valid(self.license.trim()),
-                                    self.selected.is_some(),
+                                    PathBuf::from(self.folder.trim()).is_absolute(),
                                 );
                                 let label = self.setup.primary_label(self.busy);
                                 let response = ui.add_enabled(
@@ -529,7 +437,7 @@ impl eframe::App for LauncherApp {
                                             self.license.trim().to_owned(),
                                         )),
                                         SetupState::Retry => self.start_verification(None),
-                                        SetupState::Ready => self.start_install(),
+                                        SetupState::Ready => self.start_download(),
                                         SetupState::Checking | SetupState::Activating => {}
                                     }
                                 }
@@ -646,17 +554,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn all_unverified_states_hide_instances_and_installation() {
+    fn activation_screens_have_no_license_requirement_footer() {
         for state in [
             SetupState::Checking,
             SetupState::Activating,
             SetupState::NeedsKey,
             SetupState::Retry,
         ] {
-            assert!(!state.allows_instances());
-            assert!(!state.primary_label(false).starts_with("Install"));
+            assert_eq!(state.footer_label(), None);
         }
-        assert!(SetupState::Ready.allows_instances());
+        assert_eq!(
+            SetupState::Ready.footer_label(),
+            Some("Fabric 1.21.11 · Move the JAR yourself")
+        );
+    }
+
+    #[test]
+    fn all_unverified_states_hide_folder_selection_and_download() {
+        for state in [
+            SetupState::Checking,
+            SetupState::Activating,
+            SetupState::NeedsKey,
+            SetupState::Retry,
+        ] {
+            assert!(!state.allows_download());
+            assert!(!state.primary_label(false).starts_with("Download"));
+        }
+        assert!(SetupState::Ready.allows_download());
     }
 
     #[test]
@@ -685,7 +609,8 @@ mod tests {
     }
 
     #[test]
-    fn verified_installation_needs_an_instance_but_not_a_key() {
+    fn verified_download_needs_a_folder_but_not_a_key() {
+        assert_eq!(SetupState::Ready.primary_label(false), "Download Celeste");
         assert!(!SetupState::Ready.primary_enabled(false, false, false, false));
         assert!(SetupState::Ready.primary_enabled(false, false, false, true));
         assert!(!SetupState::Ready.primary_enabled(false, true, false, true));

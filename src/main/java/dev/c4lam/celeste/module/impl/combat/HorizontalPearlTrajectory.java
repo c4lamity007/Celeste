@@ -106,10 +106,30 @@ public final class HorizontalPearlTrajectory {
         return solveDelayed(thrownPearl, throwDelay, windOrigin, windInherited);
     }
 
+    /** A straight-up pearl keeps its launch yaw throughout the catch, including tiny input rounding. */
+    public static Solution solve(State thrownPearl, int throwDelay, Vec windOrigin, Vec windInherited,
+                                 float pearlYaw, float pearlPitch) {
+        if (!Float.isFinite(pearlYaw) || !Float.isFinite(pearlPitch) || !throwWindow(throwDelay)) return null;
+        if (pearlPitch < -90 || pearlPitch > -89.99F) return solve(thrownPearl, throwDelay, windOrigin, windInherited);
+        return solveDelayed(thrownPearl, throwDelay, windOrigin, windInherited, pearlYaw);
+    }
+
     /** The upward Catch macro has a configurable wait; horizontal catches still use solve's 1–2 ticks. */
     public static Solution solveDelayed(State thrownPearl, int throwDelay, Vec windOrigin, Vec windInherited) {
+        return solveDelayed(thrownPearl, throwDelay, windOrigin, windInherited, Float.NaN);
+    }
+
+    private static Solution solveDelayed(State thrownPearl, int throwDelay, Vec windOrigin, Vec windInherited,
+                                         float fixedYaw) {
         if (thrownPearl == null || !thrownPearl.valid() || throwDelay < 1 || throwDelay > MAX_DELAYED_THROW_TICKS
             || windOrigin == null || windInherited == null || !windOrigin.finite() || !windInherited.finite()) return null;
+        if (Float.isFinite(fixedYaw)) {
+            // Yaw is undefined on a vertical ray. Prefer that ray over sideways corrections caused
+            // by coordinate rounding or drag, but accept it only when it really catches the pearl.
+            Solution vertical = aimedCollision(thrownPearl, throwDelay, windOrigin, windInherited,
+                MAX_FLIGHT_TICKS + 1, fixedYaw, -90);
+            if (vertical != null) return vertical;
+        }
         State pearl = advance(thrownPearl, throwDelay);
         // At the first pearl tick after charge spawn, the charge has not moved yet.
         pearl = step(pearl);
@@ -126,7 +146,7 @@ public final class HorizontalPearlTrajectory {
                 for (double fraction : new double[] {(-bb - root) / (2 * aa), (-bb + root) / (2 * aa)}) {
                     if (fraction < 0 || fraction > 1) continue;
                     Solution result = candidate(thrownPearl, throwDelay, windOrigin, windInherited,
-                        windTicks, a.add(segment.scale(fraction)));
+                        windTicks, a.add(segment.scale(fraction)), fixedYaw);
                     if (result != null) return result;
                 }
             }
@@ -134,7 +154,7 @@ public final class HorizontalPearlTrajectory {
             for (double fraction : new double[] {.5, 0, 1}) {
                 Vec displacement = a.add(segment.scale(fraction));
                 if (Math.abs(displacement.length() - radius) > HALF + .3) continue;
-                Solution result = candidate(thrownPearl, throwDelay, windOrigin, windInherited, windTicks, displacement);
+                Solution result = candidate(thrownPearl, throwDelay, windOrigin, windInherited, windTicks, displacement, fixedYaw);
                 if (result != null) return result;
             }
             pearl = next;
@@ -142,13 +162,20 @@ public final class HorizontalPearlTrajectory {
         return null;
     }
 
-    private static Solution candidate(State pearl, int delay, Vec origin, Vec inherited, int ticks, Vec aim) {
+    private static Solution candidate(State pearl, int delay, Vec origin, Vec inherited, int ticks, Vec aim, float fixedYaw) {
         double length = aim.length();
         if (length < 1e-9 || !Double.isFinite(length)) return null;
-        float yaw = (float) Math.toDegrees(Math.atan2(-aim.x, aim.z));
-        float pitch = (float) -Math.toDegrees(Math.atan2(aim.y, Math.hypot(aim.x, aim.z)));
+        float yaw = Float.isFinite(fixedYaw) ? fixedYaw : (float) Math.toDegrees(Math.atan2(-aim.x, aim.z));
+        double horizontal = Float.isFinite(fixedYaw)
+            ? Math.max(0, aim.dot(direction(fixedYaw, 0))) : Math.hypot(aim.x, aim.z);
+        float pitch = (float) -Math.toDegrees(Math.atan2(aim.y, horizontal));
+        return aimedCollision(pearl, delay, origin, inherited, ticks + 1, yaw, pitch);
+    }
+
+    private static Solution aimedCollision(State pearl, int delay, Vec origin, Vec inherited, int limit,
+                                            float yaw, float pitch) {
         Vec velocity = direction(yaw, pitch).scale(SPEED).add(inherited);
-        Solution hit = firstCollision(pearl, delay, origin, velocity, ticks + 1);
+        Solution hit = firstCollision(pearl, delay, origin, velocity, limit);
         return hit == null ? null : new Solution(yaw, pitch, velocity, hit.windTicks, hit.pearlFraction, hit.catchPosition);
     }
 

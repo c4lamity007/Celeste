@@ -1,6 +1,8 @@
 use anyhow::{Context, Result, anyhow};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -53,11 +55,11 @@ fn create_pending(parent: &Path, name: &std::ffi::OsStr) -> Result<(PendingFile,
             std::process::id()
         ));
         let pending = parent.join(pending_name);
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&pending)
-        {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        match options.open(&pending) {
             Ok(file) => return Ok((PendingFile(pending), file)),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(error).context("Could not create temporary output"),

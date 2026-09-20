@@ -49,6 +49,7 @@ public final class BetaClientProtocolCheck {
         check(normalAuth.payload() != null && normalAuth.loader() != null, "production download contract retained");
         normal.client.checkSession(normal.credential, DIGEST, false);
         check(normal.transport.proofs == 2, "production dual proofs verified for auth and heartbeat");
+        protectedRequests(normal, normalAuth.grant());
 
         Fixture beta = new Fixture(true);
         var betaAuth = beta.client.authenticate(beta.credential, HARDWARE);
@@ -57,12 +58,12 @@ public final class BetaClientProtocolCheck {
         check(beta.transport.proofs == 2, "beta dual proofs verified for auth and heartbeat");
         messageVectors(normal.client, beta.client);
 
-        for (String mutation : List.of("product", "missing-product", "object-product", "catalog", "release", "digest", "version", "uid", "device", "signature", "artifact", "stage")) {
+        for (String mutation : List.of("product", "missing-product", "object-product", "catalog", "release", "digest", "version", "uid", "device", "signature", "artifact", "stage", "missing-cnf", "wrong-cnf")) {
             Fixture fixture = new Fixture(true);
             fixture.transport.authMutation = mutation;
             rejected(() -> fixture.client.authenticate(fixture.credential, HARDWARE), "beta auth rejects " + mutation);
         }
-        for (String mutation : List.of("product", "missing-product", "object-product", "catalog", "release", "digest", "version", "uid", "device", "signature", "nonce")) {
+        for (String mutation : List.of("product", "missing-product", "object-product", "catalog", "release", "digest", "version", "uid", "device", "signature", "nonce", "missing-cnf", "wrong-cnf")) {
             Fixture fixture = new Fixture(true);
             fixture.transport.sessionMutation = mutation;
             rejected(() -> fixture.client.checkSession(fixture.credential, DIGEST, false), "beta heartbeat rejects " + mutation);
@@ -101,6 +102,28 @@ public final class BetaClientProtocolCheck {
         System.out.println("PASS: beta client protocol (" + checks + " checks; actual Ed25519 proofs, no network)");
     }
 
+    private static void protectedRequests(Fixture fixture, String grant) throws Exception {
+        for (String path : List.of("/v1/loader/test", "/v1/blob/a", "/v1/blob/b")) {
+            check(Arrays.equals(fixture.client.download(path, grant), new byte[]{1, 2, 3}), "protected artifact response preserved");
+        }
+        fixture.client.cloudRequest("GET", "/v1/configs?sort=recent", null, null, grant);
+        fixture.client.cloudRequest("POST", "/v1/configs", "application/json", "{}".getBytes(StandardCharsets.UTF_8), grant);
+        JsonObject ticket = fixture.transport.claims("celeste-installer", "");
+        ticket.addProperty("payload_release", fixture.config.releaseId());
+        ticket.addProperty("payload_sha256", DIGEST);
+        ticket.addProperty("bootstrap", "fixture-bootstrap");
+        ticket.addProperty("bootstrap_sha256", DIGEST);
+        fixture.client.consumeInstallerTicket(fixture.signed(ticket, false), fixture.credential);
+        check(fixture.transport.protectedRequests == 6, "artifact, cloud and installer requests all carry token-bound proofs");
+        Fixture fresh = new Fixture(false);
+        try {
+            fresh.client.download("/v1/blob/a", grant);
+            throw new AssertionError("uninitialized signing context accepted");
+        } catch (IOException expected) {
+            check(fresh.transport.protectedRequests == 0, "missing installation signer rejected before transport");
+        }
+    }
+
     private static void messageVectors(AuthServiceClient normal, AuthServiceClient beta) throws Exception {
         Method method = AuthServiceClient.class.getDeclaredMethod("sessionMessage", String.class, long.class,
             String.class, String.class, String.class, String.class);
@@ -118,6 +141,7 @@ public final class BetaClientProtocolCheck {
         final KeyPair server = Crypto.generateEd25519();
         final KeyPair install = Crypto.generateEd25519();
         final KeyPair token = Crypto.generateEd25519();
+        final DpopProofSigner signer;
         final AuthConfig config;
         final InstallCredential credential;
         final FakeHttp transport;
@@ -126,11 +150,19 @@ public final class BetaClientProtocolCheck {
         Fixture(boolean beta) throws Exception {
             config = new AuthConfig(URI.create("https://auth.invalid"), Crypto.rawPublic(server.getPublic()),
                 "owner-beta-test", DIGEST, "1.0-test");
+            signer = new DpopProofSigner(install.getPrivate(), Crypto.rawPublic(install.getPublic()));
+            JsonObject certificate = new JsonObject();
+            certificate.addProperty("aud", "celeste-installation");
+            certificate.addProperty("sub", "42");
+            certificate.addProperty("device", DEVICE);
+            certificate.addProperty("install_key", Crypto.b64(Crypto.rawPublic(install.getPublic())));
+            certificate.addProperty("nbf", Instant.now().getEpochSecond() - 1);
+            certificate.addProperty("exp", Instant.now().getEpochSecond() + 600);
             byte[] tokenEncoded = token.getPrivate().getEncoded();
             credential = new InstallCredential(DEVICE, 42L, Crypto.b64(install.getPrivate().getEncoded()),
                 Crypto.b64(Crypto.generateX25519().getPrivate().getEncoded()),
                 Crypto.b64(Arrays.copyOfRange(tokenEncoded, tokenEncoded.length - 32, tokenEncoded.length)),
-                "fixture-certificate", IDENTITY.uuid(), IDENTITY.username());
+                signed(certificate, false), IDENTITY.uuid(), IDENTITY.username());
             transport = new FakeHttp(this, beta);
             client = new AuthServiceClient(config, IDENTITY, beta ? CATALOG : null, transport);
         }
@@ -151,9 +183,11 @@ public final class BetaClientProtocolCheck {
         String authMutation = "";
         String sessionMutation = "";
         int proofs;
+        int protectedRequests;
         int failureStatus;
         boolean sawTamper;
         private final byte[] challenge;
+        private final java.util.Set<String> dpopIds = new java.util.HashSet<>();
 
         FakeHttp(Fixture fixture, boolean beta) {
             this.fixture = fixture;
@@ -167,9 +201,20 @@ public final class BetaClientProtocolCheck {
             check(request.uri().getScheme().equals("https") && request.uri().getHost().equals("auth.invalid"), "pinned HTTPS origin");
             if (failureStatus != 0) return (HttpResponse<T>) new Response(request, "{}", failureStatus);
             try {
+                String path = request.uri().getPath();
+                if (path.startsWith("/v1/blob/") || path.startsWith("/v1/loader/") || path.equals("/v1/configs")) {
+                    verifyDpop(request);
+                    protectedRequests++;
+                    return (HttpResponse<T>) new ByteResponse(request, new byte[]{1, 2, 3});
+                }
                 JsonObject body = JSON.fromJson(readBody(request), JsonObject.class);
                 JsonObject response = new JsonObject();
                 switch (request.uri().getPath()) {
+                    case "/v1/installer/consume" -> {
+                        verifyDpop(request);
+                        protectedRequests++;
+                        response.addProperty("accepted", true);
+                    }
                     case "/v1/auth/start" -> {
                         check(expectBeta ? CATALOG.equals(body.get("beta_catalog_sha256").getAsString()) : !body.has("beta_catalog_sha256"),
                             "auth start carries only expected catalog context");
@@ -177,6 +222,7 @@ public final class BetaClientProtocolCheck {
                         response.addProperty("message", Crypto.b64(challenge));
                     }
                     case "/v1/auth/complete" -> {
+                        verifyDpop(request);
                         verifyProofs(body, challenge);
                         JsonObject claims = claims("celeste-client", authMutation);
                         if (!respondBeta) {
@@ -199,6 +245,7 @@ public final class BetaClientProtocolCheck {
                         response.addProperty("grant", fixture.signed(claims, authMutation.equals("signature")));
                     }
                     case "/v1/session/check" -> {
+                        verifyDpop(request);
                         check(expectBeta ? CATALOG.equals(body.get("beta_catalog_sha256").getAsString()) : !body.has("beta_catalog_sha256"),
                             "heartbeat catalog presence preserved");
                         String message = "celeste-session-v1\n" + DEVICE + "\n" + body.get("timestamp").getAsLong() + "\n"
@@ -235,6 +282,11 @@ public final class BetaClientProtocolCheck {
             claims.addProperty("client_sha256", mutation.equals("digest") ? OTHER : DIGEST);
             claims.addProperty("nbf", Instant.now().getEpochSecond() - 1);
             claims.addProperty("exp", Instant.now().getEpochSecond() + 60);
+            if (!mutation.equals("missing-cnf")) {
+                JsonObject cnf = new JsonObject();
+                cnf.addProperty("jkt", mutation.equals("wrong-cnf") ? "wrong-key" : fixture.signer.thumbprint());
+                claims.add("cnf", cnf);
+            }
             if (respondBeta) {
                 if (!mutation.equals("missing-catalog")) claims.addProperty("beta_catalog_sha256", mutation.equals("catalog") ? OTHER : CATALOG);
                 claims.addProperty("client_version", mutation.equals("version") ? "other-version" : fixture.config.clientVersion());
@@ -249,6 +301,28 @@ public final class BetaClientProtocolCheck {
                 }
             }
             return claims;
+        }
+
+        private void verifyDpop(HttpRequest request) throws Exception {
+            String[] parts = request.headers().firstValue("DPoP").orElseThrow().split("\\.");
+            check(parts.length == 3 && Crypto.verify(fixture.install.getPublic(),
+                (parts[0] + "." + parts[1]).getBytes(StandardCharsets.US_ASCII), Crypto.b64(parts[2])), "DPoP installation signature");
+            JsonObject header = JSON.fromJson(new String(Crypto.b64(parts[0]), StandardCharsets.UTF_8), JsonObject.class);
+            JsonObject proof = JSON.fromJson(new String(Crypto.b64(parts[1]), StandardCharsets.UTF_8), JsonObject.class);
+            check(header.get("typ").getAsString().equals("dpop+jwt") && header.get("alg").getAsString().equals("EdDSA"), "DPoP proof type");
+            check(header.getAsJsonObject("jwk").get("x").getAsString().equals(Crypto.b64(Crypto.rawPublic(fixture.install.getPublic()))), "DPoP installation public key");
+            check(proof.get("htm").getAsString().equals(request.method())
+                && proof.get("htu").getAsString().equals("https://auth.invalid" + request.uri().getRawPath()), "DPoP exact request binding without query");
+            String authorization = request.headers().firstValue("Authorization").orElse(null);
+            if (authorization == null) {
+                check(!proof.has("ath"), "issuance proof omits access-token hash");
+            } else {
+                check(authorization.startsWith("DPoP "), "protected resource never downgrades to Bearer");
+                String token = authorization.substring(5);
+                check(proof.get("ath").getAsString().equals(Crypto.b64(Crypto.sha256(token.getBytes(StandardCharsets.US_ASCII)))), "proof bound to exact authorization token");
+            }
+            check(dpopIds.add(proof.get("jti").getAsString()), "Fresh proof for each request");
+            check(Math.abs(Instant.now().getEpochSecond() - proof.get("iat").getAsLong()) <= 5, "DPoP current issuance time");
         }
 
         private void verifyProofs(JsonObject body, byte[] message) throws Exception {
@@ -274,6 +348,15 @@ public final class BetaClientProtocolCheck {
         Response(HttpRequest request, String body) { this(request, body, 200); }
         @Override public Optional<HttpResponse<String>> previousResponse() { return Optional.empty(); }
         @Override public HttpHeaders headers() { return HttpHeaders.of(Map.of("Content-Type", List.of("application/json")), (a, b) -> true); }
+        @Override public Optional<SSLSession> sslSession() { return Optional.empty(); }
+        @Override public URI uri() { return request.uri(); }
+        @Override public HttpClient.Version version() { return HttpClient.Version.HTTP_1_1; }
+    }
+
+    private record ByteResponse(HttpRequest request, byte[] body) implements HttpResponse<byte[]> {
+        @Override public int statusCode() { return 200; }
+        @Override public Optional<HttpResponse<byte[]>> previousResponse() { return Optional.empty(); }
+        @Override public HttpHeaders headers() { return HttpHeaders.of(Map.of("Content-Type", List.of("application/octet-stream")), (a, b) -> true); }
         @Override public Optional<SSLSession> sslSession() { return Optional.empty(); }
         @Override public URI uri() { return request.uri(); }
         @Override public HttpClient.Version version() { return HttpClient.Version.HTTP_1_1; }

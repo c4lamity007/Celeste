@@ -38,8 +38,10 @@ sourceSets {
             include 'dev/c4lam/celeste/auth/AuthServiceClient.java'
             include 'dev/c4lam/celeste/auth/CredentialStore.java'
             include 'dev/c4lam/celeste/auth/Crypto.java'
+            include 'dev/c4lam/celeste/auth/DpopProofSigner.java'
             include 'dev/c4lam/celeste/auth/GameIdentity.java'
             include 'dev/c4lam/celeste/auth/HardwareFingerprint.java'
+            include 'dev/c4lam/celeste/auth/PortableHardwareFingerprint.java'
             include 'dev/c4lam/celeste/auth/InstallCredential.java'
             include 'dev/c4lam/celeste/auth/LaunchTicketStore.java'
             include 'dev/c4lam/celeste/auth/GatewayBridge.java'
@@ -82,3 +84,12 @@ tasks.named('check') { dependsOn bootstrapDiscoveryCheck }
 // These fixtures are JavaExec assertions, not JUnit tests. Keep the real
 // discovery check above mandatory while allowing Gradle 9's empty Test task.
 tasks.named('test', Test) { failOnNoDiscoveredTests = false }
+
+def folderActivationCheck = tasks.register('checkFolderActivation', JavaExec) {
+    dependsOn tasks.named('testClasses')
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'dev.c4lam.celeste.auth.FolderActivationCheck'
+    enableAssertions = true
+    onlyIf { System.getProperty('os.name').toLowerCase(Locale.ROOT).contains('windows') }
+}
+tasks.named('check') { dependsOn folderActivationCheck }

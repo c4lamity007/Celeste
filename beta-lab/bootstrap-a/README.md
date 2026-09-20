@@ -40,7 +40,7 @@ not accepted. Installer credentials must never be placed in command-line
 arguments or example files. The start-request JSON shape is:
 
 ```json
-{"action":"start","installer":"<existing installer grant>","device":"<bound device ID>","support_directory":"<existing local support directory>","expected_game_directory":"<explicitly selected launcher instance directory>","expected_release":"<launcher-verified release ID>","expected_catalog_sha256":"<launcher-verified catalog hash>"}
+{"action":"start","installer":"<existing installer grant>","device":"<bound device ID>","uid":42,"support_directory":"<existing local support directory>","expected_game_directory":"<explicitly selected launcher instance directory>","expected_release":"<launcher-verified release ID>","expected_catalog_sha256":"<launcher-verified catalog hash>"}
 ```
 
 First use `{"action":"inspect"}` with the same CLI/PID/agent shape. This read-only
@@ -54,6 +54,19 @@ The fetched signed catalog must match the launcher's expected release and catalo
 hash before downloads or game changes. Preparation failures remain retryable
 until resident bridge/native installation starts; later failures report
 `restart required` instead of incorrectly reporting `inactive`.
+
+Delivery uses RFC 9449 DPoP proofs from the existing installation signing key.
+After the selected game directory is verified, Bootstrap A reads only the
+existing `config/celeste/auth/celeste_plus/device.bin` written by the launcher.
+It opens that bounded `CST1` envelope through the running game's existing JNA
+Windows DPAPI API, verifies the installation certificate against the pinned
+server key and expected UID/device, and proves the private/public key pair
+matches. Missing Windows protection support fails closed. No private key is
+added to the IPC request, command line, a new file, or a public key getter.
+Legacy installation certificates remain usable; current installer/manifest
+grants must contain the matching `cnf.jkt` and no bearer fallback is accepted.
+The offline signer check exercises 18 synthetic certificate, key and identity
+cases without accessing an actual saved installation or calling DPAPI.
 
 Control requests are `{"action":"status"}` or `{"action":"stop"}`. Responses
 report lifecycle state; a start response does not mean readiness, and a stop

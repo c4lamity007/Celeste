@@ -18,6 +18,16 @@ record HardwareFingerprint(String system, String board, String processor, List<S
     private static final String DISPLAY_ROOT = "SYSTEM\\CurrentControlSet\\Enum\\DISPLAY";
 
     static HardwareFingerprint collect() {
+        String os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT);
+        if (os.contains("linux")) {
+            return PortableHardwareFingerprint.collectLinux();
+        }
+        if (os.contains("mac")) {
+            return PortableHardwareFingerprint.collectMac();
+        }
+        if (!os.contains("windows")) {
+            throw new IllegalStateException("Celeste does not support this operating system");
+        }
         boolean releaseCom = initializeCom();
         try {
             return collectWindows();

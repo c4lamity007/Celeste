@@ -36,10 +36,12 @@ dependencies {
 processResources {
     inputs.property 'version', project.version
 
-    // Package the supplied JNI bridge with the mod so the runtime extractor
-    // never depends on PowerShell or a separately installed helper.
-    from('C:/Users/c4lam/Downloads/New folder (5)/MediaPlayerInfo.dll') {
-        into 'mediaplayerinfo/natives/win'
+    // Only Windows uses the optional system-media JNI bridge. Its development
+    // path is Windows-specific and must not enter macOS/Linux resource builds.
+    if (System.getProperty('os.name', '').toLowerCase().contains('windows')) {
+        from('C:/Users/c4lam/Downloads/New folder (5)/MediaPlayerInfo.dll') {
+            into 'mediaplayerinfo/natives/win'
+        }
     }
 
     filesMatching('fabric.mod.json') {

@@ -19,6 +19,13 @@ allprojects { project ->
                 workingDir = project.layout.buildDirectory.dir('module-qa/beta-client-protocol').get().asFile
                 doFirst { workingDir.mkdirs() }
             }
+            project.tasks.register('dpopProofCheck', JavaExec) {
+                dependsOn compileCheck
+                classpath = project.files(output) + project.sourceSets.main.output.classesDirs + project.sourceSets.main.runtimeClasspath
+                mainClass = 'dev.c4lam.celeste.auth.DpopProofCheck'
+                enableAssertions = true
+                args project.layout.buildDirectory.file('module-qa/dpop/java-proof.json').get().asFile.absolutePath
+            }
         }
     }
 }

@@ -9,6 +9,9 @@
   ],
   "license": "All-Rights-Reserved",
   "environment": "client",
+  "custom": {
+    "celeste:delivery": "shared-activation-v1"
+  },
   "entrypoints": {
     "preLaunch": [
       "dev.c4lam.celeste.auth.GatewayPreLaunch"

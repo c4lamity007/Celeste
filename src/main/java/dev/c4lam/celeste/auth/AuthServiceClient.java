@@ -52,6 +52,7 @@ final class AuthServiceClient {
     private final PublicKey serverKey;
     private final GameIdentity identity;
     private final String expectedBetaCatalog;
+    private volatile DpopProofSigner proofSigner;
 
     AuthServiceClient(AuthConfig config, GameIdentity identity) throws GeneralSecurityException {
         this(config, identity, null);
@@ -81,6 +82,7 @@ final class AuthServiceClient {
     Enrollment enroll(String licenseKey, HardwareFingerprint hardware) throws Exception {
         KeyPair installSigning = Crypto.generateEd25519();
         KeyPair installEncryption = Crypto.generateX25519();
+        DpopProofSigner enrollmentProof = new DpopProofSigner(installSigning.getPrivate(), Crypto.rawPublic(installSigning.getPublic()));
 
         JsonObject startBody = releaseBody();
         startBody.addProperty("license_key", licenseKey.strip());
@@ -94,12 +96,13 @@ final class AuthServiceClient {
         JsonObject completeBody = new JsonObject();
         completeBody.addProperty("challenge_id", requiredString(start, "challenge_id"));
         completeBody.addProperty("install_signature", Crypto.b64(Crypto.sign(installSigning.getPrivate(), message)));
-        JsonObject complete = post("/v1/enroll/complete", completeBody);
+        JsonObject complete = post("/v1/enroll/complete", completeBody, enrollmentProof);
 
         String deviceId = requiredString(complete, "device_id");
         long uid = requiredLong(complete, "uid");
         String certificate = requiredString(complete, "device_certificate");
         JsonObject certificateClaims = verifyToken(certificate, "celeste-installation");
+        enrollmentProof.requireBinding(certificateClaims);
         if (!deviceId.equals(requiredString(certificateClaims, "device"))
             || uid != Long.parseLong(requiredString(certificateClaims, "sub"))
             || !Crypto.b64(Crypto.rawPublic(installSigning.getPublic())).equals(requiredString(certificateClaims, "install_key"))) {
@@ -131,6 +134,7 @@ final class AuthServiceClient {
 
     Authenticated authenticate(InstallCredential credential, HardwareFingerprint hardware) throws Exception {
         credential.validate();
+        DpopProofSigner signer = bindCredential(credential);
         JsonObject startBody = releaseBody();
         startBody.addProperty("device_id", credential.deviceId());
         if (expectedBetaCatalog != null) {
@@ -145,10 +149,11 @@ final class AuthServiceClient {
         completeBody.addProperty("challenge_id", requiredString(start, "challenge_id"));
         completeBody.addProperty("install_signature", Crypto.b64(Crypto.sign(credential.signingKey(), message)));
         completeBody.addProperty("token_signature", Crypto.b64(Crypto.sign(credential.tokenKey(), message)));
-        JsonObject complete = post("/v1/auth/complete", completeBody);
+        JsonObject complete = post("/v1/auth/complete", completeBody, signer);
         String grant = requiredString(complete, "grant");
         long uid = requiredLong(complete, "uid");
         JsonObject claims = verifyToken(grant, "celeste-client");
+        signer.requireBinding(claims);
         requireProduct(claims);
         if (expectedBetaCatalog != null) {
             requireBetaContext(claims);
@@ -203,7 +208,9 @@ final class AuthServiceClient {
     }
 
     void consumeInstallerTicket(String ticket, InstallCredential credential) throws Exception {
+        DpopProofSigner signer = bindCredential(credential);
         JsonObject claims = verifyToken(ticket, "celeste-installer");
+        signer.requireBinding(claims);
         requireProduct(claims);
         if (!credential.deviceId().equals(requiredString(claims, "device"))
             || credential.uid() != Long.parseLong(requiredString(claims, "sub"))
@@ -214,11 +221,13 @@ final class AuthServiceClient {
             || requiredHex(claims, "bootstrap_sha256").isBlank()) {
             throw new GeneralSecurityException("Native launch ticket does not match this installation");
         }
-        HttpRequest request = HttpRequest.newBuilder(sameOrigin("/v1/installer/consume"))
+        URI endpoint = sameOrigin("/v1/installer/consume");
+        HttpRequest request = HttpRequest.newBuilder(endpoint)
             .timeout(Duration.ofSeconds(12))
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .header("Authorization", "Bearer " + ticket)
+            .header("Authorization", "DPoP " + ticket)
+            .header("DPoP", signer.proof("POST", endpoint, ticket))
             .POST(HttpRequest.BodyPublishers.ofString("{}", StandardCharsets.US_ASCII))
             .build();
         HttpResponse<String> response = http.send(
@@ -241,7 +250,8 @@ final class AuthServiceClient {
         HttpRequest request = HttpRequest.newBuilder(endpoint)
             .timeout(Duration.ofSeconds(20))
             .header("Accept", "application/octet-stream")
-            .header("Authorization", "Bearer " + grant)
+            .header("Authorization", "DPoP " + grant)
+            .header("DPoP", requestProof("GET", endpoint, grant))
             .GET()
             .build();
         HttpResponse<byte[]> response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
@@ -253,6 +263,7 @@ final class AuthServiceClient {
 
     String checkSession(InstallCredential credential, String observedDigest, boolean integrityMismatch) throws Exception {
         credential.validate();
+        DpopProofSigner signer = bindCredential(credential);
         long timestamp = Instant.now().getEpochSecond();
         byte[] nonceBytes = new byte[18];
         RANDOM.nextBytes(nonceBytes);
@@ -278,12 +289,13 @@ final class AuthServiceClient {
         }
         body.addProperty("install_signature", Crypto.b64(Crypto.sign(credential.signingKey(), message)));
         body.addProperty("token_signature", Crypto.b64(Crypto.sign(credential.tokenKey(), message)));
-        JsonObject response = post("/v1/session/check", body);
+        JsonObject response = post("/v1/session/check", body, signer);
         if (integrityMismatch) {
             throw new GeneralSecurityException("Client integrity verification failed");
         }
         String sessionToken = requiredString(response, "session_token");
         JsonObject claims = verifyToken(sessionToken, "celeste-session");
+        signer.requireBinding(claims);
         requireProduct(claims);
         if (!"active".equals(requiredString(response, "status"))
             || !"active".equals(requiredString(claims, "status"))
@@ -324,10 +336,12 @@ final class AuthServiceClient {
         if (!verb.equals("GET") && !verb.equals("POST")) {
             throw new IOException("Cloud config method is invalid");
         }
-        HttpRequest.Builder builder = HttpRequest.newBuilder(sameOrigin(path))
+        URI endpoint = sameOrigin(path);
+        HttpRequest.Builder builder = HttpRequest.newBuilder(endpoint)
             .timeout(Duration.ofSeconds(20))
             .header("Accept", "application/json, image/png")
-            .header("Authorization", "Bearer " + grant);
+            .header("Authorization", "DPoP " + grant)
+            .header("DPoP", requestProof(verb, endpoint, grant));
         if (verb.equals("POST")) {
             builder.header("Content-Type", contentType == null ? "application/json" : contentType)
                 .POST(HttpRequest.BodyPublishers.ofByteArray(body == null ? new byte[0] : body));
@@ -450,13 +464,22 @@ final class AuthServiceClient {
     }
 
     private JsonObject post(String path, JsonObject body) throws IOException, InterruptedException, AuthRejectedException {
+        return post(path, body, null);
+    }
+
+    private JsonObject post(String path, JsonObject body, DpopProofSigner signer)
+        throws IOException, InterruptedException, AuthRejectedException {
         URI endpoint = sameOrigin(path);
-        HttpRequest request = HttpRequest.newBuilder(endpoint)
+        HttpRequest.Builder builder = HttpRequest.newBuilder(endpoint)
             .timeout(Duration.ofSeconds(12))
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body), StandardCharsets.UTF_8))
-            .build();
+            .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body), StandardCharsets.UTF_8));
+        if (signer != null) {
+            try { builder.header("DPoP", signer.proof("POST", endpoint, null)); }
+            catch (GeneralSecurityException exception) { throw new IOException("Could not sign authentication request", exception); }
+        }
+        HttpRequest request = builder.build();
         HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             String message = switch (response.statusCode()) {
@@ -489,6 +512,26 @@ final class AuthServiceClient {
             throw new IOException("Authentication response referenced an untrusted endpoint");
         }
         return endpoint;
+    }
+
+    DpopProofSigner bindCredential(InstallCredential credential) throws GeneralSecurityException {
+        JsonObject certificate = verifyToken(credential.certificate(), "celeste-installation");
+        if (!credential.deviceId().equals(requiredString(certificate, "device"))
+            || !Long.toString(credential.uid()).equals(requiredString(certificate, "sub"))) {
+            throw new GeneralSecurityException("Installation certificate does not match this device");
+        }
+        DpopProofSigner signer = new DpopProofSigner(credential.signingKey(), Crypto.b64(requiredString(certificate, "install_key")));
+        // Existing signed activation certificates can predate DPoP; new access grants cannot.
+        if (certificate.has("cnf")) signer.requireBinding(certificate);
+        proofSigner = signer;
+        return signer;
+    }
+
+    private String requestProof(String method, URI endpoint, String token) throws IOException {
+        DpopProofSigner signer = proofSigner;
+        if (signer == null) throw new IOException("Authenticate this installation before requesting protected content");
+        try { return signer.proof(method, endpoint, token); }
+        catch (GeneralSecurityException exception) { throw new IOException("Could not sign protected request", exception); }
     }
 
     private static int effectivePort(URI uri) {

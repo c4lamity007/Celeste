@@ -5,11 +5,13 @@ mod attach;
 mod auth;
 mod credential_protection;
 mod delivery;
+#[path = "../../../shared-auth/dpop.rs"]
+mod dpop;
 mod platform;
 mod release;
 mod windows_profile;
 
-pub(crate) const SETUP_BUILD: &str = "20260908.2";
+pub(crate) const SETUP_BUILD: &str = "20260920.2";
 
 use anyhow::{Result, anyhow};
 use attach::{AttachContext, Report};
@@ -248,12 +250,7 @@ impl App {
                     "Celeste+ activated. Preparing the signed release.".into(),
                 ));
                 let support = platform::support_directory(target.pid, target.started)?;
-                let verified = delivery::download_bootstrap(
-                    &session.grant,
-                    &session.device,
-                    &support,
-                    session.uid,
-                )?;
+                let verified = delivery::download_bootstrap(&session, &support)?;
                 let context = if let Some(previous) = retry {
                     attach::verify_retry_artifact(
                         &previous,

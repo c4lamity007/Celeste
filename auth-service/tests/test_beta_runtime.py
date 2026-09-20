@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ed25519
-from fastapi.testclient import TestClient
+from dpop_client import TestClient
 
 import app.main as main
 from app.beta_delivery import beta_runtime_catalog

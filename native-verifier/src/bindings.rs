@@ -114,12 +114,12 @@ where
         // Preserve this diagnostic even if another candidate had a different
         // corruption error. A Windows profile failure is not a license denial.
         return Err(error.context(
-            "The saved activation could not be opened; retry from its original Windows account",
+            "The saved activation could not be opened; retry from its original account",
         ));
     }
     if let Some(error) = load_error.filter(|_| !explicit_key) {
         return Err(
-            error.context(LicenseRequired("The saved activation could not be opened under this Windows account. Enter your Celeste license"))
+            error.context(LicenseRequired("The saved activation could not be opened under this account. Enter your Celeste license"))
         );
     }
     Ok(None)

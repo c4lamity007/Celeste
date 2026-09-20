@@ -4,6 +4,7 @@ allprojects { project ->
             def output = project.layout.buildDirectory.dir('module-qa/delivery-client/classes')
             def compileCheck = project.tasks.register('compileBetaDeliveryClientCheck', JavaCompile) {
                 source project.fileTree('beta-lab/delivery-client/src') { include '**/*.java' }
+                source project.file('src/main/java/dev/c4lam/celeste/auth/DpopProofSigner.java')
                 source project.fileTree('beta-lab/delivery-client/test') { include '**/*.java' }
                 classpath = project.sourceSets.main.compileClasspath
                 destinationDirectory = output

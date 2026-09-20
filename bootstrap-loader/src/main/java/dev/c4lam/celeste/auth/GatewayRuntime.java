@@ -12,17 +12,17 @@ import net.fabricmc.loader.impl.launch.FabricLauncherBase;
 final class GatewayRuntime {
     private static final CredentialStore STORE = new CredentialStore();
     private static volatile boolean payloadReady;
-    private static volatile String failure = "Install Celeste for this instance before starting Minecraft";
+    private static volatile String failure = "Activate Celeste in the downloader before starting Minecraft";
 
     private GatewayRuntime() {
     }
 
     static void preLaunch() {
-        if (!STORE.exists()) {
-            return;
-        }
         try {
-            InstallCredential credential = STORE.load();
+            boolean local = STORE.present();
+            CredentialStore selected = local ? STORE : CredentialStore.launcherActivation();
+            if (!selected.exists()) return;
+            InstallCredential credential = selected.load();
             if (!credential.hasGameIdentity()) {
                 throw new SecurityException("Install Celeste again to refresh this activation");
             }
@@ -33,6 +33,9 @@ final class GatewayRuntime {
             // An installed mod may first run days later. Authenticate the saved
             // device afresh on each startup; the install-time grant is not a launch ticket.
             AuthServiceClient.Authenticated authenticated = service.authenticate(credential, hardware);
+            // A manually moved mod may run in a new game directory. Import only
+            // after fresh server authentication; the downloader writes no game files.
+            if (!local) STORE.save(credential);
             byte[] stageTwo = service.download(authenticated.loader().url(), authenticated.grant());
             requireDigest(stageTwo, authenticated.loader().sha256(), "second-stage loader");
             Path stageTwoPath = writeRuntimeFile("stage-two-" + config.releaseId() + ".jar", stageTwo);

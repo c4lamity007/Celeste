@@ -9,6 +9,7 @@ allprojects { project ->
             def compile = project.tasks.register('compileBetaBootstrapA', JavaCompile) {
                 source project.fileTree('beta-lab/bootstrap-a/src') { include '**/*.java' }
                 source project.fileTree('beta-lab/delivery-client/src') { include '**/*.java' }
+                source project.file('src/main/java/dev/c4lam/celeste/auth/DpopProofSigner.java')
                 source project.fileTree('beta-lab/memory-runtime/src/main/java') { include '**/*.java' }
                 ['combined-hooks', 'reload-hooks', 'interaction-hooks', 'rotation-hooks', 'fake-gamble-hooks',
                  'gameplay-callbacks', 'visual-hooks', 'atmosphere-hooks'].each { family ->

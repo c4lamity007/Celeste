@@ -27,6 +27,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from .beta_delivery import beta_enabled, beta_runtime_catalog, create_beta_router
 from .config import Settings
 from .database import Database
+from .dpop import DPoPVerifier, access_token, confirmation
 from .products import CELESTE, PLUS, PRODUCT_LABELS, issue_license, require_entitlement, require_claim_product
 from .request_limits import RequestLimitMiddleware
 from .security import (
@@ -270,6 +271,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     cloud_config_root = Path(settings.cloud_config_dir).resolve()
     cloud_config_root.mkdir(parents=True, exist_ok=True)
     signer = GrantSigner(settings.signing_private_key)
+    dpop = DPoPVerifier(settings)
     templates = Jinja2Templates(directory=str(ROOT / "templates"))
     templates.env.filters["timestamp"] = _display_time
 
@@ -364,13 +366,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def validate_launcher_release(request: ReleaseRequest) -> None:
         """Validate the stable native-launcher channel, not the moving payload digest."""
-        channel_id = settings.installer_channel_id or settings.release_id
         channel_version = settings.installer_channel_version or settings.client_version
-        accepted_digests = settings.installer_compatible_sha256 | {settings.release_sha256}
         if not (
-            hmac.compare_digest(request.release_id, channel_id)
+            settings.accepts_installer_identity(request.release_id, request.client_sha256)
             and hmac.compare_digest(request.client_version, channel_version)
-            and any(hmac.compare_digest(request.client_sha256, digest) for digest in accepted_digests)
         ):
             raise HTTPException(409, "unsupported release")
 
@@ -421,10 +420,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
 
     def active_cloud_identity(request: Request):
-        authorization = request.headers.get("authorization", "")
-        if not authorization.startswith("Bearer "):
-            raise HTTPException(401, "missing grant")
-        claims = signer.verify(authorization[7:].strip())
+        token = access_token(request)
+        claims = signer.verify(token)
         if claims is None or claims.get("aud") not in {"celeste-client", "celeste-session"}:
             raise HTTPException(401, "invalid grant")
         beta_claim = claims.get("beta_catalog_sha256")
@@ -444,7 +441,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with database.connect() as connection:
             row = connection.execute(
                 """
-                SELECT d.device_id,d.license_uid,d.status,d.last_game_name,
+                SELECT d.device_id,d.license_uid,d.install_signing_key,d.status,d.last_game_name,
                        l.status AS license_status,l.expires_at
                 FROM devices d JOIN licenses l ON l.uid=d.license_uid
                 WHERE d.device_id=? AND d.license_uid=?
@@ -481,6 +478,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     or (live["expires_at"] is not None and int(live["expires_at"]) <= int(time.time()))
                     or type(claims.get("exp")) is not int or claims["exp"] <= int(time.time())):
                 raise HTTPException(401, "invalid grant")
+        with database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            dpop.require(connection, request, bytes(row["install_signing_key"]), token=token, claims=claims)
         return claims, row
 
     def revoke_for_tamper(
@@ -617,6 +617,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ):
                 raise HTTPException(401, "challenge rejected")
             require_entitlement(connection, int(row["license_uid"]), str(row["product"]))
+            if not settings.accepts_installer_identity(row["release_id"], row["client_sha256"]):
+                raise HTTPException(409, "unsupported release")
             # Admission is rechecked in the completion transaction: two pending challenges
             # cannot consume the last slot concurrently or bypass a changed entitlement.
             count = connection.execute("SELECT COUNT(*) FROM devices WHERE license_uid=? AND status='active'",
@@ -631,6 +633,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not verify_ed25519(bytes(row["install_signing_key"]), message, body.install_signature):
                 audit(connection, "enroll_bad_signature", int(row["license_uid"]), body.challenge_id)
                 raise HTTPException(401, "challenge rejected")
+            dpop.require(connection, request, bytes(row["install_signing_key"]))
             token_seed, envelope = issue_token_seed(
                 bytes(row["install_encryption_key"]),
                 bytes(row["nonce"]),
@@ -684,6 +687,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "exp": now + 3650 * 86400,
                     "iat": now,
                     "install_key": b64e(bytes(row["install_signing_key"])),
+                    "cnf": confirmation(bytes(row["install_signing_key"])),
                     "token_key": b64e(token_public),
                     "sub": str(row["license_uid"]),
                 }
@@ -819,6 +823,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if not install_ok or not token_ok:
                 audit(connection, "auth_bad_proof", int(row["license_uid"]), body.challenge_id)
                 raise HTTPException(401, "authentication denied")
+            dpop.require(connection, request, bytes(row["install_signing_key"]))
             connection.execute("UPDATE challenges SET consumed_at=? WHERE challenge_id=?", (now, body.challenge_id))
             connection.execute(
                 """
@@ -848,6 +853,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if runtime is not None:
             grant = signer.sign({
                 "aud": "celeste-client", "product": PLUS, "client_sha256": runtime["runtime_sha256"],
+                "cnf": confirmation(bytes(row["install_signing_key"])),
                 "device": row["device_id"], "exp": now + settings.grant_ttl_seconds, "iat": now,
                 "jti": secrets.token_urlsafe(18), "nbf": now - 5, "release": runtime["release_id"],
                 "client_version": runtime["client_version"], "beta_catalog_sha256": runtime["catalog_sha256"],
@@ -859,6 +865,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         grant = signer.sign(
             {
                 "aud": "celeste-client",
+                "cnf": confirmation(bytes(row["install_signing_key"])),
                 "product": CELESTE,
                 "chunks": [settings.chunk_a_id, settings.chunk_b_id],
                 "client_sha256": settings.release_sha256,
@@ -999,6 +1006,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(401, f"{label} authentication denied")
             if int(row["device_license_uid"]) != int(row["license_uid"]) or (scope != "installer" and row["product"] != CELESTE):
                 raise HTTPException(401, f"{label} authentication denied")
+            if scope == "installer" and not settings.accepts_installer_identity(row["release_id"], row["client_sha256"]):
+                raise HTTPException(409, "unsupported release")
             require_entitlement(connection, int(row["license_uid"]), str(row["product"]))
             message = _message(row)
             if (
@@ -1007,6 +1016,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ):
                 audit(connection, f"{label}_bad_proof", int(row["license_uid"]), body.challenge_id)
                 raise HTTPException(401, f"{label} authentication denied")
+            dpop.require(connection, request, bytes(row["install_signing_key"]))
             connection.execute("UPDATE challenges SET consumed_at=? WHERE challenge_id=?", (now, body.challenge_id))
             connection.execute(
                 """
@@ -1030,6 +1040,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return signer.sign(
             {
                 "aud": audience,
+                "cnf": confirmation(bytes(row["install_signing_key"])),
                 "product": str(row["product"]),
                 "client_sha256": client_sha256 or settings.release_sha256,
                 "device": row["device_id"],
@@ -1075,15 +1086,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def installer_consume(request: Request):
         """Consume the native verifier handoff exactly once at game startup."""
         apply_limit(request, "installer-consume", 30, 60)
-        authorization = request.headers.get("authorization", "")
-        if not authorization.startswith("Bearer "):
-            raise HTTPException(401, "missing grant")
-        claims = signer.verify(authorization[7:].strip())
+        claims = signer.verify(access_token(request))
         if (
             claims is None
             or claims.get("aud") != "celeste-installer"
-            or claims.get("release") != (settings.installer_channel_id or settings.release_id)
-            or claims.get("client_sha256") not in (settings.installer_compatible_sha256 | {settings.release_sha256})
+            or not settings.accepts_installer_identity(claims.get("release"), claims.get("client_sha256"))
             or claims.get("payload_release") != settings.release_id
             or claims.get("payload_sha256") != settings.release_sha256
             or claims.get("bootstrap") != settings.bootstrap_id
@@ -1240,6 +1247,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 raise HTTPException(401, "session verification denied")
             if row is not None:
                 require_entitlement(connection, int(row["license_uid"]), CELESTE if runtime is None else PLUS)
+                dpop.require(connection, request, bytes(row["install_signing_key"]))
                 try:
                     install_ok = verify_ed25519(bytes(row["install_signing_key"]), message, body.install_signature)
                     token_ok = verify_ed25519(bytes(row["token_signing_key"]), message, body.token_signature)
@@ -1314,6 +1322,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                         response_token = signer.sign(
                             {
                                 "aud": "celeste-session",
+                                "cnf": confirmation(bytes(row["install_signing_key"])),
                                 "product": CELESTE if runtime is None else PLUS,
                                 "client_sha256": expected_digest,
                                 "device": body.device_id,
@@ -1488,10 +1497,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/v1/blob/{chunk_id}")
     def artifact_chunk(chunk_id: str, request: Request):
-        authorization = request.headers.get("authorization", "")
-        if not authorization.startswith("Bearer "):
-            raise HTTPException(401, "missing grant")
-        claims = signer.verify(authorization[7:].strip())
+        claims = signer.verify(access_token(request))
         if (
             claims is None
             or claims.get("aud") != "celeste-stage-four"
@@ -1512,9 +1518,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         now = int(time.time())
         device_id = str(claims.get("device", ""))
         with database.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
                 """
-                SELECT d.license_uid,d.status AS device_status,l.status AS license_status,l.expires_at
+                SELECT d.license_uid,d.install_signing_key,d.status AS device_status,l.status AS license_status,l.expires_at
                 FROM devices d JOIN licenses l ON l.uid=d.license_uid
                 WHERE d.device_id=?
                 """,
@@ -1524,27 +1531,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 if claims.get("sub") != str(row["license_uid"]):
                     raise HTTPException(401, "invalid grant")
                 require_entitlement(connection, int(row["license_uid"]), product)
-        if (
-            row is None
-            or row["device_status"] != "active"
-            or row["license_status"] != "active"
-            or (row["expires_at"] is not None and int(row["expires_at"]) <= now)
-        ):
-            raise HTTPException(401, "invalid grant")
+            if (
+                row is None
+                or row["device_status"] != "active"
+                or row["license_status"] != "active"
+                or (row["expires_at"] is not None and int(row["expires_at"]) <= now)
+            ):
+                raise HTTPException(401, "invalid grant")
+            dpop.require(connection, request, bytes(row["install_signing_key"]), token=access_token(request), claims=claims)
         touch_device(device_id, endpoint, request)
         return device_id
 
     @app.get("/v1/bootstrap/{bootstrap_id}")
     def bootstrap_loader(bootstrap_id: str, request: Request):
-        authorization = request.headers.get("authorization", "")
-        if not authorization.startswith("Bearer "):
-            raise HTTPException(401, "missing grant")
-        claims = signer.verify(authorization[7:].strip())
+        claims = signer.verify(access_token(request))
         if (
             claims is None
             or claims.get("aud") != "celeste-installer"
-            or claims.get("release") != (settings.installer_channel_id or settings.release_id)
-            or claims.get("client_sha256") not in (settings.installer_compatible_sha256 | {settings.release_sha256})
+            or not settings.accepts_installer_identity(claims.get("release"), claims.get("client_sha256"))
             or claims.get("payload_release") != settings.release_id
             or claims.get("payload_sha256") != settings.release_sha256
             or bootstrap_id != settings.bootstrap_id
@@ -1560,10 +1564,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/v1/loader/{loader_id}")
     def staged_loader(loader_id: str, request: Request):
-        authorization = request.headers.get("authorization", "")
-        if not authorization.startswith("Bearer "):
-            raise HTTPException(401, "missing grant")
-        claims = signer.verify(authorization[7:].strip())
+        claims = signer.verify(access_token(request))
         loaders = {
             settings.loader_id: (
                 "celeste-client",

@@ -3,6 +3,7 @@ package dev.celestebeta.bootstrap.external;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import dev.c4lam.celeste.beta.delivery.BetaDeliveryClient;
+import dev.c4lam.celeste.beta.delivery.RuntimeInstallationSigner;
 import dev.c4lam.celeste.beta.memory.TwoPartMemoryClassLoader;
 import java.io.IOException;
 import java.io.InputStream;
@@ -56,18 +57,20 @@ public final class BootstrapHost {
         Path observedDirectory = Path.of(MinecraftTarget.describe(instrumentation).get("game_directory"));
         if (!Files.isSameFile(expectedDirectory, observedDirectory)) throw new IOException("Selected launcher instance and running Minecraft directory differ");
         current = start(instrumentation, value.get("installer").getAsString(), value.get("device").getAsString(), uid,
-            Path.of(value.get("support_directory").getAsString()), residentDigest,
+            expectedDirectory, Path.of(value.get("support_directory").getAsString()), residentDigest,
             value.get("expected_release").getAsString(), value.get("expected_catalog_sha256").getAsString());
         return new com.google.gson.Gson().toJson(current.status());
     }
 
-    private static Session start(Instrumentation instrumentation, String installer, String device, long uid, Path supportRoot, String residentDigest,
+    private static Session start(Instrumentation instrumentation, String installer, String device, long uid, Path verifiedGameDirectory, Path supportRoot, String residentDigest,
                                  String expectedRelease, String expectedCatalog) throws Exception {
         MinecraftTarget target = MinecraftTarget.inspect(instrumentation);
         java.util.function.Consumer<Runnable> retirementQueue = retirementQueue(target.client());
         JsonObject trust = validatedTrust(resourceObject("META-INF/celeste-beta/bootstrap-trust.json", BootstrapHost.class.getClassLoader()));
+        byte[] serverKey = Base64.getUrlDecoder().decode(trust.get("server_key").getAsString());
+        var signer = RuntimeInstallationSigner.load(verifiedGameDirectory, target.loader(), serverKey, device, uid);
         BetaDeliveryClient delivery = new BetaDeliveryClient(URI.create(trust.get("origin").getAsString()),
-            Base64.getUrlDecoder().decode(trust.get("server_key").getAsString()), installer, device, uid);
+            serverKey, installer, device, uid, signer);
         BetaDeliveryClient.VerifiedCatalog catalog = delivery.fetchCatalog();
         if (!catalog.releaseId().equals(expectedRelease) || !catalog.catalogSha256().equals(expectedCatalog)) {
             throw new IOException("Beta release changed after launcher verification. Authenticate again before attaching.");

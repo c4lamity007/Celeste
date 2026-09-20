@@ -17,17 +17,25 @@ eframe = { version = "0.32", default-features = false, features = ["default_font
 hkdf = "0.12"
 image = { version = "0.25", default-features = false, features = ["png"] }
 rand = "0.8"
-rfd = { version = "0.15.4", default-features = false }
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 ureq = { version = "2.12", features = ["json"] }
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+
+[target.'cfg(windows)'.dependencies]
+rfd = { version = "0.15.4", default-features = false }
 winapi = { version = "0.3", features = ["combaseapi", "dpapi", "errhandlingapi", "fileapi", "knownfolders", "shlobj", "winbase", "wincrypt", "winnt"] }
 winreg = "0.55"
 wmi = "0.17"
-x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+
+[target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
+rfd = { version = "0.15.4", default-features = false, features = ["xdg-portal", "async-std"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.32", default-features = false, features = ["x11", "wayland"] }
 
 [profile.release]
 opt-level = "z"

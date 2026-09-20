@@ -98,6 +98,14 @@ CREATE TABLE IF NOT EXISTS installer_ticket_uses (
     expires_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS dpop_replays (
+    jkt TEXT NOT NULL,
+    jti TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    PRIMARY KEY(jkt, jti)
+);
+CREATE INDEX IF NOT EXISTS idx_dpop_replays_expiry ON dpop_replays(expires_at);
+
 CREATE TABLE IF NOT EXISTS security_events (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     occurred_at INTEGER NOT NULL,

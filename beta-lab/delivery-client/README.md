@@ -9,7 +9,8 @@ downloaded code, write artifacts to disk, or configure the native launcher.
 ```java
 var delivery = new BetaDeliveryClient(
     URI.create("https://the-configured-auth-origin/"),
-    pinnedRawEd25519PublicKey, existingInstallerGrant, expectedDeviceId, 7L);
+    pinnedRawEd25519PublicKey, existingInstallerGrant, expectedDeviceId, 7L,
+    installationProofSigner);
 var catalog = delivery.fetchCatalog();
 try (var release = delivery.download(catalog)) {
     ByteBuffer firstPayload = release.artifact("payload-a"); // read-only
@@ -20,6 +21,9 @@ try (var release = delivery.download(catalog)) {
 The origin, pinned 32-byte public key, exact installer token and expected
 numeric UID/device must come from the existing trusted launcher context. The
 component never reads a credential store or infers the owner from a label.
+`installationProofSigner` is the shared `DpopProofSigner` capability backed by
+the existing installation signing key. It exposes no key-material getter.
+Both installer and manifest `cnf.jkt` must match its RFC 7638 JWK thumbprint.
 `verifyManifest(token)` is a network-free alternative to `fetchCatalog()`.
 `VerifiedCatalog` exposes release ID, client version, runtime digest, catalog
 hash, expiry and immutable artifact metadata. Only the verifier constructs it,
@@ -51,8 +55,10 @@ The verifier follows `auth-service/app/beta_delivery.py` schema
 - Each artifact is at most 64 MiB; the four declared sizes total at most
   128 MiB. Responses stream into a bounded buffer with cancellation on overflow
   or a 25-second whole-transfer deadline. The HTTPS transport never redirects.
-- Artifact requests send the original installer bearer and the exact signed
-  manifest header. Final URI, status 200, content type/encoding/length, actual
+- Manifest and artifact requests send `Authorization: DPoP <installer>` plus
+  a fresh RFC 9449 Ed25519 proof with `htm`, HTTPS `htu`, timestamp, random JTI
+  and `ath` of the exact installer token. Artifact requests also send the exact
+  signed manifest header. There is no bearer fallback. Final URI, status 200, content type/encoding/length, actual
   size, SHA-256 and current grant expiry are checked before bytes are returned.
 
 The catalog's `runtime_sha256` is the server-signed expected canonical runtime
@@ -77,8 +83,10 @@ vector was generated through the actual Python server manifest route,
 temporary files and an in-memory identity stub. The escaped version includes
 `<>&`, quote and backslash to detect canonical-JSON incompatibility.
 
-Verified locally: 308 Java checks passed, including the actual server golden
-signatures, binding/expiry/schema/path/size/hash failures, denied/redirected
+Verified locally: 761 Java checks passed, including the actual server golden
+signatures, real request-proof signatures, public-only JWKs, RFC 7638 binding,
+per-route method/target/token binding, fresh proof IDs, malformed/missing/foreign
+`cnf`, binding/expiry/schema/path/size/hash failures, denied/redirected
 responses, partial cleanup and streaming overflow/cancellation. No live
 network, real credentials, deployment, attach, code execution or Minecraft
 runtime test was performed by these checks.

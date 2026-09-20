@@ -2,6 +2,7 @@ package dev.c4lam.celeste.beta.delivery;
 
 import com.google.gson.JsonObject;
 import com.google.gson.Gson;
+import dev.c4lam.celeste.auth.DpopProofSigner;
 import java.io.IOException;
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -12,7 +13,11 @@ import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.KeyFactory;
+import java.security.MessageDigest;
 import java.security.Signature;
+import java.security.spec.EdECPrivateKeySpec;
+import java.security.spec.NamedParameterSpec;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -22,8 +27,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.LinkedHashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.Flow;
 import java.util.function.Consumer;
@@ -54,6 +61,17 @@ public final class BetaDeliveryClientCheck {
             rejected(ReadOnlyBufferException.class, () -> release.artifact("payload-a").put((byte) 1));
             rejected(IllegalArgumentException.class, () -> release.artifact("unknown"));
         }
+        check(fixture.proofIds.size() == 5, "catalog and all four artifacts have independent fresh signed proofs");
+        client.fetchCatalog();
+        check(fixture.proofIds.size() == 6, "retry on the same route does not reuse a proof");
+        KeyPair otherInstallation = KeyPairGenerator.getInstance("Ed25519").generateKeyPair();
+        byte[] otherPublic = otherInstallation.getPublic().getEncoded();
+        DpopProofSigner wrongSigner = new DpopProofSigner(otherInstallation.getPrivate(),
+            Arrays.copyOfRange(otherPublic, otherPublic.length - 32, otherPublic.length), fixture.clock);
+        rejected(GeneralSecurityException.class, () -> new BetaDeliveryClient(ORIGIN, fixture.publicKey,
+            fixture.installerToken, fixture.device, fixture.uid, wrongSigner, fixture.clock, fixture::get));
+        rejected(GeneralSecurityException.class, () -> new BetaDeliveryClient(ORIGIN, fixture.publicKey,
+            fixture.installerToken, fixture.device, fixture.uid, null, fixture.clock, fixture::get));
         Fixture closedFixture = new Fixture(golden);
         BetaDeliveryClient closedClient = closedFixture.client();
         BetaDeliveryClient.MemoryRelease closed = closedClient.download(closedClient.verifyManifest(closedFixture.manifestToken));
@@ -115,6 +133,9 @@ public final class BetaDeliveryClientCheck {
 
     private static List<Consumer<JsonObject>> manifestMutations() {
         return List.of(
+            c -> c.remove("cnf"), c -> c.addProperty("cnf", "invalid"), c -> c.add("cnf", new JsonObject()),
+            c -> c.getAsJsonObject("cnf").addProperty("jkt", "A".repeat(43)),
+            c -> c.getAsJsonObject("cnf").addProperty("jkt", 42),
             c -> c.addProperty("product", "celeste"), c -> c.addProperty("product", "both"), c -> c.remove("product"),
             c -> c.addProperty("sub", "7"), c -> c.addProperty("sub", "042"), c -> c.addProperty("sub", 42),
             c -> c.addProperty("device", "00000000-0000-0000-0000-000000000043"),
@@ -138,7 +159,10 @@ public final class BetaDeliveryClientCheck {
         );
     }
     private static List<Consumer<JsonObject>> installerMutations() {
-        return List.of(c -> c.addProperty("product", "celeste"), c -> c.addProperty("product", "both"), c -> c.remove("product"),
+        return List.of(c -> c.remove("cnf"), c -> c.addProperty("cnf", "invalid"), c -> c.add("cnf", new JsonObject()),
+            c -> c.getAsJsonObject("cnf").addProperty("jkt", "A".repeat(43)),
+            c -> c.getAsJsonObject("cnf").addProperty("jkt", 42),
+            c -> c.addProperty("product", "celeste"), c -> c.addProperty("product", "both"), c -> c.remove("product"),
             c -> c.addProperty("sub", "7"), c -> c.addProperty("sub", "042"),
             c -> c.addProperty("device", "00000000-0000-0000-0000-000000000043"),
             c -> c.addProperty("sub", "8"), c -> c.addProperty("aud", "celeste-client"),
@@ -160,6 +184,9 @@ public final class BetaDeliveryClientCheck {
         String manifestToken;
         final String device;
         final long uid;
+        final DpopProofSigner proofSigner;
+        final byte[] installationPublic;
+        final Set<String> proofIds = new HashSet<>();
         final Map<String, byte[]> artifacts = new LinkedHashMap<>();
         final List<byte[]> delivered = new ArrayList<>();
         String failure = "";
@@ -172,16 +199,27 @@ public final class BetaDeliveryClientCheck {
             manifestToken = golden.get("manifest_token").getAsString();
             device = golden.get("expected_device").getAsString();
             uid = golden.get("expected_uid").getAsLong();
+            installationPublic = BetaDeliveryClient.decode(golden.get("installation_public_key").getAsString());
+            byte[] seed = BetaDeliveryClient.decode(golden.get("installation_test_seed").getAsString());
+            try {
+                proofSigner = new DpopProofSigner(KeyFactory.getInstance("Ed25519").generatePrivate(
+                    new EdECPrivateKeySpec(NamedParameterSpec.ED25519, seed)), installationPublic, clock);
+            } finally { Arrays.fill(seed, (byte) 0); }
+            String canonicalJwk = "{\"crv\":\"Ed25519\",\"kty\":\"OKP\",\"x\":\"" + encode(installationPublic) + "\"}";
+            check(proofSigner.thumbprint().equals(encode(MessageDigest.getInstance("SHA-256")
+                .digest(canonicalJwk.getBytes(StandardCharsets.US_ASCII)))), "independent RFC7638 thumbprint");
             for (String id : BetaDeliveryClient.IDS) artifacts.put(id, BetaDeliveryClient.decode(golden.getAsJsonObject("artifact_bytes").get(id).getAsString()));
         }
         BetaDeliveryClient client() throws GeneralSecurityException { return clientWith(installerToken, uid, device, ORIGIN); }
         BetaDeliveryClient clientWith(String token, long uid, String expected, URI origin) throws GeneralSecurityException {
-            return new BetaDeliveryClient(origin, publicKey, token, expected, uid, clock, this::get);
+            return new BetaDeliveryClient(origin, publicKey, token, expected, uid, proofSigner, clock, this::get);
         }
-        private BetaDeliveryClient.Reply get(URI uri, Map<String, String> headers, int maximum, Duration timeout) {
+        private BetaDeliveryClient.Reply get(URI uri, Map<String, String> headers, int maximum, Duration timeout) throws IOException {
             requests++;
             check(uri.getScheme().equals("https") && uri.getHost().equals("auth.invalid"), "HTTPS same origin");
-            check(headers.get("Authorization").equals("Bearer " + installerToken), "original installer token only");
+            check(headers.get("Authorization").equals("DPoP " + installerToken), "original installer token with DPoP scheme only");
+            try { verifyProof(uri, headers.get("DPoP")); }
+            catch (GeneralSecurityException failure) { throw new IOException("Fixture rejected invalid request proof", failure); }
             check(timeout.toSeconds() == 25, "bounded request deadline");
             if (uri.getPath().equals("/v1/beta/manifest")) {
                 check(!headers.containsKey("X-Celeste-Beta-Manifest"), "catalog request has no stale manifest header");
@@ -211,6 +249,32 @@ public final class BetaDeliveryClientCheck {
             }
             delivered.add(content);
             return new BetaDeliveryClient.Reply(finalUri, status, responseHeaders, content);
+        }
+        private void verifyProof(URI uri, String proof) throws GeneralSecurityException {
+            check(proof != null, "DPoP proof header required on every request");
+            String[] parts = proof.split("\\.", -1);
+            check(parts.length == 3, "compact proof JWT");
+            JsonObject header = BetaDeliveryClient.object(BetaDeliveryClient.decode(parts[0]));
+            check(header.keySet().equals(Set.of("typ", "alg", "jwk"))
+                && header.get("typ").getAsString().equals("dpop+jwt")
+                && header.get("alg").getAsString().equals("EdDSA"), "RFC9449 public proof header");
+            JsonObject jwk = header.getAsJsonObject("jwk");
+            check(jwk.keySet().equals(Set.of("crv", "kty", "x")) && jwk.get("crv").getAsString().equals("Ed25519")
+                && jwk.get("kty").getAsString().equals("OKP")
+                && jwk.get("x").getAsString().equals(encode(installationPublic)), "proof embeds only the installation public JWK");
+            Signature verifier = Signature.getInstance("Ed25519");
+            verifier.initVerify(BetaDeliveryClient.publicKey(installationPublic));
+            verifier.update((parts[0] + "." + parts[1]).getBytes(StandardCharsets.US_ASCII));
+            check(verifier.verify(BetaDeliveryClient.decode(parts[2])), "real Ed25519 request proof signature");
+            JsonObject claims = BetaDeliveryClient.object(BetaDeliveryClient.decode(parts[1]));
+            check(claims.keySet().equals(Set.of("jti", "htm", "htu", "iat", "ath")), "exact resource request proof claims");
+            check(claims.get("htm").getAsString().equals("GET") && claims.get("htu").getAsString().equals(uri.toString()),
+                "proof is bound to this method and individual route");
+            check(claims.get("iat").getAsLong() == clock.epoch, "proof timestamp uses current clock");
+            check(claims.get("ath").getAsString().equals(encode(MessageDigest.getInstance("SHA-256")
+                .digest(installerToken.getBytes(StandardCharsets.US_ASCII)))), "proof ath binds exact installer token, not manifest");
+            String jti = claims.get("jti").getAsString();
+            check(BetaDeliveryClient.decode(jti).length >= 16 && proofIds.add(jti), "unpredictable nonreused proof identifier");
         }
     }
 

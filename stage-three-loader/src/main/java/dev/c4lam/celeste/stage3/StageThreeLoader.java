@@ -43,7 +43,8 @@ public final class StageThreeLoader {
         response.addProperty("challenge_id", text(challenge, "challenge_id"));
         response.addProperty("install_signature", bridge.sign("signInstall", proof));
         response.addProperty("token_signature", bridge.sign("signToken", proof));
-        JsonObject completion = exchange(origin, "/v1/stage3/complete", response, null, false);
+        JsonObject completion = exchange(origin, "/v1/stage3/complete", response,
+            bridge.proof("POST", origin.resolve("/v1/stage3/complete"), null), false);
 
         String grant = text(completion, "grant");
         JsonObject claims = claims(grant, bridge);
@@ -58,7 +59,7 @@ public final class StageThreeLoader {
             throw new SecurityException("Linker-stage authorization does not match the active release");
         }
 
-        byte[] loaderBytes = bytes(origin, pathValue, grant);
+        byte[] loaderBytes = bytes(origin, pathValue, grant, bridge);
         verifySha(loaderBytes, digest);
         Path runtime = persist("stage-four-" + bridge.get("releaseId") + ".jar", loaderBytes);
         FabricLauncherBase.getLauncher().addToClassPath(runtime);
@@ -82,7 +83,7 @@ public final class StageThreeLoader {
         URI origin,
         String path,
         JsonObject body,
-        String bearer,
+        String dpopProof,
         boolean binary
     ) throws Exception {
         HttpURLConnection connection = connection(origin, path);
@@ -90,8 +91,8 @@ public final class StageThreeLoader {
         connection.setDoOutput(true);
         connection.setRequestProperty("Content-Type", "application/json");
         connection.setRequestProperty("Accept", binary ? "application/octet-stream" : "application/json");
-        if (bearer != null) {
-            connection.setRequestProperty("Authorization", "Bearer " + bearer);
+        if (dpopProof != null) {
+            connection.setRequestProperty("DPoP", dpopProof);
         }
         byte[] encoded = JSON.toJson(body).getBytes(StandardCharsets.UTF_8);
         connection.setFixedLengthStreamingMode(encoded.length);
@@ -103,11 +104,12 @@ public final class StageThreeLoader {
         return JSON.fromJson(new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8), JsonObject.class);
     }
 
-    private static byte[] bytes(URI origin, String path, String bearer) throws Exception {
+    private static byte[] bytes(URI origin, String path, String bearer, ReflectiveBridge bridge) throws Exception {
         HttpURLConnection connection = connection(origin, path);
         connection.setRequestMethod("GET");
         connection.setRequestProperty("Accept", "application/octet-stream");
-        connection.setRequestProperty("Authorization", "Bearer " + bearer);
+        connection.setRequestProperty("Authorization", "DPoP " + bearer);
+        connection.setRequestProperty("DPoP", bridge.proof("GET", origin.resolve(path), bearer));
         int status = connection.getResponseCode();
         if (status < 200 || status >= 300) {
             throw new SecurityException("Linker stage was not delivered (" + status + ")");
@@ -160,6 +162,9 @@ public final class StageThreeLoader {
             new String(Base64.getUrlDecoder().decode(segments[1]), StandardCharsets.UTF_8),
             JsonObject.class
         );
+        if (!bridge.get("dpopThumbprint").equals(text(object(claims, "cnf"), "jkt"))) {
+            throw new SecurityException("Release gate grant has the wrong DPoP installation binding");
+        }
         long now = Instant.now().getEpochSecond();
         if (!"celeste-stage-three".equals(text(claims, "aud"))
             || claims.get("nbf").getAsLong() > now + 5
@@ -228,6 +233,11 @@ public final class StageThreeLoader {
 
         private String sign(String method, String value) throws Exception {
             return String.valueOf(delegate.getClass().getMethod(method, String.class).invoke(delegate, value));
+        }
+
+        private String proof(String method, URI endpoint, String grant) throws Exception {
+            return String.valueOf(delegate.getClass().getMethod("dpopProof", String.class, String.class, String.class)
+                .invoke(delegate, method, endpoint.toString(), grant));
         }
     }
 }

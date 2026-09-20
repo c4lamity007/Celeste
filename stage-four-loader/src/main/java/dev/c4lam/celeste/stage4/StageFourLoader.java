@@ -72,7 +72,8 @@ public final class StageFourLoader {
         completeBody.addProperty("challenge_id", required(start, "challenge_id"));
         completeBody.addProperty("install_signature", bridge.sign("signInstall", message));
         completeBody.addProperty("token_signature", bridge.sign("signToken", message));
-        JsonObject complete = post(http, base, "/v1/stage4/complete", completeBody);
+        JsonObject complete = post(http, base, "/v1/stage4/complete", completeBody,
+            bridge.proof("POST", sameOrigin(base, "/v1/stage4/complete"), null));
 
         String grant = required(complete, "grant");
         JsonObject claims = verifyGrant(grant, bridge);
@@ -95,7 +96,7 @@ public final class StageFourLoader {
         Path[] parts = new Path[2];
         for (int index = 0; index < parts.length; index++) {
             JsonObject chunk = chunks.get(index).getAsJsonObject();
-            byte[] content = get(http, base, required(chunk, "url"), grant);
+            byte[] content = get(http, base, required(chunk, "url"), grant, bridge);
             requireDigest(content, requiredHex(chunk, "sha256"), "payload part " + (index + 1));
             parts[index] = writeRuntimeFile(
                 "payload-" + bridge.text("releaseId") + "-" + (index + 1) + ".jar",
@@ -122,12 +123,17 @@ public final class StageFourLoader {
     }
 
     private static JsonObject post(HttpClient http, URI base, String path, JsonObject body) throws Exception {
-        HttpRequest request = HttpRequest.newBuilder(sameOrigin(base, path))
+        return post(http, base, path, body, null);
+    }
+
+    private static JsonObject post(HttpClient http, URI base, String path, JsonObject body, String proof) throws Exception {
+        HttpRequest.Builder builder = HttpRequest.newBuilder(sameOrigin(base, path))
             .timeout(Duration.ofSeconds(12))
             .header("Content-Type", "application/json")
             .header("Accept", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body), StandardCharsets.UTF_8))
-            .build();
+            .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body), StandardCharsets.UTF_8));
+        if (proof != null) builder.header("DPoP", proof);
+        HttpRequest request = builder.build();
         HttpResponse<String> response = http.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new SecurityException("Payload gate rejected the installation (" + response.statusCode() + ")");
@@ -135,11 +141,12 @@ public final class StageFourLoader {
         return GSON.fromJson(response.body(), JsonObject.class);
     }
 
-    private static byte[] get(HttpClient http, URI base, String path, String grant) throws Exception {
+    private static byte[] get(HttpClient http, URI base, String path, String grant, Bridge bridge) throws Exception {
         HttpRequest request = HttpRequest.newBuilder(sameOrigin(base, path))
             .timeout(Duration.ofSeconds(30))
             .header("Accept", "application/octet-stream")
-            .header("Authorization", "Bearer " + grant)
+            .header("Authorization", "DPoP " + grant)
+            .header("DPoP", bridge.proof("GET", sameOrigin(base, path), grant))
             .GET()
             .build();
         HttpResponse<byte[]> response = http.send(request, HttpResponse.BodyHandlers.ofByteArray());
@@ -180,6 +187,9 @@ public final class StageFourLoader {
             throw new SecurityException("Payload grant signature is invalid");
         }
         JsonObject claims = GSON.fromJson(new String(decode(parts[1]), StandardCharsets.UTF_8), JsonObject.class);
+        if (!bridge.text("dpopThumbprint").equals(required(requiredObject(claims, "cnf"), "jkt"))) {
+            throw new SecurityException("Payload grant has the wrong DPoP installation binding");
+        }
         long now = Instant.now().getEpochSecond();
         if (!"celeste-stage-four".equals(required(claims, "aud"))
             || claims.get("nbf").getAsLong() > now + 5
@@ -326,6 +336,11 @@ public final class StageFourLoader {
 
         private String sign(String method, String message) throws Exception {
             return String.valueOf(target.getClass().getMethod(method, String.class).invoke(target, message));
+        }
+
+        private String proof(String method, URI endpoint, String grant) throws Exception {
+            return String.valueOf(target.getClass().getMethod("dpopProof", String.class, String.class, String.class)
+                .invoke(target, method, endpoint.toString(), grant));
         }
     }
 }

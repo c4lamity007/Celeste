@@ -1,4 +1,42 @@
-# Celeste installer
+# Celeste downloader — cross-platform release 20260920.2
+
+The current normal Celeste source authenticates first, then offers **Save location**,
+**Browse**, and **Download Celeste**. Choose an existing folder. Only the signed,
+digest-checked JAR is saved there; move it into a Fabric Minecraft 1.21.11 `mods`
+folder yourself. Existing files are preserved by choosing `Celeste-2.jar`, etc.
+There is no install-target discovery, game launch, instance migration, or game
+configuration write in this download path. Legacy activation discovery remains
+read-only for compatibility with older installations.
+
+Activation remains encrypted in the current account's shared cache: Windows
+uses DPAPI, macOS uses Keychain-backed protection, and Linux uses a key in
+Secret Service. The updated normal bootstrap can read that selected activation
+when first started in a new game directory, authenticate it with the existing
+server protocol, then save the runtime copy. A pre-existing game credential
+retains priority, including when it is damaged or rejected; no automatic
+identity fallback is performed. See
+[`docs/standard-celeste-platforms.md`](../docs/standard-celeste-platforms.md)
+for platform prerequisites, paths, build commands, and limitations.
+
+## Release status
+
+Build `20260920.2` is packaged for Windows x64, macOS x64/arm64 and Linux x64.
+Platform-native tests/builds pass; Mac/Linux hardware-collection smoke checks
+pass. This normal downloader does not load Celeste+. A separate Windows
+Celeste+ launcher was released with the same DPoP protocol update.
+See [the coordinated release record](../docs/releases/20260920-dpop.md).
+
+The signed bootstrap must contain `custom["celeste:delivery"] =
+"shared-activation-v1"`. The downloader rejects older artifacts that require the
+installer to write game-specific activation files. Build, package, and publish the
+updated bootstrap through the established signed release process before shipping
+this downloader. A raw local bootstrap is not a substitute for a signed release.
+The matching protected bootstrap and loader/payload catalog are published on
+Fly v93. Existing normal users must use the updated downloader and replace
+their old bootstrap JAR with the newly downloaded `Celeste.jar`; keep only one
+Celeste bootstrap in each instance. Saved activations do not need resetting.
+
+## Previous installer contract (historical)
 
 Setup build `20260908.1` resolves activation storage through the current Windows
 account's Known Folder API, rather than inherited `LOCALAPPDATA` text. Before

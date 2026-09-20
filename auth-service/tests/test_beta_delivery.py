@@ -9,14 +9,15 @@ from types import SimpleNamespace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ed25519
-from fastapi.testclient import TestClient
+from dpop_client import TestClient, register_key
 
 import app.beta_delivery as beta_delivery
 from app.beta_delivery import ARTIFACT_FILENAMES, ARTIFACT_ROLES, MANIFEST_TTL_SECONDS, RELEASE_SCHEMA
 from app.config import Settings
 from app.main import create_app
 from app.security import GrantSigner, b64d, b64e, hash_license
-from test_protocol import enroll, hardware, release, settings
+from app.dpop import confirmation
+from test_protocol import enroll, hardware, release, settings, raw_public
 
 
 OWNER = 7
@@ -51,6 +52,7 @@ def beta(tmp_path):
     catalog = stage_beta(root)
     config = replace(settings(tmp_path), plus_enabled=True, beta_release_dir=str(root))
     app = create_app(config)
+    install_keys = {uid: register_key(ed25519.Ed25519PrivateKey.from_private_bytes(bytes([uid]) * 32)) for uid in (OWNER, NONOWNER)}
     with app.state.database.connect() as connection:
         for uid, device, label in ((OWNER, OWNER_DEVICE, "ordinary display label"), (NONOWNER, OTHER_DEVICE, "Owner")):
             connection.execute(
@@ -63,7 +65,7 @@ def beta(tmp_path):
             connection.execute(
                 """INSERT INTO devices(device_id,license_uid,install_signing_key,token_signing_key,
                    hardware_core_hash,monitor_hash,status,created_at) VALUES(?,?,?,?,?,?,'active',1)""",
-                (device, uid, *([bytes([uid]) * 32] * 4)),
+                (device, uid, b64d(raw_public(install_keys[uid])), *([bytes([uid]) * 32] * 3)),
             )
     now = int(time.time())
     claims = {
@@ -72,11 +74,12 @@ def beta(tmp_path):
         "payload_sha256": config.release_sha256, "bootstrap": config.bootstrap_id,
         "bootstrap_sha256": config.bootstrap_sha256, "sub": str(OWNER), "device": OWNER_DEVICE,
         "jti": "isolated-installer-ticket-7", "iat": now, "nbf": now - 5, "exp": now + 600,
+        "cnf": confirmation(b64d(raw_public(install_keys[OWNER]))),
     }
     token = app.state.signer.sign(claims)
     with TestClient(app, base_url="https://testserver") as client:
         yield SimpleNamespace(root=root, catalog=catalog, config=config, app=app, client=client,
-                              claims=claims, token=token, headers={"Authorization": f"Bearer {token}"})
+                              claims=claims, token=token, install_keys=install_keys, headers={"Authorization": f"Bearer {token}"})
 
 
 def normal_headers(beta):
@@ -354,7 +357,7 @@ def test_plus_environment_settings_require_boolean_flag(beta, monkeypatch, enabl
         "CELESTE_CHUNK_A_ID": "a", "CELESTE_CHUNK_B_ID": "b", "CELESTE_BOOTSTRAP_ID": "b",
         "CELESTE_LOADER_ID": "two", "CELESTE_LOADER_THREE_ID": "three", "CELESTE_LOADER_FOUR_ID": "four",
         "CELESTE_PLUS_ENABLED": enabled, "CELESTE_BETA_RELEASE_DIR": str(beta.root),
-        "CELESTE_INSTALLER_COMPAT_SHA256": "", "CELESTE_INSTALLER_CHANNEL_ID": "test",
+        "CELESTE_INSTALLER_COMPAT_SHA256": "a" * 64, "CELESTE_INSTALLER_CHANNEL_ID": "test",
         "CELESTE_INSTALLER_CHANNEL_VERSION": "1",
     }.items():
         monkeypatch.setenv(key, value)
