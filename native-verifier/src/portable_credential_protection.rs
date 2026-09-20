@@ -12,8 +12,12 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 const ENVELOPE: &[u8; 4] = b"CSP2";
 const AAD: &[u8] = b"Celeste normal credential v2";
-const SERVICE: &str = "dev.c4lam.celeste.normal";
-const ACCOUNT: &str = "a39fbbf8e5c344edb39ee82d";
+fn service() -> &'static str {
+    native_protection::text!("dev.c4lam.celeste.normal")
+}
+fn account() -> &'static str {
+    native_protection::text!("a39fbbf8e5c344edb39ee82d")
+}
 const MAX_PLAINTEXT_BYTES: usize = 1024 * 1024;
 const NONCE_BYTES: usize = 12;
 const TAG_BYTES: usize = 16;
@@ -180,10 +184,10 @@ mod keyring {
         let status = unsafe {
             SecKeychainFindGenericPassword(
                 ptr::null_mut(),
-                SERVICE.len() as u32,
-                SERVICE.as_ptr(),
-                ACCOUNT.len() as u32,
-                ACCOUNT.as_ptr(),
+                service().len() as u32,
+                service().as_ptr(),
+                account().len() as u32,
+                account().as_ptr(),
                 &mut length,
                 &mut data,
                 ptr::null_mut(),
@@ -233,10 +237,10 @@ mod keyring {
         let status = unsafe {
             SecKeychainAddGenericPassword(
                 ptr::null_mut(),
-                SERVICE.len() as u32,
-                SERVICE.as_ptr(),
-                ACCOUNT.len() as u32,
-                ACCOUNT.as_ptr(),
+                service().len() as u32,
+                service().as_ptr(),
+                account().len() as u32,
+                account().as_ptr(),
                 encoded.len() as u32,
                 encoded.as_ptr(),
                 ptr::null_mut(),
@@ -265,9 +269,9 @@ mod keyring {
             .args([
                 native_protection::text!("lookup"),
                 native_protection::text!("service"),
-                SERVICE,
+                service(),
                 native_protection::text!("account"),
-                ACCOUNT,
+                account(),
             ])
             .stdin(Stdio::null())
             .output()
@@ -318,9 +322,9 @@ mod keyring {
                 native_protection::text!("store"),
                 native_protection::text!("--label=Celeste credential key"),
                 native_protection::text!("service"),
-                SERVICE,
+                service(),
                 native_protection::text!("account"),
-                ACCOUNT,
+                account(),
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
