@@ -1,0 +1,1045 @@
+#![allow(dead_code)]
+use crate::{atomic_store, release};
+use aes_gcm::aead::{Aead, Payload};
+use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
+use anyhow::{Context, Result, anyhow, bail};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use ed25519_dalek::pkcs8::DecodePrivateKey;
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+use hkdf::Hkdf;
+use rand::rngs::OsRng;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use std::fs;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use winreg::RegKey;
+use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
+use wmi::{COMLibrary, WMIConnection};
+use x25519_dalek::{PublicKey as X25519PublicKey, StaticSecret};
+const STORE_MAGIC: &[u8; 4] = b"CST1";
+const TICKET_MAGIC: &[u8; 4] = b"CLT1";
+const INSTALLER_UUID: &str = "00000000-0000-0000-0000-000000000000";
+const INSTALLER_NAME: &str = "CelesteInstaller";
+const TOKEN_INFO: &[u8] = b"celeste-install-token-v1";
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct InstallCredential {
+    device_id: String,
+    uid: u64,
+    signing_private: String,
+    encryption_private: String,
+    token_seed: String,
+    certificate: String,
+    game_uuid: String,
+    game_name: String,
+}
+#[derive(Debug, Clone, Serialize)]
+struct HardwareProfile {
+    system: String,
+    board: String,
+    processor: String,
+    monitors: Vec<String>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct ComputerSystem {
+    manufacturer: Option<String>,
+    model: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct ComputerProduct {
+    uuid: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct Bios {
+    serial_number: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct BaseBoard {
+    manufacturer: Option<String>,
+    product: Option<String>,
+    version: Option<String>,
+    serial_number: Option<String>,
+}
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct Processor {
+    processor_id: Option<String>,
+    manufacturer: Option<String>,
+    name: Option<String>,
+}
+fn is_unauthorized(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<HttpFailure>()
+        .is_some_and(|failure| matches!(failure.status, 401 | 403))
+}
+#[derive(Debug)]
+struct HttpFailure {
+    status: u16,
+    path: String,
+    detail: String,
+}
+impl std::fmt::Display for HttpFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Authentication server rejected the request ({}) at {}: {}",
+            self.status, self.path, self.detail
+        )
+    }
+}
+impl std::error::Error for HttpFailure {}
+fn http_failure(status: u16, path: &str, detail: &str) -> anyhow::Error {
+    HttpFailure {
+        status,
+        path: path.to_owned(),
+        detail: detail.to_owned(),
+    }
+    .into()
+}
+fn collect_hardware() -> Result<HardwareProfile> {
+    let com = COMLibrary::new().context(native_protection::text!(
+        "Windows hardware services are unavailable"
+    ))?;
+    let wmi = WMIConnection::new(com).context(native_protection::text!(
+        "Could not connect to Windows hardware services"
+    ))?;
+    let systems: Vec<ComputerSystem> = wmi.raw_query(native_protection::text!(
+        "SELECT Manufacturer,Model FROM Win32_ComputerSystem"
+    ))?;
+    let products: Vec<ComputerProduct> = wmi.raw_query(native_protection::text!(
+        "SELECT UUID FROM Win32_ComputerSystemProduct"
+    ))?;
+    let bios: Vec<Bios> = wmi.raw_query(native_protection::text!(
+        "SELECT SerialNumber FROM Win32_BIOS"
+    ))?;
+    let boards: Vec<BaseBoard> = wmi.raw_query(native_protection::text!(
+        "SELECT Manufacturer,Product,Version,SerialNumber FROM Win32_BaseBoard"
+    ))?;
+    let processors: Vec<Processor> = wmi.raw_query(native_protection::text!(
+        "SELECT ProcessorId,Manufacturer,Name FROM Win32_Processor"
+    ))?;
+    let system = systems.first();
+    let product = products.first();
+    let firmware = bios.first();
+    let board = boards.first();
+    let processor = processors.first();
+    let system_value = canonical(&[
+        system.and_then(|v| v.manufacturer.as_deref()),
+        system.and_then(|v| v.model.as_deref()),
+        firmware.and_then(|v| v.serial_number.as_deref()),
+        product.and_then(|v| v.uuid.as_deref()),
+    ]);
+    let board_value = canonical(&[
+        board.and_then(|v| v.manufacturer.as_deref()),
+        board.and_then(|v| v.product.as_deref()),
+        board.and_then(|v| v.version.as_deref()),
+        board.and_then(|v| v.serial_number.as_deref()),
+    ]);
+    let processor_value = canonical(&[
+        processor.and_then(|v| v.processor_id.as_deref()),
+        processor.and_then(|v| v.manufacturer.as_deref()),
+        processor.and_then(|v| v.name.as_deref()),
+    ]);
+    let mut monitors = monitor_edids()
+        .into_iter()
+        .map(|value| hex_sha256(&value))
+        .collect::<Vec<_>>();
+    monitors.sort();
+    monitors.dedup();
+    if monitors.is_empty() {
+        monitors.push(hex_sha256(system_value.as_bytes()));
+    }
+    Ok(HardwareProfile {
+        system: hex_sha256(system_value.as_bytes()),
+        board: hex_sha256(board_value.as_bytes()),
+        processor: hex_sha256(processor_value.as_bytes()),
+        monitors,
+    })
+}
+fn canonical(values: &[Option<&str>]) -> String {
+    values
+        .iter()
+        .map(|value| {
+            let normalized = value.unwrap_or("").trim().to_lowercase();
+            if normalized.is_empty() {
+                native_protection::text!("unknown").to_owned()
+            } else {
+                normalized
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(native_protection::text!("\n"))
+}
+fn monitor_edids() -> Vec<Vec<u8>> {
+    let mut values = Vec::new();
+    let root = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let Ok(display) = root.open_subkey_with_flags(
+        native_protection::text!(r"SYSTEM\CurrentControlSet\Enum\DISPLAY"),
+        KEY_READ | KEY_WOW64_64KEY,
+    ) else {
+        return values;
+    };
+    for vendor in display.enum_keys().flatten() {
+        let Ok(vendor_key) = display.open_subkey_with_flags(&vendor, KEY_READ | KEY_WOW64_64KEY)
+        else {
+            continue;
+        };
+        for instance in vendor_key.enum_keys().flatten() {
+            let Ok(parameters) = vendor_key.open_subkey_with_flags(
+                format!(r"{}\Device Parameters", instance),
+                KEY_READ | KEY_WOW64_64KEY,
+            ) else {
+                continue;
+            };
+            if let Ok(raw) = parameters.get_raw_value(native_protection::text!("EDID"))
+                && !raw.bytes.is_empty()
+            {
+                values.push(raw.bytes);
+            }
+        }
+    }
+    values
+}
+fn enroll(license: &str, hardware: &HardwareProfile) -> Result<InstallCredential> {
+    enroll_after_preflight(
+        || crate::credential_protection::preflight(&user_cache()?),
+        || enroll_remote(license, hardware),
+    )
+}
+fn enroll_after_preflight<T>(
+    preflight: impl FnOnce() -> Result<()>,
+    enroll_remote: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    preflight().context(native_protection::text!(
+        "Activation storage is unavailable; no new device was enrolled"
+    ))?;
+    enroll_remote()
+}
+fn enroll_remote(license: &str, hardware: &HardwareProfile) -> Result<InstallCredential> {
+    let signing = SigningKey::generate(&mut OsRng);
+    let encryption = StaticSecret::random_from_rng(OsRng);
+    let encryption_public = X25519PublicKey::from(&encryption);
+    let start = post_json (native_protection :: text ! ("/v1/enroll/start") , & json ! ({ (native_protection :: text ! ("product")) : (native_protection :: text ! ("celeste_plus")) , (native_protection :: text ! ("release_id")) : release :: launcher_channel_id () , (native_protection :: text ! ("client_version")) : release :: launcher_protocol_version () , (native_protection :: text ! ("client_sha256")) : release :: launcher_channel_digest () , (native_protection :: text ! ("game_uuid")) : INSTALLER_UUID , (native_protection :: text ! ("game_name")) : INSTALLER_NAME , (native_protection :: text ! ("license_key")) : license , (native_protection :: text ! ("install_signing_key")) : encode (signing . verifying_key () . as_bytes ()) , (native_protection :: text ! ("install_encryption_key")) : encode (encryption_public . as_bytes ()) , (native_protection :: text ! ("hardware")) : hardware , }) ,) . map_err (| error | { if error . downcast_ref :: < HttpFailure > () . is_some_and (| failure | failure . status == 409) { error . context (native_protection :: text ! ("This license is already activated. Select its original instance and Windows account, or contact support if the saved activation was lost")) } else { error . context (native_protection :: text ! ("License activation failed")) } }) ? ;
+    let message = decode(required_text(&start, native_protection::text!("/message"))?)?;
+    let transcript: Value = serde_json::from_slice(&message)?;
+    if required_text(&transcript, native_protection::text!("/product"))?
+        != native_protection::text!("celeste_plus")
+    {
+        bail!(
+            "{}",
+            native_protection::text!("Authentication challenge belongs to another product")
+        );
+    }
+    let complete = post_json_with_dpop(
+        native_protection::text!("/v1/enroll/complete"),
+        &json ! ({ (native_protection :: text ! ("challenge_id")) : required_text (& start , (native_protection :: text ! ("/challenge_id"))) ?, (native_protection :: text ! ("install_signature")) : encode (& signing . sign (& message) . to_bytes ()) , }),
+        Some(&signing),
+    )?;
+    let certificate =
+        required_text(&complete, native_protection::text!("/device_certificate"))?.to_owned();
+    let certificate_claims = verify_token(
+        &certificate,
+        native_protection::text!("celeste-installation"),
+    )?;
+    crate::dpop::require_binding(&certificate_claims, &signing)?;
+    let device_id = required_text(&complete, native_protection::text!("/device_id"))?.to_owned();
+    let uid = complete
+        .pointer(native_protection::text!("/uid"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| {
+            anyhow!(
+                "{}",
+                native_protection::text!("Enrollment response omitted uid")
+            )
+        })?;
+    if required_text(&certificate_claims, native_protection::text!("/device"))? != device_id
+        || required_text(&certificate_claims, native_protection::text!("/sub"))? != uid.to_string()
+        || required_text(
+            &certificate_claims,
+            native_protection::text!("/install_key"),
+        )? != encode(signing.verifying_key().as_bytes())
+    {
+        bail!(
+            "{}",
+            native_protection::text!("Installation certificate does not match this device")
+        );
+    }
+    let seed = decrypt_token(
+        complete
+            .pointer(native_protection::text!("/token_envelope"))
+            .ok_or_else(|| {
+                anyhow!(
+                    "{}",
+                    native_protection::text!("Enrollment response omitted token envelope")
+                )
+            })?,
+        &encryption,
+        &message,
+    )?;
+    Ok(InstallCredential {
+        device_id,
+        uid,
+        signing_private: encode(signing.as_bytes()),
+        encryption_private: encode(encryption.as_bytes()),
+        token_seed: encode(&seed),
+        certificate,
+        game_uuid: INSTALLER_UUID.to_owned(),
+        game_name: INSTALLER_NAME.to_owned(),
+    })
+}
+fn authenticate_installer(
+    credential: &InstallCredential,
+    hardware: &HardwareProfile,
+    license: &str,
+) -> Result<Value> {
+    let signing = signing_key(&credential.signing_private)?;
+    let token = signing_key(&credential.token_seed)?;
+    let start = post_json(
+        native_protection::text!("/v1/installer/start"),
+        &json ! ({ (native_protection :: text ! ("product")) : (native_protection :: text ! ("celeste_plus")) , (native_protection :: text ! ("release_id")) : release :: launcher_channel_id () , (native_protection :: text ! ("client_version")) : release :: launcher_protocol_version () , (native_protection :: text ! ("client_sha256")) : release :: launcher_channel_digest () , (native_protection :: text ! ("game_uuid")) : INSTALLER_UUID , (native_protection :: text ! ("game_name")) : INSTALLER_NAME , (native_protection :: text ! ("device_id")) : credential . device_id , (native_protection :: text ! ("license_key")) : if license . is_empty () { None } else { Some (license) } , (native_protection :: text ! ("hardware")) : hardware , }),
+    )?;
+    let message = decode(required_text(&start, native_protection::text!("/message"))?)?;
+    let transcript: Value = serde_json::from_slice(&message)?;
+    if required_text(&transcript, native_protection::text!("/product"))?
+        != native_protection::text!("celeste_plus")
+    {
+        bail!(
+            "{}",
+            native_protection::text!("Authentication challenge belongs to another product")
+        );
+    }
+    let complete = post_json_with_dpop(
+        native_protection::text!("/v1/installer/complete"),
+        &json ! ({ (native_protection :: text ! ("challenge_id")) : required_text (& start , (native_protection :: text ! ("/challenge_id"))) ?, (native_protection :: text ! ("install_signature")) : encode (& signing . sign (& message) . to_bytes ()) , (native_protection :: text ! ("token_signature")) : encode (& token . sign (& message) . to_bytes ()) , }),
+        Some(&signing),
+    )?;
+    let grant = required_text(&complete, native_protection::text!("/grant"))?;
+    let claims = verify_token(grant, native_protection::text!("celeste-installer"))?;
+    crate::dpop::require_binding(&claims, &signing)?;
+    let bootstrap_url = required_text(&complete, native_protection::text!("/bootstrap/url"))?;
+    let bootstrap_id = bootstrap_url.rsplit('/').next().unwrap_or("");
+    let bootstrap_sha = required_text(&complete, native_protection::text!("/bootstrap/sha256"))?;
+    if required_text(&claims, native_protection::text!("/product"))?
+        != native_protection::text!("celeste_plus")
+        || required_text(&claims, native_protection::text!("/sub"))? != credential.uid.to_string()
+        || required_text(&claims, native_protection::text!("/device"))? != credential.device_id
+        || required_text(&claims, native_protection::text!("/release"))?
+            != release::launcher_channel_id()
+        || required_text(&claims, native_protection::text!("/client_sha256"))?
+            != release::launcher_channel_digest()
+        || required_text(&claims, native_protection::text!("/bootstrap"))? != bootstrap_id
+        || required_text(&claims, native_protection::text!("/bootstrap_sha256"))? != bootstrap_sha
+    {
+        bail!(
+            "{}",
+            native_protection::text!("Installer grant does not match this device or release")
+        );
+    }
+    Ok(complete)
+}
+fn decrypt_token(envelope: &Value, private: &StaticSecret, message: &[u8]) -> Result<[u8; 32]> {
+    let ephemeral = fixed_32(&decode(required_text(
+        envelope,
+        native_protection::text!("/ephemeral_key"),
+    )?)?)?;
+    let nonce = decode(required_text(envelope, native_protection::text!("/nonce"))?)?;
+    if nonce.len() != 12 {
+        bail!(
+            "{}",
+            native_protection::text!("Token envelope nonce is invalid")
+        );
+    }
+    let ciphertext = decode(required_text(
+        envelope,
+        native_protection::text!("/ciphertext"),
+    )?)?;
+    let transcript: Value = serde_json::from_slice(message)?;
+    let salt = decode(required_text(
+        &transcript,
+        native_protection::text!("/nonce"),
+    )?)?;
+    if salt.len() != 32 {
+        bail!(
+            "{}",
+            native_protection::text!("Token envelope salt is invalid")
+        );
+    }
+    let shared = private.diffie_hellman(&X25519PublicKey::from(ephemeral));
+    let hkdf = Hkdf::<Sha256>::new(Some(&salt), shared.as_bytes());
+    let mut wrapping = [0u8; 32];
+    hkdf.expand(TOKEN_INFO, &mut wrapping).map_err(|_| {
+        anyhow!(
+            "{}",
+            native_protection::text!("Token key derivation failed")
+        )
+    })?;
+    let cipher = Aes256Gcm::new_from_slice(&wrapping).map_err(|_| {
+        anyhow!(
+            "{}",
+            native_protection::text!("Token cipher could not start")
+        )
+    })?;
+    let plain = cipher
+        .decrypt(
+            Nonce::from_slice(&nonce),
+            Payload {
+                msg: &ciphertext,
+                aad: message,
+            },
+        )
+        .map_err(|_| {
+            anyhow!(
+                "{}",
+                native_protection::text!("Installation token envelope was rejected")
+            )
+        })?;
+    fixed_32(&plain)
+}
+fn post_json(path: &str, body: &Value) -> Result<Value> {
+    post_json_with_dpop(path, body, None)
+}
+fn post_json_with_dpop(path: &str, body: &Value, signing: Option<&SigningKey>) -> Result<Value> {
+    let url = endpoint(path)?;
+    let agent = ureq::AgentBuilder::new()
+        .https_only(true)
+        .redirects(0)
+        .timeout(std::time::Duration::from_secs(25))
+        .build();
+    let mut request = agent
+        .post(&url)
+        .set(
+            native_protection::text!("Content-Type"),
+            native_protection::text!("application/json"),
+        )
+        .set(
+            native_protection::text!("Accept"),
+            native_protection::text!("application/json"),
+        );
+    if let Some(signing) = signing {
+        request = request.set(
+            native_protection::text!("DPoP"),
+            &crate::dpop::proof(signing, native_protection::text!("POST"), &url, None)?,
+        );
+    }
+    let result = request.send_json(body.clone());
+    match result {
+        Ok(response) => {
+            let mut bytes = Vec::new();
+            response
+                .into_reader()
+                .take(65_537)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > 65_536 {
+                bail!(
+                    "{}",
+                    native_protection::text!("Authentication response exceeds size bounds")
+                );
+            }
+            serde_json::from_slice(&bytes)
+                .context(native_protection::text!("Server returned invalid JSON"))
+        }
+        Err(ureq::Error::Status(code, response)) => {
+            let mut detail = String::new();
+            let _ = response
+                .into_reader()
+                .take(4_097)
+                .read_to_string(&mut detail);
+            Err(http_failure(code, path, &short_detail(&detail, body)))
+        }
+        Err(error) => Err(anyhow!(error).context(native_protection::text!(
+            "Authentication server is unreachable"
+        ))),
+    }
+}
+fn endpoint(path: &str) -> Result<String> {
+    if !release::base_url().starts_with(native_protection::text!("https://"))
+        || !path.starts_with(native_protection::text!("/v1/"))
+        || path.contains(native_protection::text!("://"))
+        || path.contains(native_protection::text!(".."))
+        || path.contains(['?', '#', '%', '\\'])
+    {
+        bail!(
+            "{}",
+            native_protection::text!("Server response referenced an untrusted endpoint")
+        );
+    }
+    Ok(format!(
+        "{}{}",
+        release::base_url().trim_end_matches('/'),
+        path
+    ))
+}
+fn verify_token(token: &str, audience: &str) -> Result<Value> {
+    let parts = token.split('.').collect::<Vec<_>>();
+    if parts.len() != 3 {
+        bail!(
+            "{}",
+            native_protection::text!("Server returned a malformed signed token")
+        );
+    }
+    let key = VerifyingKey::from_bytes(&fixed_32(&decode(release::server_key())?)?)?;
+    let signature = Signature::from_slice(&decode(parts[2])?)?;
+    key.verify(format!("{}.{}", parts[0], parts[1]).as_bytes(), &signature)
+        .context(native_protection::text!(
+            "Server token signature is invalid"
+        ))?;
+    let header: Value = serde_json::from_slice(&decode(parts[0])?)?;
+    let claims: Value = serde_json::from_slice(&decode(parts[1])?)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs();
+    if required_text(&header, native_protection::text!("/alg"))?
+        != native_protection::text!("EdDSA")
+        || required_text(&header, native_protection::text!("/typ"))?
+            != native_protection::text!("CST")
+        || required_text(&claims, native_protection::text!("/aud"))? != audience
+        || claims
+            .pointer(native_protection::text!("/nbf"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            > now + 5
+        || claims
+            .pointer(native_protection::text!("/exp"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            <= now
+    {
+        bail!(
+            "{}",
+            native_protection::text!("Server token is expired or has the wrong audience")
+        );
+    }
+    Ok(claims)
+}
+fn signing_key(encoded: &str) -> Result<SigningKey> {
+    let value = decode(encoded)?;
+    if value.len() == 32 {
+        return Ok(SigningKey::from_bytes(&fixed_32(&value)?));
+    }
+    SigningKey::from_pkcs8_der(&value)
+        .context(native_protection::text!("Saved signing key is invalid"))
+}
+fn load_credential(path: &Path) -> Result<InstallCredential> {
+    let stored = fs::read(path)?;
+    if stored.len() <= STORE_MAGIC.len() || &stored[..STORE_MAGIC.len()] != STORE_MAGIC {
+        bail!(
+            "{}",
+            native_protection::text!("Credential envelope is invalid")
+        );
+    }
+    let plain = dpapi_unprotect(&stored[STORE_MAGIC.len()..])?;
+    let credential: InstallCredential = serde_json::from_slice(&plain)?;
+    if credential.device_id.len() < 32 || credential.uid == 0 || credential.certificate.is_empty() {
+        bail!(
+            "{}",
+            native_protection::text!("Credential data is incomplete")
+        );
+    }
+    let signing = signing_key(&credential.signing_private)?;
+    signing_key(&credential.token_seed)?;
+    let claims = verify_token(
+        &credential.certificate,
+        native_protection::text!("celeste-installation"),
+    )?;
+    if claims.get(native_protection::text!("cnf")).is_some() {
+        crate::dpop::require_binding(&claims, &signing)?;
+    }
+    let public_key = encode(signing.verifying_key().as_bytes());
+    if required_text(&claims, native_protection::text!("/sub"))? != credential.uid.to_string()
+        || required_text(&claims, native_protection::text!("/device"))? != credential.device_id
+        || required_text(&claims, native_protection::text!("/install_key"))? != public_key
+    {
+        bail!(
+            "{}",
+            native_protection::text!(
+                "Saved installation credential does not match its signed certificate"
+            )
+        );
+    }
+    Ok(credential)
+}
+fn save_credential(path: &Path, credential: &InstallCredential) -> Result<()> {
+    let plain = serde_json::to_vec(credential)?;
+    let protected = dpapi_protect(&plain)?;
+    let mut stored = Vec::with_capacity(STORE_MAGIC.len() + protected.len());
+    stored.extend_from_slice(STORE_MAGIC);
+    stored.extend_from_slice(&protected);
+    atomic_write(path, &stored)
+}
+fn save_launch_ticket(path: &Path, ticket: &str) -> Result<()> {
+    let protected = dpapi_protect(ticket.as_bytes())?;
+    let mut stored = Vec::with_capacity(TICKET_MAGIC.len() + protected.len());
+    stored.extend_from_slice(TICKET_MAGIC);
+    stored.extend_from_slice(&protected);
+    atomic_write(path, &stored)
+}
+fn atomic_write(path: &Path, value: &[u8]) -> Result<()> {
+    atomic_store::atomic_write(path, value)
+}
+fn dpapi_protect(value: &[u8]) -> Result<Vec<u8>> {
+    crate::credential_protection::protect(value)
+}
+fn dpapi_unprotect(value: &[u8]) -> Result<Vec<u8>> {
+    crate::credential_protection::unprotect(value)
+}
+fn required_text<'a>(value: &'a Value, pointer: &str) -> Result<&'a str> {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("Server response omitted {pointer}"))
+}
+fn require_digest(value: &[u8], expected: &str) -> Result<()> {
+    let actual = hex_sha256(value);
+    if actual.as_bytes() != expected.as_bytes() {
+        bail!(
+            "Signed loader digest does not match the downloaded file (expected {expected}, got {actual}, bytes={})",
+            value.len()
+        );
+    }
+    Ok(())
+}
+fn hex_sha256(value: &[u8]) -> String {
+    let digest = Sha256::digest(value);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+fn encode(value: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(value)
+}
+fn decode(value: &str) -> Result<Vec<u8>> {
+    URL_SAFE_NO_PAD
+        .decode(value)
+        .context(native_protection::text!("Invalid base64url value"))
+}
+fn fixed_32(value: &[u8]) -> Result<[u8; 32]> {
+    value
+        .try_into()
+        .map_err(|_| anyhow!("{}", native_protection::text!("Expected a 32-byte key")))
+}
+fn short_detail(value: &str, request: &Value) -> String {
+    let parsed: Value = serde_json::from_str(value).unwrap_or(Value::Null);
+    let mut detail = parsed
+        .pointer(native_protection::text!("/detail"))
+        .and_then(Value::as_str)
+        .unwrap_or(native_protection::text!("request denied"))
+        .to_owned();
+    for key in [
+        native_protection::text!("license_key"),
+        native_protection::text!("install_signature"),
+        native_protection::text!("token_signature"),
+        native_protection::text!("grant"),
+    ] {
+        if let Some(secret) = request
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|secret| !secret.is_empty())
+        {
+            detail = detail.replace(secret, native_protection::text!("[redacted]"));
+        }
+    }
+    detail.chars().take(120).collect()
+}
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+    #[test]
+    fn failed_storage_preflight_makes_zero_enrollment_requests() {
+        let requests = std::cell::Cell::new(0);
+        let failure = enroll_after_preflight(
+            || Err(std::io::Error::from_raw_os_error(3).into()),
+            || {
+                requests.set(requests.get() + 1);
+                Ok(())
+            },
+        )
+        .unwrap_err();
+        assert_eq!(requests.get(), 0);
+        assert!(failure.to_string().contains("no new device was enrolled"));
+        assert_eq!(
+            failure
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .raw_os_error(),
+            Some(3)
+        );
+    }
+    #[test]
+    fn successful_storage_preflight_precedes_the_only_enrollment_request() {
+        let calls = std::cell::RefCell::new(Vec::new());
+        enroll_after_preflight(
+            || {
+                calls.borrow_mut().push("preflight");
+                Ok(())
+            },
+            || {
+                calls.borrow_mut().push("enroll");
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(*calls.borrow(), ["preflight", "enroll"]);
+    }
+    #[test]
+    fn failed_optional_profile_discovery_preserves_direct_recovery_candidates() {
+        let original = PathBuf::from(r"D:\Redirected AppData\Celeste\auth\uid-7.bin");
+        let mut paths = vec![original.clone()];
+        let failure = append_recovery_bindings(
+            &mut paths,
+            Err(anyhow!("Modrinth database is temporarily unavailable")),
+        );
+        assert_eq!(paths, [original]);
+        assert!(
+            failure
+                .unwrap()
+                .to_string()
+                .contains("temporarily unavailable")
+        );
+    }
+    #[test]
+    fn legacy_bindings_follow_explicit_profile_location_not_appdata_spelling() {
+        let game = PathBuf::from(r"D:\Minecraft games\Casual 用户\instance");
+        let mut paths = Vec::new();
+        assert!(
+            append_recovery_bindings(
+                &mut paths,
+                Ok(vec![crate::platform::GameProfile {
+                    name: "Fixture only".to_owned(),
+                    game: game.clone(),
+                }]),
+            )
+            .is_none()
+        );
+        assert_eq!(paths.len(), 3);
+        assert!(paths.iter().all(|path| path.starts_with(&game)));
+        assert_eq!(
+            paths[0],
+            game.join(r"config\celeste\auth\celeste_plus\device.bin")
+        );
+    }
+    #[test]
+    fn protection_failure_survives_mixed_corrupt_candidate_order() {
+        for protection_first in [true, false] {
+            let mut protection = None;
+            let mut other = None;
+            let windows_error = dpapi_unprotect(b"not a DPAPI envelope").unwrap_err();
+            let malformed = anyhow!("Credential envelope is invalid");
+            let failures = if protection_first {
+                [windows_error, malformed]
+            } else {
+                [malformed, windows_error]
+            };
+            for error in failures {
+                remember_local_failure(error, &mut protection, &mut other);
+            }
+            assert!(
+                protection
+                    .unwrap()
+                    .downcast_ref::<crate::credential_protection::ProtectionError>()
+                    .is_some()
+            );
+            assert!(other.is_some());
+        }
+    }
+    #[test]
+    fn original_shared_owner_cache_path_is_reused_without_beta_suffix() {
+        let cache = shared_cache_under(Path::new(r"C:\Users\fixture\AppData\Local")).unwrap();
+        assert_eq!(
+            cache.join("uid-7.bin"),
+            PathBuf::from(format!(
+                r"C:\Users\fixture\AppData\Local\Celeste\auth\{}\uid-7.bin",
+                release::launcher_channel_id()
+            ))
+        );
+        assert!(shared_cache_under(Path::new("relative-user-root")).is_err());
+        for redirected in [
+            r"D:\Roaming data\ユーザー\Local",
+            r"C:\Users\DESKTOP-QJDBQ2D$\Casual\AppData\Local",
+            r"\\profile-server\Current user\Local",
+        ] {
+            let cache = shared_cache_under(Path::new(redirected)).unwrap();
+            assert_eq!(
+                cache,
+                Path::new(redirected)
+                    .join("Celeste")
+                    .join("auth")
+                    .join(release::launcher_channel_id())
+            );
+        }
+    }
+    #[test]
+    fn authentication_errors_redact_request_secrets_before_truncation() {
+        let key = "fixture-only-license-key-not-a-live-key";
+        let reason = json ! ({ "detail" : format ! ("Rejected key {key}: owner access required") })
+            .to_string();
+        let displayed = short_detail(&reason, &json ! ({ "license_key" : key }));
+        assert!(!displayed.contains(key));
+        assert!(displayed.contains("[redacted]"));
+        assert!(displayed.contains("owner access required"));
+        assert_eq!(short_detail("invalid JSON", &json!({})), "request denied");
+    }
+}
+#[doc = " Secrets deliberately have no Debug/Serialize implementation or UI representation."]
+pub(crate) struct Session {
+    pub grant: String,
+    pub device: String,
+    pub uid: u64,
+    credential: InstallCredential,
+}
+fn user_cache() -> Result<PathBuf> {
+    let root = crate::windows_profile::current_local_app_data()?;
+    shared_cache_under(&root)
+}
+fn shared_cache_under(root: &Path) -> Result<PathBuf> {
+    if !root.is_absolute() {
+        bail!(
+            "{}",
+            native_protection::text!(
+                "Shared activation cache requires an absolute Windows user directory"
+            )
+        );
+    }
+    Ok(root
+        .join(native_protection::text!("Celeste"))
+        .join(native_protection::text!("auth"))
+        .join(release::launcher_channel_id()))
+}
+#[doc = " Reuse only this product's selected binding and our Windows-protected identity cache."]
+#[doc = " Generic device certificates can serve a Both key; every grant is product scoped."]
+pub(crate) fn authenticate(game: &Path, license: &str) -> Result<Session> {
+    authenticate_for_setup(Some(game), license)
+}
+#[doc = " Activation is independent of Minecraft being installed or running."]
+#[doc = " The UI gate only controls setup; every later Load still authenticates afresh."]
+pub(crate) fn activate(license: &str) -> Result<bool> {
+    match authenticate_for_setup(None, license) {
+        Ok(_) => Ok(true),
+        Err(error) if error.downcast_ref::<NoSavedActivation>().is_some() => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+#[derive(Debug)]
+struct NoSavedActivation;
+impl std::fmt::Display for NoSavedActivation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(native_protection::text!(
+            "Enter your Celeste+ or Both license to activate this PC"
+        ))
+    }
+}
+impl std::error::Error for NoSavedActivation {}
+fn authenticate_for_setup(game: Option<&Path>, license: &str) -> Result<Session> {
+    let license = license.trim();
+    if !license.is_empty() && !(20..=96).contains(&license.len()) {
+        bail!(
+            "{}",
+            native_protection::text!("Enter the complete license key")
+        );
+    }
+    let cache = user_cache()?;
+    let active_path = cache.join(native_protection::text!("celeste-plus-active.bin"));
+    let pinned = license.is_empty() && active_path.is_file();
+    let mut paths = vec![active_path.clone()];
+    if let Some(game) = game {
+        let auth_dir = game
+            .join(native_protection::text!("config"))
+            .join(native_protection::text!("celeste"))
+            .join(native_protection::text!("auth"));
+        paths.extend([
+            auth_dir
+                .join(native_protection::text!("celeste_plus"))
+                .join(native_protection::text!("device.bin")),
+            auth_dir.join(native_protection::text!("installer.bin")),
+            auth_dir.join(native_protection::text!("device.bin")),
+        ]);
+    }
+    if cache.is_dir() {
+        let mut saved = fs::read_dir(&cache)?
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.strip_prefix(native_protection::text!("uid-"))
+                            .and_then(|s| s.strip_suffix(native_protection::text!(".bin")))
+                            .is_some_and(|s| s.parse::<u64>().is_ok_and(|uid| uid > 0))
+                    })
+                    && path.is_file()
+            })
+            .collect::<Vec<_>>();
+        saved.sort();
+        paths.extend(saved);
+    }
+    let discovery_failure = if pinned {
+        paths.truncate(1);
+        None
+    } else {
+        append_recovery_bindings(&mut paths, crate::platform::modrinth_profiles())
+    };
+    if license.is_empty() && !paths.iter().any(|path| path.is_file()) {
+        return Err(NoSavedActivation.into());
+    }
+    let hardware = collect_hardware()?;
+    let mut seen = std::collections::HashSet::new();
+    let mut rejected = None;
+    let mut local_failure = None;
+    let mut protection_failure = None;
+    for path in paths.into_iter().filter(|path| path.is_file()) {
+        let credential = match load_credential(&path) {
+            Ok(value) => value,
+            Err(error) => {
+                remember_local_failure(error, &mut protection_failure, &mut local_failure);
+                continue;
+            }
+        };
+        if !seen.insert(credential.device_id.clone()) {
+            continue;
+        }
+        match authenticate_installer(&credential, &hardware, license) {
+            Ok(value) => {
+                let session = product_session(credential, value)?;
+                save_setup_binding(&cache, &session.credential)?;
+                return Ok(session);
+            }
+            Err(error) if is_unauthorized(&error) => rejected = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    if let Some(error) = discovery_failure {
+        return Err (error . context (native_protection :: text ! ("Could not check existing profile activations. Restore access to this account's Modrinth data and retry; no new device was enrolled") ,)) ;
+    }
+    if license.is_empty() {
+        if let Some(error) = rejected {
+            return Err (error . context (native_protection :: text ! ("Saved activation is unavailable for Celeste+. Enter a current Celeste+ or Both license"))) ;
+        }
+        if let Some(error) = protection_failure.or(local_failure) {
+            return Err (error . context (native_protection :: text ! ("Saved activation could not be opened. Use the Windows account that activated this PC, or enter a current license"))) ;
+        }
+        return Err(NoSavedActivation.into());
+    }
+    if let Some(error) = protection_failure {
+        return Err (error . context (native_protection :: text ! ("Windows could not open a saved activation. Sign in to the Windows account that created it before retrying; no new device was enrolled"))) ;
+    }
+    let credential = enroll(license, &hardware)?;
+    save_credential(
+        &cache.join(format!("uid-{}.bin", credential.uid)),
+        &credential,
+    )?;
+    let value = authenticate_installer(&credential, &hardware, license)?;
+    let session = product_session(credential, value)?;
+    save_setup_binding(&cache, &session.credential)?;
+    Ok(session)
+}
+fn append_profile_bindings(paths: &mut Vec<PathBuf>, game: &Path) {
+    let root = game
+        .join(native_protection::text!("config"))
+        .join(native_protection::text!("celeste"))
+        .join(native_protection::text!("auth"));
+    paths.extend([
+        root.join(native_protection::text!("celeste_plus"))
+            .join(native_protection::text!("device.bin")),
+        root.join(native_protection::text!("installer.bin")),
+        root.join(native_protection::text!("device.bin")),
+    ]);
+}
+fn append_recovery_bindings(
+    paths: &mut Vec<PathBuf>,
+    profiles: Result<Vec<crate::platform::GameProfile>>,
+) -> Option<anyhow::Error> {
+    match profiles {
+        Ok(profiles) => {
+            for profile in profiles {
+                append_profile_bindings(paths, &profile.game);
+            }
+            None
+        }
+        Err(error) => Some(error),
+    }
+}
+fn remember_local_failure(
+    error: anyhow::Error,
+    protection: &mut Option<anyhow::Error>,
+    other: &mut Option<anyhow::Error>,
+) {
+    if error
+        .downcast_ref::<crate::credential_protection::ProtectionError>()
+        .is_some()
+    {
+        if protection.is_none() {
+            *protection = Some(error);
+        }
+    } else if other.is_none() {
+        *other = Some(error);
+    }
+}
+fn save_setup_binding(cache: &Path, credential: &InstallCredential) -> Result<()> {
+    save_credential(
+        &cache.join(format!("uid-{}.bin", credential.uid)),
+        credential,
+    )
+    .context(native_protection::text!(
+        "Could not save this PC's activation"
+    ))?;
+    save_credential(
+        &cache.join(native_protection::text!("celeste-plus-active.bin")),
+        credential,
+    )
+    .context(native_protection::text!(
+        "Could not remember this Celeste+ activation"
+    ))
+}
+pub(crate) fn needs_activation(error: &anyhow::Error) -> bool {
+    is_unauthorized(error) || error.downcast_ref::<NoSavedActivation>().is_some()
+}
+fn product_session(credential: InstallCredential, value: Value) -> Result<Session> {
+    let grant = required_text(&value, native_protection::text!("/grant"))?.to_owned();
+    let claims = verify_token(&grant, native_protection::text!("celeste-installer"))?;
+    crate::dpop::require_binding(&claims, &signing_key(&credential.signing_private)?)?;
+    if credential.uid == 0
+        || required_text(&claims, native_protection::text!("/sub"))? != credential.uid.to_string()
+        || required_text(&claims, native_protection::text!("/product"))?
+            != native_protection::text!("celeste_plus")
+        || required_text(&claims, native_protection::text!("/device"))? != credential.device_id
+    {
+        bail!(
+            "{}",
+            native_protection::text!(
+                "Installer authorization does not match this Celeste+ activation"
+            )
+        );
+    }
+    Ok(Session {
+        grant,
+        uid: credential.uid,
+        device: credential.device_id.clone(),
+        credential,
+    })
+}
+impl Session {
+    #[doc = " Only the proof leaves this capability; no installation key is handed to"]
+    #[doc = " delivery code or added to attach IPC, logs, or a new credential file."]
+    pub(crate) fn delivery_proof(&self, method: &str, url: &str) -> Result<String> {
+        let key = signing_key(&self.credential.signing_private)?;
+        let claims = verify_token(&self.grant, native_protection::text!("celeste-installer"))?;
+        crate::dpop::require_binding(&claims, &key)?;
+        crate::dpop::proof(&key, method, url, Some(&self.grant))
+    }
+    #[doc = " Caller must first verify the selected PID's canonical game directory."]
+    pub fn prepare_runtime_credential(&self, game: &Path) -> Result<()> {
+        let target = game
+            .join(native_protection::text!("config"))
+            .join(native_protection::text!("celeste"))
+            .join(native_protection::text!("auth"))
+            .join(native_protection::text!("celeste_plus"))
+            .join(native_protection::text!("device.bin"));
+        save_credential(&target, &self.credential).context(native_protection::text!(
+            "Could not save the Windows-protected Celeste+ activation in the selected instance"
+        ))
+    }
+}
