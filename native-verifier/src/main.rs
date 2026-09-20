@@ -7,6 +7,8 @@ mod credential_protection;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 #[path = "portable_credential_protection.rs"]
 mod credential_protection;
+#[path = "../../shared-auth/dpop.rs"]
+mod dpop;
 mod folder_delivery;
 #[cfg(windows)]
 mod launchers;
@@ -17,7 +19,7 @@ mod ui;
 mod user_profile;
 #[cfg(windows)]
 mod windows_profile;
-pub(crate) const SETUP_BUILD: &str = "20260920.1";
+pub(crate) const SETUP_BUILD: &str = "20260920.2";
 use crate::ui::UiEvent;
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -143,7 +145,8 @@ pub(crate) fn verify_and_download(
     send(native_protection::text!("Downloading"));
     let loader = get_bytes(
         required_text(&session, native_protection::text!("/bootstrap/url"))?,
-        Some(required_text(&session, native_protection::text!("/grant"))?),
+        required_text(&session, native_protection::text!("/grant"))?,
+        &signing_key(&credential.signing_private)?,
     )?;
     let expected = required_text(&session, native_protection::text!("/bootstrap/sha256"))?
         .to_ascii_lowercase();
@@ -485,9 +488,10 @@ fn enroll_remote(license: &str, hardware: &HardwareProfile) -> Result<InstallCre
     let encryption_public = X25519PublicKey::from(&encryption);
     let start = post_json (native_protection :: text ! ("/v1/enroll/start") , & json ! ({ (native_protection :: text ! ("product")) : (native_protection :: text ! ("celeste")) , (native_protection :: text ! ("release_id")) : release :: launcher_channel_id () , (native_protection :: text ! ("client_version")) : release :: launcher_protocol_version () , (native_protection :: text ! ("client_sha256")) : release :: launcher_channel_digest () , (native_protection :: text ! ("game_uuid")) : INSTALLER_UUID , (native_protection :: text ! ("game_name")) : INSTALLER_NAME , (native_protection :: text ! ("license_key")) : license , (native_protection :: text ! ("install_signing_key")) : encode (signing . verifying_key () . as_bytes ()) , (native_protection :: text ! ("install_encryption_key")) : encode (encryption_public . as_bytes ()) , (native_protection :: text ! ("hardware")) : hardware , }) ,) . map_err (| error | { if error . downcast_ref :: < HttpFailure > () . is_some_and (| failure | failure . status == 409) { error . context (native_protection :: text ! ("This license is already activated. Use the original account and computer, or contact support if its saved activation was lost")) } else { error . context (native_protection :: text ! ("License activation failed")) } }) ? ;
     let message = decode(required_text(&start, native_protection::text!("/message"))?)?;
-    let complete = post_json(
+    let complete = post_json_with_dpop(
         native_protection::text!("/v1/enroll/complete"),
         &json ! ({ (native_protection :: text ! ("challenge_id")) : required_text (& start , (native_protection :: text ! ("/challenge_id"))) ?, (native_protection :: text ! ("install_signature")) : encode (& signing . sign (& message) . to_bytes ()) , }),
+        Some(&signing),
     )?;
     let certificate =
         required_text(&complete, native_protection::text!("/device_certificate"))?.to_owned();
@@ -495,6 +499,7 @@ fn enroll_remote(license: &str, hardware: &HardwareProfile) -> Result<InstallCre
         &certificate,
         native_protection::text!("celeste-installation"),
     )?;
+    dpop::require_binding(&certificate_claims, &signing)?;
     let device_id = required_text(&complete, native_protection::text!("/device_id"))?.to_owned();
     let uid = complete
         .pointer(native_protection::text!("/uid"))
@@ -552,12 +557,14 @@ fn authenticate_installer(
         &json ! ({ (native_protection :: text ! ("product")) : (native_protection :: text ! ("celeste")) , (native_protection :: text ! ("release_id")) : release :: launcher_channel_id () , (native_protection :: text ! ("client_version")) : release :: launcher_protocol_version () , (native_protection :: text ! ("client_sha256")) : release :: launcher_channel_digest () , (native_protection :: text ! ("game_uuid")) : INSTALLER_UUID , (native_protection :: text ! ("game_name")) : INSTALLER_NAME , (native_protection :: text ! ("device_id")) : credential . device_id , (native_protection :: text ! ("license_key")) : license , (native_protection :: text ! ("hardware")) : hardware , }),
     )?;
     let message = decode(required_text(&start, native_protection::text!("/message"))?)?;
-    let complete = post_json(
+    let complete = post_json_with_dpop(
         native_protection::text!("/v1/installer/complete"),
         &json ! ({ (native_protection :: text ! ("challenge_id")) : required_text (& start , (native_protection :: text ! ("/challenge_id"))) ?, (native_protection :: text ! ("install_signature")) : encode (& signing . sign (& message) . to_bytes ()) , (native_protection :: text ! ("token_signature")) : encode (& token . sign (& message) . to_bytes ()) , }),
+        Some(&signing),
     )?;
     let grant = required_text(&complete, native_protection::text!("/grant"))?;
     let claims = verify_token(grant, native_protection::text!("celeste-installer"))?;
+    dpop::require_binding(&claims, &signing)?;
     let bootstrap_url = required_text(&complete, native_protection::text!("/bootstrap/url"))?;
     let bootstrap_id = bootstrap_url.rsplit('/').next().unwrap_or("");
     let bootstrap_sha = required_text(&complete, native_protection::text!("/bootstrap/sha256"))?;
@@ -640,12 +647,16 @@ fn decrypt_token(envelope: &Value, private: &StaticSecret, message: &[u8]) -> Re
     fixed_32(&plain)
 }
 fn post_json(path: &str, body: &Value) -> Result<Value> {
+    post_json_with_dpop(path, body, None)
+}
+fn post_json_with_dpop(path: &str, body: &Value, signing: Option<&SigningKey>) -> Result<Value> {
     let url = endpoint(path)?;
     let agent = ureq::AgentBuilder::new()
+        .https_only(true)
         .redirects(0)
         .timeout(std::time::Duration::from_secs(25))
         .build();
-    let result = agent
+    let mut request = agent
         .post(&url)
         .set(
             native_protection::text!("Content-Type"),
@@ -654,8 +665,14 @@ fn post_json(path: &str, body: &Value) -> Result<Value> {
         .set(
             native_protection::text!("Accept"),
             native_protection::text!("application/json"),
-        )
-        .send_json(body.clone());
+        );
+    if let Some(signing) = signing {
+        request = request.set(
+            native_protection::text!("DPoP"),
+            &dpop::proof(signing, native_protection::text!("POST"), &url, None)?,
+        );
+    }
+    let result = request.send_json(body.clone());
     match result {
         Ok(response) => {
             let mut bytes = Vec::new();
@@ -685,23 +702,31 @@ fn post_json(path: &str, body: &Value) -> Result<Value> {
         ))),
     }
 }
-fn get_bytes(path: &str, bearer: Option<&str>) -> Result<Vec<u8>> {
+fn get_bytes(path: &str, grant: &str, signing: &SigningKey) -> Result<Vec<u8>> {
+    dpop::require_binding(
+        &verify_token(grant, native_protection::text!("celeste-installer"))?,
+        signing,
+    )?;
     let url = endpoint(path)?;
     let agent = ureq::AgentBuilder::new()
+        .https_only(true)
         .redirects(0)
         .timeout(std::time::Duration::from_secs(25))
         .build();
-    let mut request = agent.get(&url).set(
-        native_protection::text!("Accept"),
-        native_protection::text!("application/octet-stream"),
-    );
-    if let Some(value) = bearer {
-        request = request.set(
+    let response = agent
+        .get(&url)
+        .set(
+            native_protection::text!("Accept"),
+            native_protection::text!("application/octet-stream"),
+        )
+        .set(
             native_protection::text!("Authorization"),
-            &format!("Bearer {value}"),
-        );
-    }
-    let response = request
+            &format!("DPoP {grant}"),
+        )
+        .set(
+            native_protection::text!("DPoP"),
+            &dpop::proof(signing, native_protection::text!("GET"), &url, Some(grant))?,
+        )
         .call()
         .map_err(|error| anyhow!("Loader delivery failed: {error}"))?;
     let mut bytes = Vec::new();
@@ -719,6 +744,7 @@ fn endpoint(path: &str) -> Result<String> {
         || !path.starts_with(native_protection::text!("/v1/"))
         || path.contains(native_protection::text!("://"))
         || path.contains(native_protection::text!(".."))
+        || path.contains(['?', '#', '%', '\\'])
     {
         bail!(
             "{}",
@@ -803,6 +829,9 @@ fn load_credential(path: &Path) -> Result<InstallCredential> {
         &credential.certificate,
         native_protection::text!("celeste-installation"),
     )?;
+    if claims.get(native_protection::text!("cnf")).is_some() {
+        dpop::require_binding(&claims, &signing)?;
+    }
     let public_key = encode(signing.verifying_key().as_bytes());
     if required_text(&claims, native_protection::text!("/sub"))? != credential.uid.to_string()
         || required_text(&claims, native_protection::text!("/device"))? != credential.device_id
