@@ -256,6 +256,252 @@ mod keyring {
         }
     }
 }
+#[doc = " Test the same fixed, OS-owned reader used by Java while enrollment is still"]
+#[doc = " reversible. Native Keychain access alone does not grant that reader access."]
+#[cfg(target_os = "macos")]
+pub(crate) fn validate_runtime_reader() -> Result<()> {
+    let expected = macos_reader::Secret(current_key(false)?);
+    for timeout in [
+        std::time::Duration::from_secs(120),
+        std::time::Duration::from_secs(5),
+    ] {
+        let output = macos_reader :: read (& mut macos_reader :: command () , timeout) . map_err (| _ | { protection_error (native_protection :: text ! ("verify runtime access to") , native_protection :: text ! ("macOS Keychain access was denied or timed out. Unlock your login keychain and approve access to the Celeste item. Choose Always Allow if you want Minecraft to read it without asking again, then retry. No new device was enrolled") ,) }) ? ;
+        macos_reader::matches_key(&output.0, &expected.0)?;
+    }
+    Ok(())
+}
+#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+mod macos_reader {
+    use super::*;
+    use std::io::Read;
+    use std::os::fd::AsRawFd;
+    use std::process::{Child, Command, Stdio};
+    use std::sync::atomic::{Ordering, compiler_fence};
+    use std::time::{Duration, Instant};
+    const OUTPUT_LIMIT: usize = 64;
+    const F_GETFL: i32 = 3;
+    const F_SETFL: i32 = 4;
+    #[cfg(target_os = "macos")]
+    const O_NONBLOCK: i32 = 0x4;
+    #[cfg(target_os = "linux")]
+    const O_NONBLOCK: i32 = 0x800;
+    unsafe extern "C" {
+        fn fcntl(fd: i32, command: i32, ...) -> i32;
+    }
+    pub(super) struct Secret<T: AsMut<[u8]>>(pub(super) T);
+    impl<T: AsMut<[u8]>> Drop for Secret<T> {
+        fn drop(&mut self) {
+            for byte in self.0.as_mut() {
+                unsafe { std::ptr::write_volatile(byte, 0) };
+            }
+            compiler_fence(Ordering::SeqCst);
+        }
+    }
+    struct PendingProcess(Option<Child>);
+    impl Drop for PendingProcess {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                let _ = child.kill();
+                let _ = std::thread::Builder::new()
+                    .name(native_protection::text!("Celeste Keychain reader cleanup").into())
+                    .spawn(move || {
+                        let _ = child.wait();
+                    });
+            }
+        }
+    }
+    pub(super) fn command() -> Command {
+        let mut command = Command::new(native_protection::text!("/usr/bin/security"));
+        command.args([
+            native_protection::text!("find-generic-password"),
+            native_protection::text!("-s"),
+            service(),
+            native_protection::text!("-a"),
+            account(),
+            native_protection::text!("-w"),
+        ]);
+        command
+    }
+    pub(super) fn read(command: &mut Command, timeout: Duration) -> io::Result<Secret<Vec<u8>>> {
+        let deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            io::Error::other(native_protection::text!("Invalid Keychain reader deadline"))
+        })?;
+        let mut process = PendingProcess(Some(
+            command
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()?,
+        ));
+        let child = process
+            .0
+            .as_mut()
+            .expect(native_protection::text!("owned reader"));
+        let mut stdout = child.stdout.take().ok_or_else(|| {
+            io::Error::other(native_protection::text!("Missing Keychain reader output"))
+        })?;
+        let flags = unsafe { fcntl(stdout.as_raw_fd(), F_GETFL) };
+        if flags < 0 || unsafe { fcntl(stdout.as_raw_fd(), F_SETFL, flags | O_NONBLOCK) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let mut output = Secret(Vec::with_capacity(OUTPUT_LIMIT));
+        let mut buffer = Secret([0u8; OUTPUT_LIMIT]);
+        let mut eof = false;
+        let mut status = None;
+        loop {
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    native_protection::text!("Keychain reader timed out"),
+                ));
+            }
+            if !eof {
+                match stdout.read(&mut buffer.0) {
+                    Ok(0) => eof = true,
+                    Ok(length) => {
+                        if output.0.len() + length > OUTPUT_LIMIT {
+                            return Err(io::Error::other(native_protection::text!(
+                                "Keychain reader output exceeds its limit"
+                            )));
+                        }
+                        output.0.extend_from_slice(&buffer.0[..length]);
+                        buffer.0.fill(0);
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                        ) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+            if status.is_none() {
+                status = child.try_wait()?;
+            }
+            if let Some(status) = status {
+                if eof {
+                    process.0 = None;
+                    if !status.success() {
+                        return Err(io::Error::other(native_protection::text!(
+                            "Keychain reader denied access"
+                        )));
+                    }
+                    return Ok(output);
+                }
+            }
+            std::thread::sleep(
+                Duration::from_millis(5).min(deadline.saturating_duration_since(Instant::now())),
+            );
+        }
+    }
+    pub(super) fn matches_key(output: &[u8], expected: &[u8; 32]) -> Result<()> {
+        let encoded = match output.strip_suffix(b"\n") {
+            Some(line) => line.strip_suffix(b"\r").unwrap_or(line),
+            None => output,
+        };
+        let invalid = || {
+            protection_error(
+                native_protection::text!("verify runtime access to"),
+                native_protection::text!(
+                    "macOS Keychain reader returned a different or invalid account key; unlock the original login keychain and retry"
+                ),
+            )
+        };
+        if encoded.len() != 43 {
+            return Err(invalid());
+        }
+        let mut decoded = Secret([0u8; 32]);
+        let length = URL_SAFE_NO_PAD
+            .decode_slice(encoded, &mut decoded.0)
+            .map_err(|_| invalid())?;
+        if length != 32
+            || decoded
+                .0
+                .iter()
+                .zip(expected)
+                .fold(0u8, |difference, (left, right)| difference | (left ^ right))
+                != 0
+        {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        #[test]
+        fn reader_command_is_fixed_and_contains_no_key() {
+            let command = command();
+            assert_eq!(command.get_program(), "/usr/bin/security");
+            let args: Vec<_> = command.get_args().collect();
+            assert_eq!(
+                args,
+                [
+                    "find-generic-password",
+                    "-s",
+                    service(),
+                    "-a",
+                    account(),
+                    "-w"
+                ]
+            );
+        }
+        #[test]
+        fn only_canonical_matching_key_output_is_accepted() {
+            let key = [0x41; 32];
+            let encoded = URL_SAFE_NO_PAD.encode(key);
+            for suffix in ["", "\n", "\r\n"] {
+                assert!(matches_key(format!("{encoded}{suffix}").as_bytes(), &key).is_ok());
+            }
+            for invalid in [
+                "".to_string(),
+                format!(" {encoded}"),
+                format!("{encoded}\n\n"),
+                format!("{encoded}\r"),
+                format!("{encoded}="),
+                "!".repeat(43),
+            ] {
+                assert!(matches_key(invalid.as_bytes(), &key).is_err());
+            }
+            assert!(matches_key(encoded.as_bytes(), &[0x42; 32]).is_err());
+        }
+        #[test]
+        fn reader_timeout_and_output_limit_do_not_touch_keychain() {
+            let started = Instant::now();
+            let error = read(
+                Command::new("/bin/sleep").arg("60"),
+                Duration::from_millis(30),
+            )
+            .err()
+            .unwrap();
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+            assert!(started.elapsed() < Duration::from_secs(2));
+            assert!(
+                read(
+                    Command::new("/usr/bin/yes").arg("synthetic fixture"),
+                    Duration::from_secs(2)
+                )
+                .is_err()
+            );
+            assert!(read(&mut Command::new("/usr/bin/false"), Duration::from_secs(2)).is_err());
+        }
+        #[test]
+        fn bounded_output_is_exact_and_standard_input_is_closed() {
+            let output = read(
+                Command::new("/usr/bin/printf").arg("public fixture\n"),
+                Duration::from_secs(2),
+            )
+            .unwrap();
+            assert_eq!(output.0, b"public fixture\n");
+            assert!(
+                read(&mut Command::new("/bin/cat"), Duration::from_secs(2))
+                    .unwrap()
+                    .0
+                    .is_empty()
+            );
+        }
+    }
+}
 #[cfg(target_os = "linux")]
 mod keyring {
     use super::*;
@@ -647,6 +893,8 @@ pub(crate) fn preflight(directory: &Path) -> Result<()> {
             native_protection::text!("Credential protection did not pass its round-trip check")
         );
     }
+    #[cfg(target_os = "macos")]
+    validate_runtime_reader()?;
     crate::user_profile::ensure_private_activation_dir(directory).context(
         native_protection::text!(
             "Could not prepare private activation storage; enrollment was not started"

@@ -6,6 +6,7 @@ set -euo pipefail
 test "$(uname -s)" = Darwin
 test "${GITHUB_ACTIONS:-}" = true
 test "${RUNNER_ENVIRONMENT:-}" = github-hosted
+test "${CELESTE_KEYCHAIN_TEST_STATUS:-}" = passed-with-test-reader-authorization
 platform="${1:?macos-arm64 or macos-x64}"
 binary="${2:?protected binary path}"
 output="${3:?fresh output directory}"
@@ -94,6 +95,8 @@ manifest = {
     'executable_sha256': hashlib.sha256(binary.read_bytes()).hexdigest(),
     'signature': 'ad-hoc', 'notarized': False,
     'gui_startup_smoke': 'passed',
+    'keychain_interop': os.environ['CELESTE_KEYCHAIN_TEST_STATUS'],
+    'first_use_keychain_consent_tested': False,
     'live_authentication_tested': False, 'minecraft_gameplay_tested': False,
 }
 (output / 'build-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
@@ -105,6 +108,11 @@ manifest = {
     'This preview is ad-hoc signed, not Developer ID signed or Apple-notarized.\n'
     'macOS may require per-app approval in System Settings > Privacy & Security.\n'
     'Do not disable Gatekeeper globally. Review and approve Keychain prompts as needed.\n'
+    'First setup checks Keychain access before using a license slot. When macOS asks\n'
+    'whether security may read the Celeste credential item, choose Always Allow\n'
+    'to permit subsequent reads by the runtime. Denying access cancels setup.\n'
+    'The CI Keychain test explicitly authorizes synthetic readers; it does not\n'
+    'automate or prove the first-use consent dialog on your Mac.\n'
     'GUI startup and offline fixtures are not live authentication/gameplay testing.\n'
     'Spotify/system media is Windows-only.\n'
 )

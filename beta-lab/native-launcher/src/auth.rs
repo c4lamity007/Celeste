@@ -959,6 +959,8 @@ fn authenticate_for_setup(game: Option<&Path>, license: &str) -> Result<Session>
     let mut rejected = None;
     let mut local_failure = None;
     let mut protection_failure = None;
+    #[cfg(target_os = "macos")]
+    let mut runtime_reader_verified = false;
     for path in paths.into_iter().filter(|path| path.is_file()) {
         let credential = match load_credential(&path) {
             Ok(value) => value,
@@ -969,6 +971,11 @@ fn authenticate_for_setup(game: Option<&Path>, license: &str) -> Result<Session>
         };
         if !seen.insert(credential.device_id.clone()) {
             continue;
+        }
+        #[cfg(target_os = "macos")]
+        if !runtime_reader_verified {
+            crate::credential_protection::validate_runtime_reader()?;
+            runtime_reader_verified = true;
         }
         match authenticate_installer(&credential, &hardware, license) {
             Ok(value) => {

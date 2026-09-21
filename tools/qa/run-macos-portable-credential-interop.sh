@@ -23,15 +23,29 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd -P)"
 FIXTURE_ROOT="${SCRIPT_DIR}/macos-portable-credential-interop"
 WORK_ROOT="$(mktemp -d "${RUNNER_TEMP%/}/celeste-keychain-interop.XXXXXX")"
 STATE_FILE="${WORK_ROOT}/original-keychains.json"
-KEYCHAIN_PATH="${WORK_ROOT}/fixture.keychain-db"
+DEFAULT_KEYCHAIN_PATH="${WORK_ROOT}/default-fixture.keychain-db"
+AUTHORIZED_KEYCHAIN_PATH="${WORK_ROOT}/authorized-fixture.keychain-db"
 PLAIN_PATH="${WORK_ROOT}/plain.bin"
 ENVELOPE_PATH="${WORK_ROOT}/envelope.bin"
 CLASSES_PATH="${WORK_ROOT}/classes"
 TARGET_PATH="${WORK_ROOT}/cargo-target"
+PREFLIGHT_PATH="${WORK_ROOT}/activation-storage"
 KEYCHAIN_PASSWORD=""
 SECURITY=/usr/bin/security
 STATE_CAPTURED=0
 STATE_RESTORED=0
+
+run_bounded() {
+  python3 - "$@" <<'PY'
+import subprocess
+import sys
+
+try:
+    subprocess.run(sys.argv[1:], check=True, timeout=30)
+except subprocess.TimeoutExpired as error:
+    raise SystemExit(f"Synthetic native Keychain probe exceeded 30 seconds: {error.cmd!r}")
+PY
+}
 
 capture_state() {
   if ! python3 - "${STATE_FILE}" "${SECURITY}" <<'PY'
@@ -102,8 +116,13 @@ cleanup() {
     restore_state
     cleanup_status=$?
   fi
-  if [[ "${STATE_RESTORED}" == 1 && -f "${KEYCHAIN_PATH}" ]]; then
-    "${SECURITY}" delete-keychain "${KEYCHAIN_PATH}" >/dev/null 2>&1 || cleanup_status=1
+  if [[ "${STATE_RESTORED}" == 1 ]]; then
+    if [[ -f "${DEFAULT_KEYCHAIN_PATH}" ]]; then
+      "${SECURITY}" delete-keychain "${DEFAULT_KEYCHAIN_PATH}" >/dev/null 2>&1 || cleanup_status=1
+    fi
+    if [[ -f "${AUTHORIZED_KEYCHAIN_PATH}" ]]; then
+      "${SECURITY}" delete-keychain "${AUTHORIZED_KEYCHAIN_PATH}" >/dev/null 2>&1 || cleanup_status=1
+    fi
   fi
   KEYCHAIN_PASSWORD=""
   if [[ "${STATE_CAPTURED}" == 0 || "${STATE_RESTORED}" == 1 ]]; then
@@ -136,17 +155,32 @@ cargo build --locked --quiet --manifest-path "${FIXTURE_ROOT}/Cargo.toml"
 mkdir -p "${CLASSES_PATH}"
 javac --release 21 -d "${CLASSES_PATH}" \
   "${PROJECT_ROOT}/src/main/java/dev/c4lam/celeste/auth/PortableCredentialProtection.java" \
+  "${FIXTURE_ROOT}/MacPortableCredentialConsentBoundaryCheck.java" \
   "${FIXTURE_ROOT}/MacPortableCredentialInteropCheck.java"
 
 capture_state
-"${SECURITY}" create-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
-"${SECURITY}" set-keychain-settings -lut 600 "${KEYCHAIN_PATH}"
-"${SECURITY}" unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${KEYCHAIN_PATH}"
-"${SECURITY}" list-keychains -d user -s "${KEYCHAIN_PATH}"
-"${SECURITY}" default-keychain -d user -s "${KEYCHAIN_PATH}"
+"${SECURITY}" create-keychain -p "${KEYCHAIN_PASSWORD}" "${DEFAULT_KEYCHAIN_PATH}"
+"${SECURITY}" set-keychain-settings -lut 600 "${DEFAULT_KEYCHAIN_PATH}"
+"${SECURITY}" unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${DEFAULT_KEYCHAIN_PATH}"
+"${SECURITY}" list-keychains -d user -s "${DEFAULT_KEYCHAIN_PATH}"
+"${SECURITY}" default-keychain -d user -s "${DEFAULT_KEYCHAIN_PATH}"
 
-"${TARGET_PATH}/debug/celeste-macos-keychain-writer" "${PLAIN_PATH}" "${ENVELOPE_PATH}"
+run_bounded "${TARGET_PATH}/debug/celeste-macos-keychain-writer" write-default \
+  "${PLAIN_PATH}.default" "${ENVELOPE_PATH}.default"
+java -cp "${CLASSES_PATH}" \
+  dev.c4lam.celeste.auth.MacPortableCredentialConsentBoundaryCheck
+
+# Use a second owned Keychain so the positive fixture creates its ACL atomically;
+# changing the default item's owner ACL could itself trigger a consent dialog.
+"${SECURITY}" create-keychain -p "${KEYCHAIN_PASSWORD}" "${AUTHORIZED_KEYCHAIN_PATH}"
+"${SECURITY}" set-keychain-settings -lut 600 "${AUTHORIZED_KEYCHAIN_PATH}"
+"${SECURITY}" unlock-keychain -p "${KEYCHAIN_PASSWORD}" "${AUTHORIZED_KEYCHAIN_PATH}"
+"${SECURITY}" list-keychains -d user -s "${AUTHORIZED_KEYCHAIN_PATH}"
+"${SECURITY}" default-keychain -d user -s "${AUTHORIZED_KEYCHAIN_PATH}"
+
+run_bounded "${TARGET_PATH}/debug/celeste-macos-keychain-writer" write-authorized \
+  "${PLAIN_PATH}" "${ENVELOPE_PATH}" "${PREFLIGHT_PATH}"
 java -cp "${CLASSES_PATH}" dev.c4lam.celeste.auth.MacPortableCredentialInteropCheck \
   "${ENVELOPE_PATH}" "${PLAIN_PATH}"
 
-echo "PASS production native-writer/Java-reader Keychain interoperability"
+echo "PASS production native-writer/Java-reader Keychain interoperability with explicit synthetic reader authorization"

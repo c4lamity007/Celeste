@@ -26,8 +26,8 @@
   },
   {
     "path": "beta-lab/native-launcher/src/auth.rs",
-    "sha256": "9ddcbd52a7828219a88abe28fdf4c41622aae19d8b6e3c4fabec73094e5e2a71",
-    "bytes": 44354
+    "sha256": "aeab5cd3d67e58216f49f22811e6cd8e4a8ebb724a2bf1a5aba2bf16c1be1471",
+    "bytes": 44629
   },
   {
     "path": "beta-lab/native-launcher/src/credential_protection.rs",
@@ -41,8 +41,8 @@
   },
   {
     "path": "beta-lab/native-launcher/src/main.rs",
-    "sha256": "104d041b55412785fa3d4b16dd660d43828716e89dc6bc0bf09cda265a894971",
-    "bytes": 57164
+    "sha256": "1650a362c9681cee796e142f3bab6fb4039aa60fb39fc73c5fb568f650c87257",
+    "bytes": 57583
   },
   {
     "path": "beta-lab/native-launcher/src/platform.rs",
@@ -76,8 +76,8 @@
   },
   {
     "path": "native-verifier/src/portable_credential_protection.rs",
-    "sha256": "3b629e2e0e9947c790a27929a3e9b31b7696ce26c4e36a05b20e8251c2a127eb",
-    "bytes": 26438
+    "sha256": "83ae50f7e73a525985d22489655adc4fe9b7a27baed8bc5abfde80a8203be7fd",
+    "bytes": 36088
   },
   {
     "path": "native-verifier/src/portable_hardware.rs",

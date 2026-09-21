@@ -13,6 +13,11 @@ on:
       - 'tools/native-protection/**'
       - 'tools/native-protection-macros/**'
       - 'tools/native-source-protect/**'
+      - '.github/workflows/celeste-plus-native-release.yml'
+      - 'tools/packaging/package-celeste-plus-macos.sh'
+      - 'tools/qa/run-macos-portable-credential-interop.sh'
+      - 'tools/qa/macos-portable-credential-interop/**'
+      - 'src/main/java/dev/c4lam/celeste/auth/PortableCredentialProtection.java'
   workflow_dispatch:
 
 permissions:
@@ -173,6 +178,43 @@ jobs:
         with:
           name: celeste-plus-protected-${{ matrix.platform }}
           path: build/celeste-plus-ci/${{ matrix.platform }}/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Check Mac credential readers with explicit synthetic authorization
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/qa/run-macos-portable-credential-interop.sh 2>&1 | tee build/celeste-plus-evidence/keychain-interop.txt
+
+      - name: Package and start the protected Mac setup window
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          NATIVE_SOURCE_COMMIT: ${{ github.sha }}
+          CELESTE_KEYCHAIN_TEST_STATUS: passed-with-test-reader-authorization
+        run: |
+          set -euo pipefail
+          output='build/macos-validated/${{ matrix.platform }}'
+          bash tools/packaging/package-celeste-plus-macos.sh '${{ matrix.platform }}' 'beta-lab/native-launcher/target/${{ matrix.target }}/release/CelesteOwnerBeta' "$output" 2>&1 | tee build/celeste-plus-evidence/packaging-and-gui.txt
+          cp 'build/celeste-plus-ci/${{ matrix.platform }}/build-manifest.json' "$output/native-build-provenance.json"
+          cp build/celeste-plus-evidence/native-abi.txt "$output/"
+          cp build/celeste-plus-evidence/native-tests.txt "$output/native-build-tests.txt"
+          cp build/celeste-plus-evidence/keychain-interop.txt "$output/"
+          cp build/celeste-plus-evidence/packaging-and-gui.txt "$output/"
+
+      - name: Save Mac preview and precise verification evidence
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: celeste-plus-macos-validated-${{ matrix.platform }}
+          path: |
+            build/macos-validated/${{ matrix.platform }}/*.zip
+            build/macos-validated/${{ matrix.platform }}/*.sha256
+            build/macos-validated/${{ matrix.platform }}/*.json
+            build/macos-validated/${{ matrix.platform }}/*.txt
+            build/macos-validated/${{ matrix.platform }}/*.png
           if-no-files-found: error
           retention-days: 7
 

@@ -16,7 +16,10 @@ mod release;
 mod user_profile;
 #[cfg(windows)]
 mod windows_profile;
+#[cfg(not(target_os = "macos"))]
 pub(crate) const SETUP_BUILD: &str = "20260920.3";
+#[cfg(target_os = "macos")]
+pub(crate) const SETUP_BUILD: &str = "20260920.4-macos";
 use anyhow::{Result, anyhow};
 use attach::{AttachContext, Report};
 use eframe::egui::{
@@ -617,6 +620,7 @@ impl App {
                 ui.spinner();
                 ui.label(RichText::new(&self.status).color(MUTED).size(11.5));
             });
+            # [cfg (target_os = "macos")] ui . add (egui :: Label :: new (RichText :: new (native_protection :: text ! ("If Keychain asks, approve access to the Celeste item. Choose Always Allow if you want Minecraft to read it without asking again.") ,) . color (MUTED) . size (11.5)) . wrap ()) ;
         } else if !self.error.is_empty() {
             ui.add(egui::Label::new(RichText::new(&self.error).color(FAILURE).size(11.5)).wrap());
             ui.horizontal(|ui| {
@@ -890,43 +894,43 @@ impl App {
                 .unwrap_or(native_protection::text!("Check Details for the error."))
         } else {
             match self.phase.as_str() {
-                __dax_string_pattern_99
-                    if [native_protection::text!("active")].contains(&__dax_string_pattern_99) =>
+                __dax_string_pattern_100
+                    if [native_protection::text!("active")].contains(&__dax_string_pattern_100) =>
                 {
                     native_protection::text!("Loaded")
                 }
-                __dax_string_pattern_100
+                __dax_string_pattern_101
                     if [
                         native_protection::text!("starting"),
                         native_protection::text!("authenticating"),
                     ]
-                    .contains(&__dax_string_pattern_100) =>
+                    .contains(&__dax_string_pattern_101) =>
                 {
                     native_protection::text!("Loading Celeste…")
                 }
-                __dax_string_pattern_102
+                __dax_string_pattern_103
                     if [native_protection::text!("stopping")]
-                        .contains(&__dax_string_pattern_102) =>
+                        .contains(&__dax_string_pattern_103) =>
                 {
                     native_protection::text!("Waiting for cleanup…")
                 }
-                __dax_string_pattern_103
+                __dax_string_pattern_104
                     if [
                         native_protection::text!("stopped"),
                         native_protection::text!("inactive"),
                     ]
-                    .contains(&__dax_string_pattern_103) =>
+                    .contains(&__dax_string_pattern_104) =>
                 {
                     native_protection::text!("Ready to load again")
                 }
-                __dax_string_pattern_105
-                    if [native_protection::text!("failed")].contains(&__dax_string_pattern_105) =>
+                __dax_string_pattern_106
+                    if [native_protection::text!("failed")].contains(&__dax_string_pattern_106) =>
                 {
                     native_protection::text!("Check Details to continue")
                 }
-                __dax_string_pattern_106
+                __dax_string_pattern_107
                     if [native_protection::text!("restart required")]
-                        .contains(&__dax_string_pattern_106) =>
+                        .contains(&__dax_string_pattern_107) =>
                 {
                     native_protection::text!("Restart Minecraft before loading again")
                 }
@@ -1048,17 +1052,17 @@ fn main_action(has_context: bool, phase: &str, busy: bool) -> MainAction {
 }
 fn poll_interval(phase: &str) -> Option<Duration> {
     match phase {
-        __dax_string_pattern_111
+        __dax_string_pattern_112
             if [
                 native_protection::text!("starting"),
                 native_protection::text!("stopping"),
             ]
-            .contains(&__dax_string_pattern_111) =>
+            .contains(&__dax_string_pattern_112) =>
         {
             Some(Duration::from_secs(1))
         }
-        __dax_string_pattern_113
-            if [native_protection::text!("active")].contains(&__dax_string_pattern_113) =>
+        __dax_string_pattern_114
+            if [native_protection::text!("active")].contains(&__dax_string_pattern_114) =>
         {
             Some(Duration::from_secs(4))
         }

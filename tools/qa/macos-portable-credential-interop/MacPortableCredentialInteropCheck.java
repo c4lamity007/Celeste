@@ -18,6 +18,7 @@ public final class MacPortableCredentialInteropCheck {
         byte[] envelope = Files.readAllBytes(Path.of(arguments[0]));
         byte[] expected = Files.readAllBytes(Path.of(arguments[1]));
         byte[] opened = null;
+        byte[] damaged = null;
         try {
             if (expected.length != SYNTHETIC_BYTES || envelope.length > 1024 * 1024 + 64) {
                 throw new AssertionError("Fixture files have unexpected bounds");
@@ -27,12 +28,21 @@ public final class MacPortableCredentialInteropCheck {
             if (!MessageDigest.isEqual(expected, opened)) {
                 throw new AssertionError("Rust/Java portable credential mismatch");
             }
+            damaged = envelope.clone();
+            damaged[damaged.length - 1] ^= 1;
+            try {
+                PortableCredentialProtection.unprotect(damaged);
+                throw new AssertionError("Tampered portable credential was accepted");
+            } catch (java.security.GeneralSecurityException expectedFailure) {
+                // The same authorized reader succeeds, then AES-GCM rejects damage.
+            }
             System.out.println("PASS Java /usr/bin/security reader opened the native Keychain envelope");
+            System.out.println("PASS tampered synthetic envelope remains fail-closed");
         } finally {
             Arrays.fill(envelope, (byte) 0);
             Arrays.fill(expected, (byte) 0);
             if (opened != null) Arrays.fill(opened, (byte) 0);
+            if (damaged != null) Arrays.fill(damaged, (byte) 0);
         }
     }
 }
-
