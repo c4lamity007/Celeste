@@ -1,0 +1,176 @@
+name: Celeste+ protected native platforms
+
+on:
+  push:
+    branches: ['codex/celeste-plus-portable-release-20260920']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: celeste-plus-native-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      CARGO_TERM_COLOR: never
+      CARGO_INCREMENTAL: '0'
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - platform: macos-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+          - platform: macos-x64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Install Java 21 for process identity fixtures
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+
+      - name: Verify protected source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json
+          from pathlib import Path
+          entries = json.loads(Path('protected-source-sha256.json').read_text())
+          for entry in entries:
+              value = Path(entry['path']).read_bytes()
+              assert len(value) == entry['bytes'], entry['path']
+              assert hashlib.sha256(value).hexdigest() == entry['sha256'], entry['path']
+          print(f'Protected snapshot verified: {len(entries)} files')
+          PY
+
+      - name: Install and verify matching native Rust toolchain
+        shell: bash
+        env:
+          EXPECTED_TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.97.1 --profile minimal --no-self-update
+          rustup override set 1.97.1
+          actual="$(rustc -vV | sed -n 's/^host: //p' | tr -d '\r')"
+          test "$actual" = "$EXPECTED_TARGET"
+          rustc --version
+          cargo --version
+          java -version
+
+      - name: Install Linux desktop build libraries
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libdbus-1-dev libgtk-3-dev libsecret-tools libxkbcommon-dev \
+            libwayland-dev libx11-dev libxi-dev libxcursor-dev \
+            libxrandr-dev libxinerama-dev libgl1-mesa-dev
+
+      - name: Verify package format checks
+        shell: bash
+        run: python -m unittest tools/qa/test_package_celeste_plus_candidate.py
+
+      - name: Test protected launcher on native host
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/celeste-plus-evidence
+          cargo test --locked --target '${{ matrix.target }}' --manifest-path beta-lab/native-launcher/Cargo.toml 2>&1 | tee build/celeste-plus-evidence/native-tests.txt
+
+      - name: Build protected launcher
+        shell: bash
+        run: cargo build --release --locked --target '${{ matrix.target }}' --manifest-path beta-lab/native-launcher/Cargo.toml
+
+      - name: Validate Linux ABI floor
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          BINARY: beta-lab/native-launcher/target/${{ matrix.target }}/release/CelesteOwnerBeta
+        run: |
+          set -euo pipefail
+          {
+            readelf -h "$BINARY"
+            readelf -l "$BINARY"
+            readelf -d "$BINARY"
+            readelf --version-info "$BINARY"
+          } > build/celeste-plus-evidence/native-abi.txt
+          maximum="$(grep -oE 'GLIBC_[0-9]+(\.[0-9]+)*' build/celeste-plus-evidence/native-abi.txt | sort -Vu | tail -n 1)"
+          test -n "$maximum"
+          test "$(printf '%s\n' "$maximum" GLIBC_2.35 | sort -V | tail -n 1)" = GLIBC_2.35
+          printf '\nmaximum referenced GLIBC symbol: %s\n' "$maximum" | tee -a build/celeste-plus-evidence/native-abi.txt
+
+      - name: Validate macOS architecture and deployment floor
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          BINARY: beta-lab/native-launcher/target/${{ matrix.target }}/release/CelesteOwnerBeta
+        run: |
+          set -euo pipefail
+          {
+            file "$BINARY"
+            otool -hv "$BINARY"
+            otool -L "$BINARY"
+            otool -l "$BINARY"
+            codesign -dvv "$BINARY" 2>&1 || true
+          } > build/celeste-plus-evidence/native-abi.txt
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          report = Path('build/celeste-plus-evidence/native-abi.txt').read_text()
+          versions = re.findall(r'^\s*minos\s+(\d+(?:\.\d+)*)', report, re.M)
+          assert versions, 'No LC_BUILD_VERSION deployment floor reported'
+          assert all(tuple(map(int, v.split('.'))) <= (11, 0, 0) for v in versions), versions
+          print('macOS deployment floor:', ', '.join(versions))
+          PY
+
+      - name: Package protected platform binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/qa/package_celeste_plus_candidate.py \
+            --binary 'beta-lab/native-launcher/target/${{ matrix.target }}/release/CelesteOwnerBeta' \
+            --platform '${{ matrix.platform }}' --target '${{ matrix.target }}' \
+            --abi-report build/celeste-plus-evidence/native-abi.txt \
+            --output 'build/celeste-plus-ci/${{ matrix.platform }}'
+          cp build/celeste-plus-evidence/native-tests.txt 'build/celeste-plus-ci/${{ matrix.platform }}/native-tests.txt'
+
+      - name: Upload protected binary and verification evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: celeste-plus-protected-${{ matrix.platform }}
+          path: build/celeste-plus-ci/${{ matrix.platform }}/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Preserve test diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: celeste-plus-failure-${{ matrix.platform }}
+          path: build/celeste-plus-evidence/
+          if-no-files-found: ignore
+          retention-days: 7

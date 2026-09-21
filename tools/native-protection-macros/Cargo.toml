@@ -1,0 +1,15 @@
+[package]
+name = "native-protection-macros"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+proc-macro = true
+
+[dependencies]
+aes-gcm = "=0.10.3"
+rand = "=0.8.8"
+quote = "=1.0.47"
+syn = "=2.0.119"
+

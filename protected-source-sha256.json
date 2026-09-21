@@ -1,0 +1,157 @@
+[
+  {
+    "path": "beta-lab/delivery-client/fixtures/server-schema2-golden.json",
+    "sha256": "ca571b1dddb6ed9ac78f4b5d6da7650abe02bf53ec6a3bae4968833d13a9a81a",
+    "bytes": 7424
+  },
+  {
+    "path": "beta-lab/native-launcher/Cargo.lock",
+    "sha256": "53b761701e38c2bc895dd8e434be24638a75954b909aaa8f7f3b1019bc973e86",
+    "bytes": 96699
+  },
+  {
+    "path": "beta-lab/native-launcher/Cargo.toml",
+    "sha256": "9c179ee3dcd8d56bc6460c267261a9b46a233cd4e18533c26918ad7327ad3ade",
+    "bytes": 1370
+  },
+  {
+    "path": "beta-lab/native-launcher/src/atomic_store.rs",
+    "sha256": "f8d21c074e3e152294b8877926297692cc5afbb3f175183f718fd7ec99ad2310",
+    "bytes": 8684
+  },
+  {
+    "path": "beta-lab/native-launcher/src/attach.rs",
+    "sha256": "18eeedab8fb7e95394ae87149db83e1043bd976678955ff7acd0ef2ee622c08d",
+    "bytes": 35672
+  },
+  {
+    "path": "beta-lab/native-launcher/src/auth.rs",
+    "sha256": "9ddcbd52a7828219a88abe28fdf4c41622aae19d8b6e3c4fabec73094e5e2a71",
+    "bytes": 44354
+  },
+  {
+    "path": "beta-lab/native-launcher/src/credential_protection.rs",
+    "sha256": "0c7cd3d84aa112a76013a6e4addf0af19f50d5661c55bbcb95fa0a88e1597698",
+    "bytes": 16667
+  },
+  {
+    "path": "beta-lab/native-launcher/src/delivery.rs",
+    "sha256": "fe9265c34de4b36629afda6c6187e2cfd50b1c79218abab68229877cf7c4597b",
+    "bytes": 57401
+  },
+  {
+    "path": "beta-lab/native-launcher/src/main.rs",
+    "sha256": "104d041b55412785fa3d4b16dd660d43828716e89dc6bc0bf09cda265a894971",
+    "bytes": 57164
+  },
+  {
+    "path": "beta-lab/native-launcher/src/platform.rs",
+    "sha256": "3fea219a57c2efd3fea2268947fd37fcf4e6e82d0c6fb15195d8e05ffc1f195b",
+    "bytes": 16990
+  },
+  {
+    "path": "beta-lab/native-launcher/src/process_unix.rs",
+    "sha256": "a3f217b9d98bf22cae7690e36717c59bf09689f749562b6666a04a20a5bfa38b",
+    "bytes": 7396
+  },
+  {
+    "path": "beta-lab/native-launcher/src/process_windows.rs",
+    "sha256": "6488bf18d6bd6185a0e5b2039a58abcba941906225ed0a8e0f90096d27d7845c",
+    "bytes": 4355
+  },
+  {
+    "path": "beta-lab/native-launcher/src/release.rs",
+    "sha256": "dc497d12cd7f8c4a3359654b25f9b9efd5442040e9db8fa3a77d05cc52457de0",
+    "bytes": 656
+  },
+  {
+    "path": "beta-lab/native-launcher/src/windows_profile.rs",
+    "sha256": "542ed2befde65f4a8aed2494b941eae4514270d06c98b7300b2ec019b3df8ed8",
+    "bytes": 11337
+  },
+  {
+    "path": "beta-lab/native-launcher/tests/ProcessIdentityProbe.java",
+    "sha256": "203c16cc6e81cf4cdc7864d9660d8a096ba5f65301575d6287b67f4c63e62535",
+    "bytes": 347
+  },
+  {
+    "path": "native-verifier/src/portable_credential_protection.rs",
+    "sha256": "3b629e2e0e9947c790a27929a3e9b31b7696ce26c4e36a05b20e8251c2a127eb",
+    "bytes": 26438
+  },
+  {
+    "path": "native-verifier/src/portable_hardware.rs",
+    "sha256": "d75c67e8421eaf6ab7de8e00a0e0933cced87e11ab47b5d4e5f4a540b711e093",
+    "bytes": 12231
+  },
+  {
+    "path": "native-verifier/src/user_profile.rs",
+    "sha256": "140f2290a91ffa5a8646f3f9d7a8cbe9a65250ff491cb495b70b15f3ca9584e4",
+    "bytes": 3064
+  },
+  {
+    "path": "shared-auth/dpop.rs",
+    "sha256": "a66cb2d219b6bc36171635cb77826b455aaa3c231db17d4a15f9df1ea5a0173d",
+    "bytes": 9082
+  },
+  {
+    "path": "src/main/resources/assets/celeste/textures/gui/celeste-logo.png",
+    "sha256": "b1bbdb0a5499bcc63ce464b92cfe30a8d86b8a39f0ea3c33db7fc733505e33ee",
+    "bytes": 114545
+  },
+  {
+    "path": "tools/native-protection-macros/Cargo.toml",
+    "sha256": "9019d67f1f0f28d08eebe99936280775b062d252fbb99ac9a706685b5f183d20",
+    "bytes": 223
+  },
+  {
+    "path": "tools/native-protection-macros/src/lib.rs",
+    "sha256": "ad908390686cdd804273d625d4c59f1a21562c126c956cec9e50bcaead852d1e",
+    "bytes": 1379
+  },
+  {
+    "path": "tools/native-protection/Cargo.lock",
+    "sha256": "f51483dc3dba342b25a59384b44a56392f981db2042d235e11887f48647e6058",
+    "bytes": 7514
+  },
+  {
+    "path": "tools/native-protection/Cargo.toml",
+    "sha256": "9666af01bafc859be4e26d13a00e6deb9d0c942b3e7cd48a23b889a92edd32d3",
+    "bytes": 410
+  },
+  {
+    "path": "tools/native-protection/examples/protected_probe.rs",
+    "sha256": "ad94091771744bf361e7617e25205b0fb2b3718667dae642c2536cada133bdc5",
+    "bytes": 117
+  },
+  {
+    "path": "tools/native-protection/README.md",
+    "sha256": "666ba66ac5b10212ca91978e1f4d1e625fb7ee8004e1697d7f896670abfbcf4c",
+    "bytes": 1653
+  },
+  {
+    "path": "tools/native-protection/src/lib.rs",
+    "sha256": "0e3e3a2284e6fd9b329ebea5a5c84a68d8a84434a999919cae208906cd39f9ff",
+    "bytes": 3225
+  },
+  {
+    "path": "tools/native-protection/tests/macros.rs",
+    "sha256": "29ab68032b72f93918f08a17d7e420af96f48711232020616f3256d00fe8c961",
+    "bytes": 1329
+  },
+  {
+    "path": "tools/native-source-protect/Cargo.lock",
+    "sha256": "e919fd13c4eea4b10e1723199865f1eb814af6b254b76e9165ca7fd6a0d4f2e4",
+    "bytes": 5374
+  },
+  {
+    "path": "tools/native-source-protect/Cargo.toml",
+    "sha256": "7b7ca10b22dadb6ce76574cd996e53207b744805a60ad1ae1b097c04031f8bf4",
+    "bytes": 279
+  },
+  {
+    "path": "tools/native-source-protect/src/main.rs",
+    "sha256": "6911a1390a47bd75e66936383faa3bbf3a65c3dc4b7cac7d97a318c36c032f49",
+    "bytes": 12526
+  }
+]
