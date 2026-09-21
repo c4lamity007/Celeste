@@ -3,6 +3,16 @@ name: Celeste+ protected native platforms
 on:
   push:
     branches: ['codex/celeste-plus-portable-release-20260920']
+    paths:
+      - 'protected-source-sha256.json'
+      - 'beta-lab/native-launcher/**'
+      - 'beta-lab/delivery-client/fixtures/**'
+      - 'native-verifier/src/**'
+      - 'shared-auth/**'
+      - 'src/main/resources/assets/celeste/textures/gui/celeste-logo.png'
+      - 'tools/native-protection/**'
+      - 'tools/native-protection-macros/**'
+      - 'tools/native-source-protect/**'
   workflow_dispatch:
 
 permissions:

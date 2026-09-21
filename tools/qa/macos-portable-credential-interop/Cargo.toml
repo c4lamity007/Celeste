@@ -1,0 +1,17 @@
+[package]
+name = "celeste-macos-portable-credential-interop"
+version = "0.0.0"
+edition = "2024"
+publish = false
+autobins = false
+
+[[bin]]
+name = "celeste-macos-keychain-writer"
+path = "src/main.rs"
+
+[dependencies]
+native-protection = { path = "../../native-protection" }
+aes-gcm = "=0.10.3"
+anyhow = "=1.0.104"
+base64 = "=0.22.1"
+rand = "=0.8.8"

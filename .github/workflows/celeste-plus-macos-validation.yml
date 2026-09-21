@@ -1,0 +1,160 @@
+name: Celeste+ Mac packaging and OS validation
+
+on:
+  push:
+    branches: ['codex/celeste-plus-portable-release-20260920']
+    paths:
+      - '.github/workflows/celeste-plus-macos-validation.yml'
+      - 'tools/packaging/package-celeste-plus-macos.sh'
+      - 'tools/qa/run-macos-portable-credential-interop.sh'
+      - 'tools/qa/macos-portable-credential-interop/**'
+      - 'src/main/java/dev/c4lam/celeste/auth/PortableCredentialProtection.java'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: celeste-plus-macos-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: ${{ matrix.platform }} package and OS checks
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+      NATIVE_SOURCE_COMMIT: f134fc8b879b5006c82da690b7bcfcab26e05197
+      NATIVE_BUILD_RUN: '35562204782'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-arm64
+            runner: macos-15
+            executable_sha256: a60483d4cce68c09c33c51bf0f1257f7a20dfe0a6097efe2849f9f87eebbf465
+            format: macho-arm64
+          - platform: macos-x64
+            runner: macos-15-intel
+            executable_sha256: 10a8398fe3f6035bf2e9f47db6413674acc061347e45194561c4369473fc3d5a
+            format: macho-x86_64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Install Java 21 for the production credential reader
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+
+      - name: Install fixture Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.97.1 --profile minimal --no-self-update
+          rustup override set 1.97.1
+
+      - name: Download already-tested protected executable
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          github-token: ${{ github.token }}
+          run-id: '35562204782'
+          name: celeste-plus-protected-${{ matrix.platform }}
+          path: build/macos-input-artifact
+
+      - name: Verify compiled artifact identity and protected source
+        shell: bash
+        env:
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_SHA256: ${{ matrix.executable_sha256 }}
+          EXPECTED_FORMAT: ${{ matrix.format }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib, json, os, sys, tarfile
+          from pathlib import Path
+          sys.path.insert(0, 'tools/qa')
+          from package_celeste_plus_candidate import executable_format
+          for entry in json.loads(Path('protected-source-sha256.json').read_text()):
+              value = Path(entry['path']).read_bytes()
+              assert len(value) == entry['bytes'], entry['path']
+              assert hashlib.sha256(value).hexdigest() == entry['sha256'], entry['path']
+          root = Path('build/macos-input-artifact')
+          manifest = json.loads((root / 'build-manifest.json').read_text())
+          assert manifest['source_commit'] == os.environ['NATIVE_SOURCE_COMMIT']
+          assert manifest['platform'] == os.environ['EXPECTED_PLATFORM']
+          assert manifest['sha256'] == os.environ['EXPECTED_SHA256']
+          assert manifest['executable_format'] == os.environ['EXPECTED_FORMAT']
+          expected = 'Celeste+.app/Contents/MacOS/CelesteOwnerBeta'
+          with tarfile.open(root / f"CelesteOwnerBeta-{manifest['platform']}.tar.gz", 'r:gz') as archive:
+              member = archive.getmember(expected)
+              assert member.isfile() and 0 < member.size <= 128 * 1024 * 1024
+              binary = archive.extractfile(member).read()
+              report = archive.getmember('Celeste+.app/Contents/Resources/native-abi.txt')
+              assert report.isfile() and 0 < report.size <= 1024 * 1024
+              abi = archive.extractfile(report).read()
+          assert len(binary) == manifest['size']
+          assert hashlib.sha256(binary).hexdigest() == manifest['sha256']
+          assert executable_format(binary) == manifest['executable_format']
+          assert hashlib.sha256(abi).hexdigest() == manifest['abi_report_sha256']
+          output = Path('build/macos-input')
+          output.mkdir(parents=True, exist_ok=False)
+          (output / 'CelesteOwnerBeta').write_bytes(binary)
+          (output / 'CelesteOwnerBeta').chmod(0o755)
+          (output / 'native-abi.txt').write_bytes(abi)
+          (output / 'native-build-provenance.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          print('Verified existing protected binary and all 31 frozen source files')
+          PY
+
+      - name: Check native writer and Java reader using a disposable Keychain
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/macos-evidence
+          bash tools/qa/run-macos-portable-credential-interop.sh 2>&1 | tee build/macos-evidence/keychain-interop.txt
+
+      - name: Package, seal, and start the native Mac setup window
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tools/packaging/package-celeste-plus-macos.sh '${{ matrix.platform }}' build/macos-input/CelesteOwnerBeta 'build/macos-package/${{ matrix.platform }}' 2>&1 | tee build/macos-evidence/packaging-and-gui.txt
+          cp build/macos-input/native-build-provenance.json 'build/macos-package/${{ matrix.platform }}/'
+          cp build/macos-input/native-abi.txt 'build/macos-package/${{ matrix.platform }}/'
+          cp build/macos-input-artifact/native-tests.txt 'build/macos-package/${{ matrix.platform }}/native-build-tests.txt'
+          cp build/macos-evidence/keychain-interop.txt 'build/macos-package/${{ matrix.platform }}/'
+          cp build/macos-evidence/packaging-and-gui.txt 'build/macos-package/${{ matrix.platform }}/'
+
+      - name: Save validated Mac preview package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: celeste-plus-macos-validated-${{ matrix.platform }}
+          path: |
+            build/macos-package/${{ matrix.platform }}/*.zip
+            build/macos-package/${{ matrix.platform }}/*.sha256
+            build/macos-package/${{ matrix.platform }}/*.json
+            build/macos-package/${{ matrix.platform }}/*.txt
+            build/macos-package/${{ matrix.platform }}/*.png
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Preserve OS check failure evidence
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: celeste-plus-macos-check-failure-${{ matrix.platform }}
+          path: |
+            build/macos-evidence/
+            build/macos-package/${{ matrix.platform }}/*.json
+            build/macos-package/${{ matrix.platform }}/*.txt
+            build/macos-package/${{ matrix.platform }}/*.png
+          if-no-files-found: ignore
+          retention-days: 7
